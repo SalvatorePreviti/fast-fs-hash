@@ -1,0 +1,10 @@
+node_modules/
+dist/
+build/
+*.node
+.DS_Store
+*.tsbuildinfo
+dist-types-tmp/
+packages/*/dist/
+test/bench/raw-data/
+test/tmp/

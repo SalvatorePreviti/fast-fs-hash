@@ -1,0 +1,9 @@
+{
+  "recommendations": [
+    "biomejs.biome",
+    "xaver.clang-format",
+    "pflannery.vscode-versionlens",
+    "donjayamanne.githistory",
+    "eamodio.gitlens"
+  ]
+}

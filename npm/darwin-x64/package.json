@@ -1,0 +1,11 @@
+{
+  "name": "@fast-fs-hash/darwin-x64",
+  "version": "0.0.1",
+  "description": "fast-fs-hash native binding for macOS x64",
+  "os": ["darwin"],
+  "cpu": ["x64"],
+  "main": "fast_fs_hash.node",
+  "files": ["fast_fs_hash.node"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/SalvatorePreviti/fast-fs-hash" }
+}

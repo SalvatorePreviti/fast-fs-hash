@@ -1,0 +1,319 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# fast-fs-hash CI
+#
+# Architecture:
+#   1. lint-and-test   — Lint, typecheck, JS-fallback tests
+#   2. build-native    — Matrix: build + test native .node on each platform
+#   3. build-freebsd   — FreeBSD VM: build + test
+#   4. test-musl       — Download musl artifacts → test inside Alpine Docker
+#   5. publish         — ONLY after ALL above pass: verify, dry-run, publish
+#
+#   If ANY build or test fails, nothing is published.
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Lint, typecheck & test (JS-only fallback, no native build) ─────────
+  lint-and-test:
+    name: Lint & Test (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npx tsc --noEmit
+      - run: npm test
+
+  # ── Build + test native addon for every platform ───────────────────────
+  #
+  # Every entry builds the .node file. Entries that can execute on the
+  # runner also run the full test suite WITH the native binding loaded.
+  # Cross-compiled targets (win32-arm64) can only verify the build succeeds.
+  #
+  build-native:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ── macOS (build + test natively) ──────────────────────────────
+          - target: darwin-arm64
+            os: macos-14
+            can-test: true
+          - target: darwin-x64
+            os: macos-13
+            can-test: true
+
+          # ── Linux glibc (build + test natively) ────────────────────────
+          - target: linux-x64-gnu
+            os: ubuntu-22.04
+            can-test: true
+          - target: linux-arm64-gnu
+            os: ubuntu-24.04-arm
+            can-test: true
+
+          # ── Linux musl (build in Docker, test in separate job) ─────────
+          - target: linux-x64-musl
+            os: ubuntu-22.04
+            use-docker: true
+          - target: linux-arm64-musl
+            os: ubuntu-24.04-arm
+            use-docker: true
+
+          # ── Windows x64 (build + test natively) ────────────────────────
+          - target: win32-x64-msvc
+            os: windows-latest
+            can-test: true
+
+          # ── Windows arm64 (cross-compile only, no arm64 runner) ────────
+          - target: win32-arm64-msvc
+            os: windows-latest
+            target-arch: arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Direct builds (macOS, Linux glibc, Windows) ────────────────────
+      - uses: actions/setup-node@v4
+        if: ${{ !matrix.use-docker }}
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        if: ${{ !matrix.use-docker }}
+        run: npm ci
+
+      - name: Build native addon
+        if: ${{ !matrix.use-docker && !matrix.target-arch }}
+        run: npx cmake-js compile -d packages/fast-fs-hash/src/native --release
+
+      - name: Build native addon (cross-arch)
+        if: ${{ matrix.target-arch }}
+        run: npx cmake-js compile -d packages/fast-fs-hash/src/native --release --arch ${{ matrix.target-arch }}
+
+      # ── Test native binding (platforms where we can run) ───────────────
+      - name: Test with native binding
+        if: ${{ matrix.can-test }}
+        run: npm test
+
+      # ── Docker builds (Linux musl via Alpine) ──────────────────────────
+      - name: Build native addon (Alpine/musl)
+        if: ${{ matrix.use-docker }}
+        run: |
+          docker run --rm -v "$PWD:/workspace" -w /workspace node:22-alpine sh -c "
+            apk add --no-cache cmake make g++ python3 linux-headers &&
+            npm ci &&
+            npx cmake-js compile -d packages/fast-fs-hash/src/native --release
+          "
+
+      # ── Print binary size ──────────────────────────────────────────────
+      - name: Print .node file size
+        shell: bash
+        run: |
+          file="build/Release/fast_fs_hash.node"
+          if [ -f "$file" ]; then
+            size=$(wc -c < "$file" | tr -d ' ')
+            kb=$((size / 1024))
+            echo "✔ ${{ matrix.target }}: fast_fs_hash.node — ${kb} KB (${size} bytes)"
+          else
+            echo "⚠ ${{ matrix.target }}: fast_fs_hash.node not found"
+          fi
+
+      # ── Upload ─────────────────────────────────────────────────────────
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binding-${{ matrix.target }}
+          path: build/Release/fast_fs_hash.node
+          if-no-files-found: error
+
+  # ── Test musl bindings (run test suite inside Alpine containers) ───────
+  test-musl:
+    name: Test ${{ matrix.target }}
+    needs: [build-native]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64-musl
+            runner: ubuntu-22.04
+          - target: linux-arm64-musl
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: binding-${{ matrix.target }}
+          path: build/Release
+
+      - name: Test inside Alpine
+        run: |
+          docker run --rm -v "$PWD:/workspace" -w /workspace node:22-alpine sh -c "
+            npm ci &&
+            npx vitest run
+          "
+
+  # ── FreeBSD (build + test inside a FreeBSD VM) ────────────────────────
+  build-freebsd:
+    name: Build & Test freebsd-x64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build & test in FreeBSD VM
+        uses: cross-platform-actions/action@v0.25.0
+        with:
+          operating_system: freebsd
+          version: "14.2"
+          memory: 8G
+          cpu_count: 3
+          shell: bash
+          run: |
+            sudo pkg install -y cmake node22 npm-node22
+            npm ci
+            npx cmake-js compile -d packages/fast-fs-hash/src/native --release
+            ls -lh build/Release/fast_fs_hash.node
+            npm test
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binding-freebsd-x64
+          path: build/Release/fast_fs_hash.node
+          if-no-files-found: error
+
+  # ── Publish (ONLY after ALL builds + tests pass) ───────────────────────
+  #
+  # Triggered only on version tags (v*). Downloads every platform artifact,
+  # verifies all 9 .node binaries are present, then publishes:
+  #   1) All 9 platform packages (@fast-fs-hash/<platform>)
+  #   2) The main package (fast-fs-hash) — last, so optionalDeps exist
+  #
+  publish:
+    name: Publish to npm
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [lint-and-test, build-native, build-freebsd, test-musl]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          registry-url: "https://registry.npmjs.org"
+
+      - run: npm ci
+
+      - name: Build JS bundles & inject optionalDependencies
+        run: npm run build
+        env:
+          INJECT_OPTIONAL_DEPS: "1"
+
+      - name: Download all native bindings
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Package platform binaries
+        run: node scripts/package-platforms.js
+
+      - name: Verify all 9 platform binaries are present
+        run: |
+          expected="darwin-arm64 darwin-x64 freebsd-x64 linux-arm64-gnu linux-arm64-musl linux-x64-gnu linux-x64-musl win32-arm64-msvc win32-x64-msvc"
+          missing=0
+          for target in $expected; do
+            if [ ! -f "npm/$target/fast_fs_hash.node" ]; then
+              echo "MISSING: npm/$target/fast_fs_hash.node"
+              missing=$((missing + 1))
+            else
+              size=$(wc -c < "npm/$target/fast_fs_hash.node")
+              echo "OK: npm/$target/fast_fs_hash.node ($size bytes)"
+            fi
+          done
+          if [ "$missing" -gt 0 ]; then
+            echo ""
+            echo "ERROR: $missing of 9 platform binaries missing — aborting publish!"
+            exit 1
+          fi
+          echo ""
+          echo "All 9 platform binaries verified."
+
+      - name: Verify version consistency
+        run: |
+          main_version=$(node -p "require('./packages/fast-fs-hash/package.json').version")
+          echo "Main package version: $main_version"
+          mismatch=0
+          for dir in npm/*/; do
+            target=$(basename "$dir")
+            pkg_version=$(node -p "require('./${dir}package.json').version")
+            if [ "$pkg_version" != "$main_version" ]; then
+              echo "MISMATCH: $target has version $pkg_version (expected $main_version)"
+              mismatch=$((mismatch + 1))
+            fi
+          done
+          if [ "$mismatch" -gt 0 ]; then
+            echo ""
+            echo "ERROR: $mismatch packages have mismatched versions — aborting!"
+            exit 1
+          fi
+          echo "All package versions match: $main_version"
+
+      - name: Dry-run publish all packages
+        run: |
+          echo "── Dry-run: platform packages ──"
+          for dir in npm/*/; do
+            if [ -f "${dir}fast_fs_hash.node" ]; then
+              npm publish "$dir" --provenance --access public --dry-run
+            fi
+          done
+          echo ""
+          echo "── Dry-run: main package ──"
+          npm publish packages/fast-fs-hash --provenance --access public --dry-run
+          echo ""
+          echo "All dry-run publishes passed."
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish all packages
+        run: |
+          echo "── Publishing 9 platform packages ──"
+          for dir in npm/*/; do
+            if [ -f "${dir}fast_fs_hash.node" ]; then
+              echo "Publishing @fast-fs-hash/$(basename "$dir")..."
+              npm publish "$dir" --provenance --access public
+            fi
+          done
+          echo ""
+          echo "── Publishing main package ──"
+          npm publish packages/fast-fs-hash --provenance --access public
+          echo ""
+          echo "All 10 packages published successfully."
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

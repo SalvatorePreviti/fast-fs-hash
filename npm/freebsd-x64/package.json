@@ -1,0 +1,11 @@
+{
+  "name": "@fast-fs-hash/freebsd-x64",
+  "version": "0.0.1",
+  "description": "fast-fs-hash native binding for FreeBSD x64",
+  "os": ["freebsd"],
+  "cpu": ["x64"],
+  "main": "fast_fs_hash.node",
+  "files": ["fast_fs_hash.node"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/SalvatorePreviti/fast-fs-hash" }
+}

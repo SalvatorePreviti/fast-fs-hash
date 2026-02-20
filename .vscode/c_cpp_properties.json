@@ -1,0 +1,34 @@
+{
+  "configurations": [
+    {
+      "name": "Mac",
+      "includePath": [
+        "${workspaceFolder}/packages/fast-fs-hash/src/native",
+        "${workspaceFolder}/node_modules/node-addon-api",
+        "/usr/local/include/node",
+        "${workspaceFolder}/build/_deps/xxhash-src"
+      ],
+      "defines": ["NAPI_DISABLE_CPP_EXCEPTIONS"],
+      "macFrameworkPath": ["/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks"],
+      "compilerPath": "/usr/bin/clang++",
+      "cStandard": "c17",
+      "cppStandard": "c++17",
+      "intelliSenseMode": "macos-clang-arm64"
+    },
+    {
+      "name": "Linux",
+      "includePath": [
+        "${workspaceFolder}/packages/fast-fs-hash/src/native",
+        "${workspaceFolder}/node_modules/node-addon-api",
+        "/usr/include/node",
+        "${workspaceFolder}/build/_deps/xxhash-src"
+      ],
+      "defines": ["NAPI_DISABLE_CPP_EXCEPTIONS"],
+      "compilerPath": "/usr/bin/g++",
+      "cStandard": "c17",
+      "cppStandard": "c++17",
+      "intelliSenseMode": "linux-gcc-x64"
+    }
+  ],
+  "version": 4
+}

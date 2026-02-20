@@ -1,0 +1,72 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.4.3/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "ignoreUnknown": false,
+    "includes": [
+      "**",
+      "!**/node_modules",
+      "!**/dist",
+      "!**/coverage",
+      "!**/.git",
+      "!**/*.tsbuildinfo",
+      "!**/build",
+      "!**/npm"
+    ]
+  },
+  "assist": { "actions": { "source": { "organizeImports": "on" } } },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "complexity": {
+        "noExcessiveCognitiveComplexity": {
+          "level": "warn",
+          "options": { "maxAllowedComplexity": 25 }
+        }
+      },
+      "correctness": {
+        "noUnusedVariables": "error"
+      },
+      "style": {
+        "useTemplate": "off",
+        "useCollapsedElseIf": "error",
+        "useBlockStatements": "error",
+        "useConsistentMemberAccessibility": {
+          "level": "error",
+          "options": { "accessibility": "explicit" }
+        },
+        "useImportType": {
+          "level": "error",
+          "options": { "style": "separatedType" }
+        }
+      },
+      "suspicious": {
+        "noAssignInExpressions": "off",
+        "noExplicitAny": "warn"
+      }
+    }
+  },
+  "formatter": {
+    "enabled": true,
+    "formatWithErrors": false,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 120,
+    "lineEnding": "lf"
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double",
+      "semicolons": "always",
+      "trailingCommas": "es5"
+    },
+    "parser": {
+      "unsafeParameterDecoratorsEnabled": false
+    }
+  }
+}

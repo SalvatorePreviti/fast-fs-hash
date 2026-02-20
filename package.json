@@ -1,0 +1,32 @@
+{
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "node scripts/build.js",
+    "build:native": "cmake-js compile -d packages/fast-fs-hash/src/native",
+    "build:native:release": "cmake-js compile -d packages/fast-fs-hash/src/native --release",
+    "test": "vitest run",
+    "bench": "vitest bench",
+    "update-benchmarks": "node scripts/update-benchmarks.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "npx @biomejs/biome check packages/ test/",
+    "lint:fix": "biome check packages/ test/ --write ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.3",
+    "@types/node": "^25.3.0",
+    "cmake-js": "^8.0.0",
+    "hash-wasm": "^4.12.0",
+    "node-addon-api": "^8.5.0",
+    "rolldown": "^1.0.0-rc.5",
+    "rollup-plugin-dts": "^6.3.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}
