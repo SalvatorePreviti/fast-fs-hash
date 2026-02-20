@@ -34,13 +34,13 @@ The native addon is **prebuilt** for common platforms.
 If a prebuilt binary isn't available, `fast-fs-hash` falls back to the bundled WASM
 module automatically — no build step needed.
 
-| Platform        | Architecture | Native | WASM fallback |
-| --------------- | ------------ | :----: | :-----------: |
-| macOS           | arm64, x64   |   ✅   |      ✅       |
-| Linux (glibc)   | x64, arm64   |   ✅   |      ✅       |
-| Linux (musl)    | x64          |   ✅   |      ✅       |
-| Windows         | x64          |   ✅   |      ✅       |
-| Any other       | any          |   —    |      ✅       |
+| Platform      | Architecture | Native | WASM fallback |
+| ------------- | ------------ | :----: | :-----------: |
+| macOS         | arm64, x64   |   ✅   |      ✅       |
+| Linux (glibc) | x64, arm64   |   ✅   |      ✅       |
+| Linux (musl)  | x64          |   ✅   |      ✅       |
+| Windows       | x64          |   ✅   |      ✅       |
+| Any other     | any          |   —    |      ✅       |
 
 ## Quick start
 
@@ -246,11 +246,11 @@ type XXHash128LibraryStatus = "native" | "wasm" | "not-initialized";
 
 Benchmarked on Apple M4 Pro, Node.js v22.22.0 — **701 source files, 21 MB total**:
 
-| Backend               |  Time  |   Throughput | vs MD5       |
-| --------------------- | :----: | -----------: | ------------ |
-| **Native** (C++ SIMD) | 3.6 ms | ~5,800 MB/s  | **10.9× faster** |
-| **WASM**              | 17 ms  | ~1,200 MB/s  | **2.3× faster**  |
-| Node.js crypto (MD5)  | 39 ms  |   ~540 MB/s  | baseline     |
+| Backend               |  Time  |  Throughput | vs MD5           |
+| --------------------- | :----: | ----------: | ---------------- |
+| **Native** (C++ SIMD) | 3.6 ms | ~5,800 MB/s | **10.9× faster** |
+| **WASM**              | 17 ms  | ~1,200 MB/s | **2.3× faster**  |
+| Node.js crypto (MD5)  | 39 ms  |   ~540 MB/s | baseline         |
 
 The native backend uses multi-threaded POSIX I/O with xxHash3 SIMD acceleration.
 The WASM fallback uses `readFile` with `os.availableParallelism()` concurrent workers
