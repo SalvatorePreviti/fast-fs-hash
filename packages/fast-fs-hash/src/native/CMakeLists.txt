@@ -89,33 +89,73 @@ if(MSVC)
         /O2 /Oi /Ot /Oy /GL /GS- /DNDEBUG
         /EHs-c-  # disable C++ exceptions
         /GR-     # disable RTTI
+        /Gy      # function-level linking (enable COMDAT folding)
+        /Gw      # optimize global data (allow linker to discard unused globals)
     )
+    # LTCG + aggressive linker optimizations: eliminate dead code, fold identical COMDATs,
+    # strip debug info from release builds.
     set_target_properties(${PROJECT_NAME} PROPERTIES
-        LINK_FLAGS "/LTCG"
+        LINK_FLAGS "/LTCG /OPT:REF /OPT:ICF=2 /DEBUG:NONE"
     )
 else()
     # GCC / Clang: aggressive optimizations for throughput-critical code.
     target_compile_options(${PROJECT_NAME} PRIVATE
         -O3
         -DNDEBUG
+        -g0                           # no debug info
         -fno-exceptions
         -fno-rtti
         -fomit-frame-pointer
         -funroll-loops
         -fmerge-all-constants
+        -fvisibility=hidden           # hide all symbols by default — biggest size win
+        -fvisibility-inlines-hidden   # hide inline function symbols
+        -ffunction-sections           # each function in its own section (enables dead stripping)
+        -fdata-sections               # each data object in its own section
+        -fno-unwind-tables            # remove .eh_frame unwind tables
+        -fno-asynchronous-unwind-tables  # remove async unwind tables
+        -fno-stack-protector          # no stack canaries (no exception unwinding anyway)
+        -fno-math-errno               # don't set errno on math ops
+        -fstrict-aliasing             # strict aliasing for better optimization
     )
 
-    # Link-Time Optimization (LTO)
-    check_cxx_compiler_flag("-flto" HAS_LTO)
-    if(HAS_LTO)
-        target_compile_options(${PROJECT_NAME} PRIVATE -flto)
-        target_link_options(${PROJECT_NAME} PRIVATE -flto)
+    # Thin LTO — faster than full LTO, comparable code quality
+    check_cxx_compiler_flag("-flto=thin" HAS_THIN_LTO)
+    if(HAS_THIN_LTO)
+        target_compile_options(${PROJECT_NAME} PRIVATE -flto=thin)
+        target_link_options(${PROJECT_NAME} PRIVATE -flto=thin)
+    else()
+        check_cxx_compiler_flag("-flto" HAS_LTO)
+        if(HAS_LTO)
+            target_compile_options(${PROJECT_NAME} PRIVATE -flto)
+            target_link_options(${PROJECT_NAME} PRIVATE -flto)
+        endif()
     endif()
 
-    # Strict aliasing for better auto-vectorization
-    check_cxx_compiler_flag("-fstrict-aliasing" HAS_STRICT_ALIASING)
-    if(HAS_STRICT_ALIASING)
-        target_compile_options(${PROJECT_NAME} PRIVATE -fstrict-aliasing)
+    # Linux-specific: PIC optimizations
+    if(NOT APPLE)
+        check_cxx_compiler_flag("-fno-semantic-interposition" HAS_NO_SEMANTIC_INTERPOSITION)
+        if(HAS_NO_SEMANTIC_INTERPOSITION)
+            target_compile_options(${PROJECT_NAME} PRIVATE -fno-semantic-interposition)
+        endif()
+        check_cxx_compiler_flag("-fno-plt" HAS_NO_PLT)
+        if(HAS_NO_PLT)
+            target_compile_options(${PROJECT_NAME} PRIVATE -fno-plt)
+        endif()
+    endif()
+
+    # Platform-specific linker flags for dead code elimination and stripping
+    if(APPLE)
+        target_link_options(${PROJECT_NAME} PRIVATE
+            -Wl,-dead_strip              # macOS: remove unreferenced functions/data
+            -Wl,-x                       # discard local symbols
+        )
+    else()
+        target_link_options(${PROJECT_NAME} PRIVATE
+            -Wl,--gc-sections            # Linux: garbage-collect unused sections
+            -Wl,-s                       # strip all symbol info
+            -Wl,--as-needed              # only link needed shared libs
+        )
     endif()
 endif()
 

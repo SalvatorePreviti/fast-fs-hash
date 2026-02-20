@@ -44,35 +44,39 @@ async function _doInit(): Promise<void> {
   }
 }
 
+// ── Internal instance shape (avoids Record<string, unknown> casts) ───────
+
+/** @internal Shape of an XXHash128 instance with a native backend. */
+interface NativeInstance extends XXHash128Base {
+  _native: NativeXXHash128Instance;
+}
+
 // ── Module-scope native method implementations ───────────────────────────
 
-function nativeReset(this: Record<string, unknown>): void {
-  (this._native as NativeXXHash128Instance).reset();
+function nativeReset(this: NativeInstance): void {
+  this._native.reset();
 }
 
-function nativeUpdate(
-  this: Record<string, unknown>,
-  input: HashInput,
-  inputOffset?: number,
-  inputLength?: number
-): void {
-  const buf = toBuffer(input);
+function nativeUpdate(this: NativeInstance, input: HashInput, inputOffset?: number, inputLength?: number): void {
+  // Fast path: input is already a Buffer — avoid toBuffer() overhead
+  const buf = isBuffer(input) ? input : toBuffer(input);
   const offset = inputOffset ?? 0;
   const length = inputLength ?? buf.length - offset;
-  (this._native as NativeXXHash128Instance).update(buf, offset, length);
+  this._native.update(buf, offset, length);
 }
 
-function nativeDigest(this: Record<string, unknown>): Buffer {
-  return (this._native as NativeXXHash128Instance).digest();
+function nativeDigest(this: NativeInstance): Buffer {
+  return this._native.digest();
 }
 
-function nativeDigestTo(this: Record<string, unknown>, output: Uint8Array, outputOffset?: number): void {
+function nativeDigestTo(this: NativeInstance, output: Uint8Array, outputOffset?: number): void {
+  // Fast path: output is already a Buffer
   const buf = isBuffer(output) ? output : bufferFrom(output.buffer, output.byteOffset, output.byteLength);
-  (this._native as NativeXXHash128Instance).digestTo(buf, outputOffset ?? 0);
+  this._native.digestTo(buf, outputOffset ?? 0);
 }
 
 async function nativeHashFiles(
-  this: XXHash128,
+  this: XXHash128 & NativeInstance,
   files: string[] | Uint8Array,
   allFilesOrOutput?: boolean | Uint8Array,
   outputOffset?: number
@@ -100,8 +104,7 @@ async function nativeHashFiles(
 
   // C++ instance method: hashes files on worker threads, then feeds all
   // per-file hashes into this instance's streaming state on the main thread.
-  const native = (this as unknown as Record<string, unknown>)._native as NativeXXHash128Instance;
-  const perFileHashes: Buffer = await native.hashFilesUpdate(pathsBuf, lanes);
+  const perFileHashes: Buffer = await this._native.hashFilesUpdate(pathsBuf, lanes);
 
   // Return per-file hashes if requested
   if (allFilesOrOutput === true) {
@@ -121,7 +124,7 @@ async function nativeHashFiles(
   return null;
 }
 
-async function nativeUpdateFile(this: XXHash128, path: string | string[]): Promise<number> {
+async function nativeUpdateFile(this: XXHash128 & NativeInstance, path: string | string[]): Promise<number> {
   const paths = typeof path === "string" ? [path] : path;
   if (paths.length === 0) {
     return 0;
@@ -134,11 +137,7 @@ async function nativeUpdateFile(this: XXHash128, path: string | string[]): Promi
 
   // 0 = let C++ auto-select based on hardware_concurrency
   const lanes = this.concurrency > 0 ? this.concurrency : 0;
-
-  // C++ instance method: reads files on worker threads, feeds raw contents
-  // into this instance's streaming state in order on the main thread.
-  const native = (this as unknown as Record<string, unknown>)._native as NativeXXHash128Instance;
-  return native.updateFile(pathsBuf, lanes);
+  return this._native.updateFile(pathsBuf, lanes);
 }
 
 // ── Prototype patching ───────────────────────────────────────────────────
@@ -183,7 +182,7 @@ export class XXHash128 extends XXHash128Base {
     this._seedLow = seedLow;
     this._seedHigh = seedHigh;
     if (_nativeCtor) {
-      (this as Record<string, unknown>)._native = new _nativeCtor(seedLow, seedHigh);
+      (this as unknown as NativeInstance)._native = new _nativeCtor(seedLow, seedHigh);
     } else if (isWasmReady()) {
       initWasmInstanceState(this, seedLow, seedHigh);
       if (!_nativeWarned && _nativeLoadFailed) {

@@ -11,9 +11,10 @@
  * @module
  */
 
-import { open, readFile as fsReadFile } from "node:fs/promises";
+import { readFile as fsReadFile } from "node:fs/promises";
+import { availableParallelism } from "node:os";
 import { decodeFilePaths } from "./functions";
-import { bufferAlloc, bufferAllocUnsafe, notInitialized } from "./helpers";
+import { bufferAlloc, notInitialized } from "./helpers";
 import type { HashInput } from "./types";
 
 // ── Public types ─────────────────────────────────────────────────────────
@@ -131,7 +132,7 @@ export abstract class XXHash128Base {
       return 0;
     }
 
-    const maxLanes = this.concurrency > 0 ? this.concurrency : 16;
+    const maxLanes = this.concurrency > 0 ? this.concurrency : availableParallelism();
     const lanes = Math.min(maxLanes, paths.length);
 
     // Read all files concurrently, storing contents.
@@ -237,34 +238,29 @@ export abstract class XXHash128Base {
     const hashes = bufferAlloc(fileCount * 16);
 
     // Hash each file individually using parallel workers.
+    // Each worker reuses ONE hasher instance (reset between files) to avoid
+    // creating hundreds of WASM/native instances.
     const Ctor = this.constructor as unknown as XXHash128Ctor;
-    const maxLanes = this.concurrency > 0 ? this.concurrency : 16;
+    const maxLanes = this.concurrency > 0 ? this.concurrency : availableParallelism();
     const lanes = Math.min(maxLanes, fileCount);
 
     let cursor = 0;
     const worker = async (): Promise<void> => {
-      const rdBuf = bufferAllocUnsafe(64 * 1024);
+      const h = new Ctor(0, 0);
       for (;;) {
         const idx = cursor++;
         if (idx >= fileCount) {
           break;
         }
-        const h = new Ctor(0, 0);
-        let fh: import("node:fs/promises").FileHandle | undefined;
         try {
-          fh = await open(paths[idx], "r");
-          for (;;) {
-            const { bytesRead } = await fh.read(rdBuf, 0, rdBuf.length);
-            if (bytesRead === 0) {
-              break;
-            }
-            h.update(rdBuf, 0, bytesRead);
+          const data = await fsReadFile(paths[idx]);
+          h.reset();
+          if (data.length > 0) {
+            h.update(data, 0, data.length);
           }
           h.digestTo(hashes, idx * 16);
         } catch {
           // Slot remains zeroed — unreadable files get zero hash
-        } finally {
-          await fh?.close();
         }
       }
     };

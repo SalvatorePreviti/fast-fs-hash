@@ -409,4 +409,15 @@ static Napi::Object Init(Napi::Env env, Napi::Object exports) {
   return exports;
 }
 
+// Ensure the N-API module registration symbol is exported even with -fvisibility=hidden.
+// node-addon-api's NODE_API_MODULE uses napi_module_register which is an N-API function
+// that handles discoverability, but the module descriptor itself must be visible.
+#if defined(__GNUC__) || defined(__clang__)
+#  pragma GCC visibility push(default)
+#endif
+
 NODE_API_MODULE(fast_fs_hash, Init)
+
+#if defined(__GNUC__) || defined(__clang__)
+#  pragma GCC visibility pop
+#endif

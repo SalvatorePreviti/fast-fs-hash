@@ -1,18 +1,28 @@
 # fast-fs-hash
 
-Blazing fast filesystem hashing library for Node.js with native C++ backend using xxHash3-128 and SIMD acceleration.
+> _"There are only two hard things in Computer Science: cache invalidation and naming things."_
+> — Phil Karlton
 
-## Features
+If you ever needed to check whether a set of files changed — to invalidate a cache,
+skip redundant builds, or trigger incremental CI — **fast-fs-hash** is for you.
 
-- **Native C++ backend** — xxHash3-128 with SSE4.2/NEON SIMD acceleration
-- **Parallel file I/O** — lock-free thread pool for maximum throughput
-- **Promise-based API** — non-blocking, runs entirely off the main thread
-- **Simple Buffer output** — 16-byte combined hash, optional per-file hashes
-- **Salt support** — mix a string or `Uint8Array` salt into the combined hash
-- **Pre-encoded paths** — accept `Buffer` of null-terminated strings for zero-copy hot paths
-- **Cross-platform** — pre-built binaries for macOS, Linux (glibc + musl), Windows, FreeBSD
-- **JS fallback** — works everywhere Node.js ≥ 22 runs, even without native binding
-- **ESM** — native ES module
+It hashes hundreds of files in milliseconds using **xxHash3-128** via a native C++ addon
+with SIMD acceleration, and ships a **zero-dependency WASM fallback** so it works
+everywhere Node.js runs — no compiler toolchain required.
+
+## Highlights
+
+- **Native first** — C++ addon with AVX2/NEON SIMD, multi-threaded parallel I/O, and
+  POSIX `read(2)` for maximum throughput.
+- **WASM fallback** — Pure WASM backend, no native compilation needed. Still faster than
+  Node.js `crypto` MD5.
+- **Streaming API** — Feed data incrementally via `update()`, snapshot with `digest()` at
+  any point, keep going.
+- **Batch file hashing** — `hashFiles()` hashes hundreds of files in parallel and returns
+  per-file hashes in a single buffer.
+- **Deterministic** — Same input always produces the same 128-bit hash, regardless of backend.
+- **Dual CJS/ESM** — Works with both `import` and `require`.
+- **Node.js ≥ 22** — Leverages modern APIs like `os.availableParallelism()`.
 
 ## Installation
 
@@ -20,139 +30,268 @@ Blazing fast filesystem hashing library for Node.js with native C++ backend usin
 npm install fast-fs-hash
 ```
 
-The native binding is distributed as optional platform-specific packages:
+The native addon is **prebuilt** for common platforms.
+If a prebuilt binary isn't available, `fast-fs-hash` falls back to the bundled WASM
+module automatically — no build step needed.
 
-| Platform          | Package                          |
-| ----------------- | -------------------------------- |
-| macOS arm64       | `@fast-fs-hash/darwin-arm64`     |
-| macOS x64         | `@fast-fs-hash/darwin-x64`       |
-| Linux x64 glibc   | `@fast-fs-hash/linux-x64-gnu`    |
-| Linux x64 musl    | `@fast-fs-hash/linux-x64-musl`   |
-| Linux arm64 glibc | `@fast-fs-hash/linux-arm64-gnu`  |
-| Linux arm64 musl  | `@fast-fs-hash/linux-arm64-musl` |
-| Windows x64       | `@fast-fs-hash/win32-x64-msvc`   |
-| Windows arm64     | `@fast-fs-hash/win32-arm64-msvc` |
-| FreeBSD x64       | `@fast-fs-hash/freebsd-x64`      |
+| Platform        | Architecture | Native | WASM fallback |
+| --------------- | ------------ | :----: | :-----------: |
+| macOS           | arm64, x64   |   ✅   |      ✅       |
+| Linux (glibc)   | x64, arm64   |   ✅   |      ✅       |
+| Linux (musl)    | x64          |   ✅   |      ✅       |
+| Windows         | x64          |   ✅   |      ✅       |
+| Any other       | any          |   —    |      ✅       |
 
-npm automatically installs only the package matching your platform. If no native binding is available, a pure JavaScript fallback using Node.js `crypto` (MD5) is used.
+## Quick start
 
-## Usage
+```ts
+import { XXHash128 } from "fast-fs-hash";
 
-```typescript
-import {
-  hash,
-  hashSlow,
-  encodeFilePaths,
-  isNativeAvailable,
-} from "fast-fs-hash";
+// Initialize once (loads native addon or WASM fallback)
+await XXHash128.init();
 
-// Check native binding availability
-console.log("Native:", isNativeAvailable());
-
-// Combined hash (16 bytes)
-const result = await hash(["/path/to/file1.ts", "/path/to/file2.ts"]);
-console.log(result?.toString("hex"));
-
-// Combined + per-file hashes
-const detailed = await hash(files, { files: true });
-// detailed[0..15]  = combined hash
-// detailed[16..31] = file0 hash
-// detailed[32..47] = file1 hash (all-zero if unreadable)
-
-// With salt
-const salted = await hash(files, { salt: "v1.2.3" });
-
-// Pre-encode paths for repeated hashing
-const encoded = encodeFilePaths(files);
-const r1 = await hash(encoded);
-const r2 = await hash(encoded, { salt: "build-2" });
-
-// Pure JS fallback (always uses Node.js crypto, no native binding)
-const slow = await hashSlow(files);
+// Hash a set of files
+const hasher = new XXHash128();
+await hasher.hashFiles(["src/index.ts", "src/utils.ts", "package.json"]);
+console.log(hasher.digest().toString("hex"));
+// → "a1b2c3d4e5f6...0123456789ab" (32 hex chars = 128 bits)
 ```
 
-## API
+### Check if files changed since last run
 
-### `hash(files, options?): Promise<Buffer | null>`
+```ts
+import { XXHash128 } from "fast-fs-hash";
+import { readFile, writeFile } from "node:fs/promises";
 
-Hash a list of files using the native binding (or JS fallback).
+await XXHash128.init();
 
-- **files** — `string[]` of absolute paths, or a `Buffer` of null-terminated UTF-8 strings (see `encodeFilePaths`).
-- **options** — optional `HashOptions`.
-- **returns** — `Buffer` with the result, or `null` on catastrophic error.
+const h = new XXHash128();
+const perFile = await h.hashFiles(glob.sync("src/**/*.ts"), true);
+const combined = h.digest().toString("hex");
 
-**Output layout:**
+const cached = await readFile(".cache/hash", "utf-8").catch(() => null);
+if (cached === combined) {
+  console.log("Nothing changed — skipping build.");
+} else {
+  console.log("Files changed — rebuilding...");
+  await writeFile(".cache/hash", combined);
+}
+```
 
-| `files` option    | Output size          | Layout                        |
-| ----------------- | -------------------- | ----------------------------- |
-| `false` (default) | 16 bytes             | `[combined]`                  |
-| `true`            | `(1 + N) × 16` bytes | `[combined, file0, file1, …]` |
+### One-shot hash (no streaming)
 
-Files that cannot be read produce a 16-byte all-zero per-file hash.
+```ts
+const digest = XXHash128.hash("hello world");
+console.log(digest.toString("hex"));
+```
 
-### `hashSlow(files, options?): Promise<Buffer | null>`
+### WASM-only mode (no native addon)
 
-Same API as `hash()` but always uses the pure JavaScript fallback (MD5). Useful for testing and environments without native bindings.
+```ts
+import { XXHash128Wasm } from "fast-fs-hash";
 
-> **Note:** Output is NOT byte-compatible with the native xxHash3-128 path.
+await XXHash128Wasm.init();
 
-### `encodeFilePaths(files: string[]): Buffer`
+const h = new XXHash128Wasm();
+h.update("hello ");
+h.update("world");
+console.log(h.digest().toString("hex"));
+```
 
-Encode file paths into a `Buffer` of null-terminated UTF-8 strings. This is the format accepted by `hash()` and `hashSlow()` for zero-copy pre-encoding.
+---
 
-### `isNativeAvailable(): boolean`
+## API reference
 
-Returns `true` if the native C++ binding is loaded.
+### `XXHash128` — Main class (native + WASM fallback)
 
-### `HashOptions`
+The primary entry point. Prefers the native C++ addon; automatically falls back to
+WASM when the native binding is unavailable.
 
-| Property      | Type                   | Default     | Description                                        |
-| ------------- | ---------------------- | ----------- | -------------------------------------------------- |
-| `salt`        | `string \| Uint8Array` | `undefined` | Salt mixed into the combined hash                  |
-| `concurrency` | `number`               | `0` (auto)  | Max parallel file reads (0 = CPU count × 2)        |
-| `files`       | `boolean`              | `false`     | Include per-file 16-byte hashes after the combined |
+#### `XXHash128.init(): Promise<void>`
+
+Initialize the backend. Must be called **once** before creating instances.
+Loads the native addon if available, otherwise compiles and initializes the WASM module.
+Repeated calls are no-ops.
+
+#### `XXHash128.hash(input, seedLow?, seedHigh?): Buffer`
+
+One-shot convenience — creates a temporary instance, feeds the input, returns the
+16-byte digest. Equivalent to `new XXHash128(); h.update(input); h.digest()`.
+
+- **input** — `string | Buffer | Uint8Array`
+- **seedLow** — Lower 32 bits of the 64-bit seed (default `0`)
+- **seedHigh** — Upper 32 bits of the 64-bit seed (default `0`)
+- **Returns** — 16-byte `Buffer`
+
+#### `new XXHash128(seedLow?, seedHigh?)`
+
+Create a new streaming hasher. Throws if `init()` hasn't been called.
+
+#### `hasher.update(input, inputOffset?, inputLength?): void`
+
+Feed data into the hasher. Can be called multiple times.
+
+- **input** — `string | Buffer | Uint8Array`
+- **inputOffset** — Byte offset into the buffer (default `0`)
+- **inputLength** — Number of bytes to hash (default: rest of buffer)
+
+#### `hasher.digest(): Buffer`
+
+Return the 16-byte hash of all data fed so far. Does **not** reset the hasher —
+you can continue adding data and call `digest()` again for incremental snapshots.
+
+#### `hasher.digestTo(output, outputOffset?): void`
+
+Write the 16-byte digest into an existing `Uint8Array` or `Buffer` at the given offset.
+
+#### `hasher.reset(): void`
+
+Reset the hasher to its initial state (same seed). Allows reuse without reallocating.
+
+#### `hasher.hashFiles(files): Promise<null>`
+
+Hash files in parallel and feed all per-file hashes into this hasher's streaming state.
+Each file is hashed individually with xxHash3-128 (seed 0), producing a 16-byte hash.
+All per-file hashes are then fed into this instance as one contiguous block.
+
+- **files** — `string[]` or `Uint8Array` (null-separated UTF-8 paths)
+- Unreadable files are silently skipped (zero hash).
+
+#### `hasher.hashFiles(files, true): Promise<Buffer>`
+
+Same as above, but also allocates and returns a `Buffer` of all per-file hashes
+(`N × 16` bytes). Useful for inspecting individual file hashes.
+
+#### `hasher.hashFiles(files, output, outputOffset?): Promise<Uint8Array>`
+
+Same as above, but writes per-file hashes into your pre-allocated buffer.
+
+#### `hasher.updateFile(path): Promise<number>`
+
+Read one or more files and feed their **raw contents** (not hashes) into the hasher,
+in order. Returns the number of files successfully read.
+
+- **path** — `string | string[]`
+
+#### `hasher.concurrency: number`
+
+Maximum parallel file reads. `0` (default) = auto-detect via `os.availableParallelism()`.
+
+#### `hasher.libraryStatus: "native" | "wasm" | "not-initialized"`
+
+Which backend is active for this instance.
+
+---
+
+### `XXHash128Wasm` — WASM-only class
+
+Identical API to `XXHash128`, but always uses the WASM backend.
+Use this when you want to avoid loading native addons entirely
+(e.g., in sandboxed environments).
+
+#### `XXHash128Wasm.init(): Promise<void>`
+
+Compile the WASM module and patch the prototype. Must be called once before use.
+
+---
+
+### `XXHash128Base` — Abstract base class
+
+The shared abstract base that both `XXHash128` and `XXHash128Wasm` extend.
+You won't instantiate this directly, but it defines the full interface above.
+
+---
+
+### Utility functions
+
+#### `encodeFilePaths(paths: string[]): Buffer`
+
+Encode an array of file paths into a null-separated UTF-8 buffer.
+This is the format accepted by `hashFiles()` when passing a `Uint8Array`.
+
+#### `decodeFilePaths(buf: Uint8Array): string[]`
+
+Decode a null-separated buffer back into an array of path strings.
+
+#### `hashesToHexArray(hashes: Uint8Array): string[]`
+
+Split a buffer of concatenated 16-byte hashes into an array of lowercase hex strings.
+Useful for inspecting the per-file output of `hashFiles(files, true)`.
+
+```ts
+const perFile = await hasher.hashFiles(files, true);
+const hexes = hashesToHexArray(perFile);
+// ["a1b2c3d4...", "e5f6a7b8...", ...]
+```
+
+---
+
+### Types
+
+#### `HashInput`
+
+```ts
+type HashInput = string | Buffer | Uint8Array;
+```
+
+#### `XXHash128LibraryStatus`
+
+```ts
+type XXHash128LibraryStatus = "native" | "wasm" | "not-initialized";
+```
+
+---
 
 ## Performance
 
-The native binding uses xxHash3-128, one of the fastest non-cryptographic hash functions available, with automatic SIMD vectorization (SSE4.2 on x86_64, NEON on ARM64). File I/O uses a lock-free thread pool that scales to available CPU cores.
+Benchmarked on Apple M4 Pro, Node.js v22.22.0 — **701 source files, 21 MB total**:
 
-<!-- BENCHMARKS:START -->
+| Backend               |  Time  |   Throughput | vs MD5       |
+| --------------------- | :----: | -----------: | ------------ |
+| **Native** (C++ SIMD) | 3.6 ms | ~5,800 MB/s  | **10.9× faster** |
+| **WASM**              | 17 ms  | ~1,200 MB/s  | **2.3× faster**  |
+| Node.js crypto (MD5)  | 39 ms  |   ~540 MB/s  | baseline     |
 
-Results from Node.js v22.22.0, Vitest 4.x:
+The native backend uses multi-threaded POSIX I/O with xxHash3 SIMD acceleration.
+The WASM fallback uses `readFile` with `os.availableParallelism()` concurrent workers
+and reuses hasher instances across files to minimize overhead.
 
-| Scenario                         | Mean    | Throughput (hz) | Relative         |
-| -------------------------------- | ------- | --------------- | ---------------- |
-| native                           | 4.0 ms  | 249.4           | **10.3× faster** |
-| native (per file output)         | 4.4 ms  | 227.1           | **9.4× faster**  |
-| Node.js crypto (md5)             | 38.8 ms | 25.8            | **1.1× faster**  |
-| WASM                             | 39.6 ms | 25.2            | **1.0× faster**  |
-| Node.js crypto (per file output) | 40.1 ms | 24.9            | **1.0× faster**  |
-| WASM (per file output)           | 41.3 ms | 24.2            | baseline         |
+### Why is the native addon ~88 KB?
 
-_Results vary by hardware, file sizes, and OS cache state._
+On macOS arm64, Mach-O binaries align each segment to **16 KB pages**.
+A `.node` file has at minimum 4 segments (`__TEXT`, `__DATA_CONST`, `__DATA`,
+`__LINKEDIT`), so the **floor for any native addon is 64 KB** — even an empty one.
 
-<!-- BENCHMARKS:END -->
+Our actual executable code is ~42 KB: the full xxHash3-128 implementation with all
+SIMD code paths inlined, the N-API binding, and a parallel file I/O engine with a
+thread pool. Only **2 symbols** are exported. On Linux with 4 KB pages, the binary
+is significantly smaller.
+
+The WASM module is **~10 KB**.
 
 ## Building from source
 
-Requires CMake ≥ 3.15 and a C++17 compiler.
+Building the native addon requires a C++ toolchain (CMake, Ninja) and `cmake-js`:
 
 ```bash
+# Clone and install
+git clone https://github.com/SalvatorePreviti/fast-fs-hash.git
+cd fast-fs-hash
 npm install
-npx cmake-js compile
+
+# Build everything (TypeScript + native addon)
+npm run build
+
+# Run tests
+npm test
+
+# Run benchmarks
+npm run bench
 ```
 
-## Development
-
-```bash
-npm test          # Run tests
-npm run bench     # Run benchmarks
-npm run build     # Build JS bundles + types
-npm run lint      # Lint with biome
-```
+The native addon uses [xxHash](https://github.com/Cyan4973/xxHash) (BSD 2-Clause),
+fetched automatically by CMake during the build.
 
 ## License
 
-MIT
-
-See [NOTICES.md](NOTICES.md) for third-party licenses.
+[MIT](LICENSE)
