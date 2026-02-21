@@ -10,7 +10,7 @@
  *   - Version reader (root package.json)
  */
 
-import { fork } from "node:child_process";
+import { execFileSync, fork } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import ansis from "ansis";
@@ -62,7 +62,33 @@ export function readJson(filePath) {
 
 /** Write an object as pretty JSON (2-space indent + trailing newline). */
 export function writeJson(filePath, obj) {
-  fs.writeFileSync(filePath, `${JSON.stringify(obj, null, 2)}\n`, "utf8");
+  fs.writeFileSync(filePath, formatJson(filePath, obj), "utf8");
+}
+
+const _biomeBin = path.resolve(ROOT_DIR, "node_modules/.bin/biome");
+
+/**
+ * Serialize an object to JSON and format it through biome.
+ * Uses biome's stdin mode with --stdin-file-path so it picks up the project's
+ * biome.json config (indentStyle, lineWidth, lineEnding, etc.).
+ * @param {string} filePath Absolute path (used for biome config lookup, file is NOT read/written).
+ * @param {unknown} obj The value to serialize.
+ * @returns {string} Formatted JSON string (with trailing newline).
+ */
+export function formatJson(filePath, obj) {
+  const raw = `${JSON.stringify(obj, null, 2)}\n`;
+  try {
+    return execFileSync(_biomeBin, ["format", "--stdin-file-path", filePath], {
+      input: raw,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+      cwd: ROOT_DIR,
+      shell: process.platform === "win32",
+    });
+  } catch {
+    // Fallback: if biome isn't available, return raw JSON
+    return raw;
+  }
 }
 
 // ── Version helper ───────────────────────────────────────────────────────
@@ -166,11 +192,11 @@ export class SyncTracker {
   }
 
   /**
-   * Compare a JSON file (serialized with 2-space indent + trailing newline).
+   * Compare a JSON file formatted through biome.
    * Same CI/local behavior as syncFile.
    */
   syncJson(destPath, obj) {
-    return this.syncFile(destPath, `${JSON.stringify(obj, null, 2)}\n`);
+    return this.syncFile(destPath, formatJson(destPath, obj));
   }
 
   /**

@@ -18,8 +18,11 @@ import path from "node:path";
 import {
   DIST_DIR,
   elapsed,
+  formatJson,
+  isCI,
   logChanged,
   logError,
+  logInfo,
   logOk,
   PKG_DIR,
   ROOT_DIR,
@@ -55,12 +58,15 @@ async function hashFiles(baseDir, relPaths) {
   for (const relPath of relPaths.sort()) {
     const absPath = path.resolve(baseDir, relPath);
     try {
-      const content = await fs.promises.readFile(absPath);
+      const raw = await fs.promises.readFile(absPath);
+      const isBinary = BINARY_EXTENSIONS.has(path.extname(relPath));
+      // Normalize CRLF → LF for text files so hashes are consistent across platforms
+      const content = isBinary ? raw : Buffer.from(raw.toString("utf8").replaceAll("\r\n", "\n"));
       const entry = {
         sha256: crypto.createHash("sha256").update(content).digest("hex"),
         bytes: content.length,
       };
-      if (!BINARY_EXTENSIONS.has(path.extname(relPath))) {
+      if (!isBinary) {
         entry.lines = content.toString("utf8").split("\n").length;
       }
       result[relPath] = entry;
@@ -130,11 +136,56 @@ function logFileDiffs(label, current, previous) {
     } else if (!prev) {
       logChanged(`${relPath}: new${info}`);
     } else if (cur.sha256 !== prev.sha256) {
-      logChanged(`${relPath}: modified${info}`);
+      const prevInfo = ` (was ${prev.bytes} bytes${prev.lines != null ? `, ${prev.lines} lines` : ""})`;
+      logChanged(`${relPath}: hash changed${info}${prevInfo}`);
+    } else if (cur.bytes !== prev.bytes) {
+      logChanged(`${relPath}: size changed${info} (was ${prev.bytes} bytes)`);
     } else {
       logOk(`${relPath}${info}`);
     }
   }
+  // Files that were removed
+  if (previous) {
+    for (const relPath of Object.keys(previous)) {
+      if (!(relPath in current)) {
+        logError(`${relPath}: removed`);
+      }
+    }
+  }
+}
+
+/** Compare two hash-map sections and return a list of human-readable change descriptions. */
+function diffHashMaps(label, current, previous) {
+  const diffs = [];
+  if (!previous) {
+    diffs.push(`${label}: no previous data (new or corrupted build-hash.json)`);
+    return diffs;
+  }
+  for (const relPath of Object.keys(current)) {
+    const cur = current[relPath];
+    const prev = previous[relPath];
+    if (!cur) {
+      diffs.push(`${label}/${relPath}: missing on disk`);
+    } else if (!prev) {
+      diffs.push(`${label}/${relPath}: new file (${cur.bytes} bytes)`);
+    } else if (cur.sha256 !== prev.sha256) {
+      diffs.push(
+        `${label}/${relPath}: hash differs — ` +
+          `expected ${prev.sha256.slice(0, 16)}… (${prev.bytes}B), ` +
+          `got ${cur.sha256.slice(0, 16)}… (${cur.bytes}B)`,
+      );
+    } else if (cur.bytes !== prev.bytes) {
+      diffs.push(`${label}/${relPath}: size differs — expected ${prev.bytes}B, got ${cur.bytes}B`);
+    } else if (cur.lines !== prev.lines) {
+      diffs.push(`${label}/${relPath}: line count differs — expected ${prev.lines}, got ${cur.lines}`);
+    }
+  }
+  for (const relPath of Object.keys(previous)) {
+    if (!(relPath in current)) {
+      diffs.push(`${label}/${relPath}: file removed`);
+    }
+  }
+  return diffs;
 }
 
 export async function writeBuildHash() {
@@ -186,7 +237,7 @@ export async function writeBuildHash() {
     },
   };
 
-  const nextText = `${JSON.stringify(obj, null, 2)}\n`;
+  const nextText = formatJson(BUILD_HASH_PATH, obj);
 
   let existing = "";
   try {
@@ -196,6 +247,7 @@ export async function writeBuildHash() {
   // Compare ignoring the generatedAt timestamp
   let changed = false;
   let prev = null;
+  let parseError = false;
   try {
     prev = JSON.parse(existing);
     changed =
@@ -204,11 +256,37 @@ export async function writeBuildHash() {
       JSON.stringify(prev.packageSecurity) !== JSON.stringify(obj.packageSecurity);
   } catch {
     changed = true;
+    parseError = !existing ? "file not found" : "JSON parse error";
   }
 
   const sync = new SyncTracker();
 
   if (changed) {
+    // Print detailed diagnostics about what changed
+    if (parseError) {
+      logInfo(`build-hash.json: ${parseError}`);
+    } else {
+      const allDiffs = [
+        ...diffHashMaps("distArtifacts", distFiles, prev?.distArtifacts),
+        ...diffHashMaps("source/ts", tsFiles, prev?.source?.ts),
+        ...diffHashMaps("source/native", nativeFiles, prev?.source?.native),
+        ...diffHashMaps("source/xxhash", xxhashFiles, prev?.source?.xxhash),
+        ...diffHashMaps("source/cmake", cmakeFiles, prev?.source?.cmake),
+      ];
+
+      // Check packageSecurity separately (not a hash map)
+      if (JSON.stringify(obj.packageSecurity) !== JSON.stringify(prev?.packageSecurity)) {
+        allDiffs.push("packageSecurity: dependency or security field diff");
+      }
+
+      if (allDiffs.length > 0) {
+        logInfo(`build-hash.json changes (${allDiffs.length}):`);
+        for (const diff of allDiffs) {
+          logChanged(diff);
+        }
+      }
+    }
+
     await sync.syncFileAsync(BUILD_HASH_PATH, nextText);
   } else {
     logOk("build-hash.json");

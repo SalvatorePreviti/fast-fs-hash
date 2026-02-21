@@ -15,7 +15,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { elapsed, getPlatforms, logInfo, logOk, PKG_DIR, ROOT_DIR, readRootVersion } from "./lib/utils.js";
+import { elapsed, formatJson, getPlatforms, logInfo, logOk, PKG_DIR, ROOT_DIR, readRootVersion } from "./lib/utils.js";
 
 const t0 = performance.now();
 const version = readRootVersion();
@@ -31,7 +31,7 @@ for (const platform of getPlatforms()) {
 }
 mainPkg.optionalDependencies = optDeps;
 
-fs.writeFileSync(mainPkgPath, JSON.stringify(mainPkg, null, 2) + "\n", "utf8");
+fs.writeFileSync(mainPkgPath, formatJson(mainPkgPath, mainPkg), "utf8");
 
 logOk(
   `${path.relative(ROOT_DIR, mainPkgPath)} — ${Object.keys(optDeps).length} platform packages injected (${elapsed(t0)})`
