@@ -11,7 +11,10 @@
  * @internal
  */
 
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 
@@ -92,10 +95,20 @@ export function loadNativeXXHash128(): NativeXXHash128Constructor | null {
     }
   }
 
+  // Dev mode: walk up from this file to find the local build output
   try {
-    return (require("../../../../build/Release/fast_fs_hash.node") as NativeBindingExport).XXHash128;
+    let dir = dirname(fileURLToPath(import.meta.url));
+    for (let i = 0; i < 6; i++) {
+      const candidate = resolve(dir, "build", "Release", "fast_fs_hash.node");
+      if (existsSync(candidate)) {
+        return (require(candidate) as NativeBindingExport).XXHash128;
+      }
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
   } catch {
-    // Not built locally
+    // Not in dev mode or build not available
   }
 
   return null;

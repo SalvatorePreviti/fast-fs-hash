@@ -236,7 +236,7 @@ export class FileHashCache {
    * Validate files against the cached entries.
    *
    * 1. `stat()` every file in parallel (bounded concurrency).
-   * 2. Compare `(ino, mtimeMs, size)` with old entries — match → reuse hash.
+   * 2. Compare `(ino, mtimeNs, ctimeNs, size)` with old entries — match → reuse hash.
    * 3. Re-hash only changed files via `hashFilesBulk`.
    * 4. Compute aggregate digest with the manager's seed.
    * 5. Store new entries internally for {@link write}.
@@ -279,7 +279,13 @@ export class FileHashCache {
         continue; // stat failed → zero hash (buffer already zeroed)
       }
       const cached = oldMap?.get(filePaths[i]);
-      if (cached && cached.ino === s.ino && cached.mtimeMs === s.mtimeMs && cached.size === s.size) {
+      if (
+        cached &&
+        cached.ino === s.ino &&
+        cached.mtimeNs === s.mtimeNs &&
+        cached.ctimeNs === s.ctimeNs &&
+        cached.size === s.size
+      ) {
         hashes.set(cached.hash, i * 16);
       } else {
         toHash.push(filePaths[i]);
@@ -305,9 +311,10 @@ export class FileHashCache {
     for (let i = 0; i < n; i++) {
       const s = stats[i];
       entries[i] = {
-        ino: s?.ino ?? 0,
-        mtimeMs: s?.mtimeMs ?? 0,
-        size: s?.size ?? 0,
+        ino: s?.ino ?? 0n,
+        mtimeNs: s?.mtimeNs ?? 0n,
+        ctimeNs: s?.ctimeNs ?? 0n,
+        size: s?.size ?? 0n,
         hash: hashes.subarray(i * 16, (i + 1) * 16),
       };
     }

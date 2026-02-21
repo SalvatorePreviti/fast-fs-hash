@@ -1,12 +1,23 @@
 /**
- * Binary format v6 — constants, header parsing, entry/path/item
+ * Binary format v7 — constants, header parsing, entry/path/item
  * serialization and deserialization, stat helpers.
+ *
+ * ### Changes from v6
+ *
+ * - Entry stride widened from 40 → 48 bytes.
+ * - `stat.ino`, `stat.mtimeNs`, `stat.ctimeNs`, `stat.size` stored as
+ *   **u64 LE** (BigInt) instead of f64.  This gives lossless nanosecond
+ *   timestamps and catches inode-metadata changes that `mtimeMs` alone
+ *   could miss.
+ * - `ctimeNs` added — inode change-time updates on chmod, chown,
+ *   rename, hard-link swaps, and any content write, even when mtime
+ *   is preserved.
  *
  * ### Binary layout
  *
  * ```
  * Header (64 bytes, cache-line aligned):
- *   [0..3]   Magic (u32 LE): 0x06485346 — bytes 'F','S','H', 0x06
+ *   [0..3]   Magic (u32 LE): 0x07485346 — bytes 'F','S','H', 0x07
  *   [4..6]   User version (u24 LE): 0–16 777 215
  *   [7]      Flags (u8): reserved, must be 0
  *   [8..11]  Entry count (u32 LE)
@@ -21,16 +32,17 @@
  *
  * Section offsets (all computable from header fields — O(1)):
  *   Entries:   64
- *   Paths:     64 + entryCount × 40
- *   Raw data:  64 + entryCount × 40 + pathsLen
- *   Gzip data: 64 + entryCount × 40 + pathsLen + rawDataLen
+ *   Paths:     64 + entryCount × 48
+ *   Raw data:  64 + entryCount × 48 + pathsLen
+ *   Gzip data: 64 + entryCount × 48 + pathsLen + rawDataLen
  *
- * Entries section (fixed stride, entryCount × 40 bytes):
- *   Per entry (40 bytes):
- *     [0..7]   stat.ino (f64 LE)
- *     [8..15]  stat.mtimeMs (f64 LE)
- *     [16..23] stat.size (f64 LE)
- *     [24..39] Content hash (16 bytes xxHash3-128)
+ * Entries section (fixed stride, entryCount × 48 bytes):
+ *   Per entry (48 bytes):
+ *     [0..7]   stat.ino (u64 LE)
+ *     [8..15]  stat.mtimeNs (u64 LE) — nanosecond precision
+ *     [16..23] stat.ctimeNs (u64 LE) — nanosecond precision
+ *     [24..31] stat.size (u64 LE)
+ *     [32..47] Content hash (16 bytes xxHash3-128)
  *
  * Paths section (null-separated UTF-8, byte length in header [44..47]):
  *   Each path is terminated by \0.  Count must equal entryCount.
@@ -57,14 +69,14 @@ import type { FileHashCacheDataValue } from "./types";
 
 // ── Constants ────────────────────────────────────────────────────────────
 
-/** Binary format magic: bytes 'F','S','H', 0x06 → 0x06485346 (u32 LE). */
-export const MAGIC = 0x06485346;
+/** Binary format magic: bytes 'F','S','H', 0x07 → 0x07485346 (u32 LE). */
+export const MAGIC = 0x07485346;
 
 /** Fixed header size in bytes (one cache line). */
 export const HEADER_SIZE = 64;
 
-/** Fixed byte size of each file entry (3×f64 + 16-byte hash). */
-export const ENTRY_STRIDE = 40;
+/** Fixed byte size of each file entry (4×u64 + 16-byte hash). */
+export const ENTRY_STRIDE = 48;
 
 /** Default stat() concurrency limit. */
 export const STAT_CONCURRENCY = 64;
@@ -82,9 +94,10 @@ export const EMPTY = new Uint8Array(0);
 // ── Internal types ───────────────────────────────────────────────────────
 
 export interface CacheEntry {
-  ino: number;
-  mtimeMs: number;
-  size: number;
+  ino: bigint;
+  mtimeNs: bigint;
+  ctimeNs: bigint;
+  size: bigint;
   hash: Uint8Array;
 }
 
@@ -102,9 +115,10 @@ export interface ParsedHeader {
 }
 
 export interface StatResult {
-  ino: number;
-  mtimeMs: number;
-  size: number;
+  ino: bigint;
+  mtimeNs: bigint;
+  ctimeNs: bigint;
+  size: bigint;
 }
 
 // ── Header parsing ───────────────────────────────────────────────────────
@@ -166,7 +180,7 @@ export function gzipDataOffset(entryCount: number, pathsLen: number, rawDataLen:
 
 // ── Entry parsing ────────────────────────────────────────────────────────
 
-/** Parse fixed-stride entries into a map keyed by path index. */
+/** Parse fixed-stride entries into an array. */
 export function parseEntriesArray(buf: Uint8Array, offset: number, count: number): CacheEntry[] {
   const entries: CacheEntry[] = new Array(count);
   const v = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
@@ -174,10 +188,11 @@ export function parseEntriesArray(buf: Uint8Array, offset: number, count: number
 
   for (let i = 0; i < count; i++) {
     entries[i] = {
-      ino: v.getFloat64(off, true),
-      mtimeMs: v.getFloat64(off + 8, true),
-      size: v.getFloat64(off + 16, true),
-      hash: Buffer.from(buf.subarray(off + 24, off + 40)),
+      ino: v.getBigUint64(off, true),
+      mtimeNs: v.getBigUint64(off + 8, true),
+      ctimeNs: v.getBigUint64(off + 16, true),
+      size: v.getBigUint64(off + 24, true),
+      hash: Buffer.from(buf.subarray(off + 32, off + 48)),
     };
     off += ENTRY_STRIDE;
   }
@@ -296,10 +311,11 @@ export function serializeCache(
   let off = HEADER_SIZE;
   for (let i = 0; i < n; i++) {
     const e = entries[i];
-    v.setFloat64(off, e.ino, true);
-    v.setFloat64(off + 8, e.mtimeMs, true);
-    v.setFloat64(off + 16, e.size, true);
-    buf.set(e.hash, off + 24);
+    v.setBigUint64(off, e.ino, true);
+    v.setBigUint64(off + 8, e.mtimeNs, true);
+    v.setBigUint64(off + 16, e.ctimeNs, true);
+    v.setBigUint64(off + 24, e.size, true);
+    buf.set(e.hash, off + 32);
     off += ENTRY_STRIDE;
   }
 
@@ -428,7 +444,7 @@ export function parseItems(data: Uint8Array, offset: number, count: number): Fil
 
 // ── stat helpers ─────────────────────────────────────────────────────────
 
-/** stat() all files with bounded concurrency. */
+/** stat() all files with bounded concurrency, using bigint for nanosecond precision. */
 export async function statAll(paths: string[]): Promise<(StatResult | null)[]> {
   const n = paths.length;
   const results = new Array<StatResult | null>(n);
@@ -441,8 +457,8 @@ export async function statAll(paths: string[]): Promise<(StatResult | null)[]> {
         break;
       }
       try {
-        const s = await fsStat(paths[i]);
-        results[i] = { ino: s.ino, mtimeMs: s.mtimeMs, size: s.size };
+        const s = await fsStat(paths[i], { bigint: true });
+        results[i] = { ino: s.ino, mtimeNs: s.mtimeNs, ctimeNs: s.ctimeNs, size: s.size };
       } catch {
         results[i] = null;
       }

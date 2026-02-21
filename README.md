@@ -24,14 +24,14 @@ Hashing **705 files** (~24 MiB total) via `hashFilesBulk`:
 
 Results from Node.js v22.22.0, Vitest 4.x:
 
-| Scenario                          | Mean    | Throughput | Relative         |
-| --------------------------------- | ------- | ---------- | ---------------- |
-| native (hashFilesBulk)            | 4.2 ms  | 6.0 GB/s   | **10.2× faster** |
-| native (hashFilesBulk + per file) | 4.2 ms  | 5.9 GB/s   | **10.2× faster** |
-| WASM (hashFilesBulk)              | 13.2 ms | 1.9 GB/s   | **3.2× faster**  |
-| WASM (hashFilesBulk + per file)   | 13.3 ms | 1.9 GB/s   | **3.2× faster**  |
-| Node.js crypto (md5)              | 42.5 ms | 0.6 GB/s   | **1.0× faster**  |
-| Node.js crypto (md5, per file)    | 42.6 ms | 0.6 GB/s   | baseline         |
+| Scenario                          | Mean    | Throughput | Relative        |
+| --------------------------------- | ------- | ---------- | --------------- |
+| native (hashFilesBulk)            | 4.8 ms  | 5.1 GB/s   | **8.7× faster** |
+| native (hashFilesBulk + per file) | 5.1 ms  | 4.8 GB/s   | **8.2× faster** |
+| WASM (hashFilesBulk + per file)   | 12.8 ms | 1.9 GB/s   | **3.3× faster** |
+| WASM (hashFilesBulk)              | 12.9 ms | 1.9 GB/s   | **3.2× faster** |
+| Node.js crypto (md5)              | 41.4 ms | 0.6 GB/s   | **1.0× faster** |
+| Node.js crypto (md5, per file)    | 41.8 ms | 0.6 GB/s   | baseline        |
 
 _Results vary by hardware, file sizes, and OS cache state._
 

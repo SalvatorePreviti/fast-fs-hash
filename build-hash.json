@@ -1,11 +1,11 @@
 {
   "_description": "SHA-256 hashes of build artifacts and source code. Regenerated on every build.",
-  "generatedAt": "2026-02-21T19:02:37.955Z",
+  "generatedAt": "2026-02-21T19:54:02.334Z",
   "distArtifacts": {
     "index.cjs": {
-      "sha256": "11e9e5acc0685256ee5528e2ef6170c88471d8d68c5ea2fa34cb29917eb96bb6",
-      "bytes": 49811,
-      "lines": 1470
+      "sha256": "9fbd71bfbb2f835f9468cd3b5123fbefa43a87b2f874dff28a161b92c3312377",
+      "bytes": 50426,
+      "lines": 1482
     },
     "index.d.cts": {
       "sha256": "97e1818573679b5d3d697406abd3e5f1e9cd00da1f2783ab236912180462f5be",
@@ -13,8 +13,8 @@
       "lines": 2
     },
     "index.d.ts": {
-      "sha256": "b36bbb54c75514828dd61a66e5fa3b65d04130b1eb6115a14d47adbeb404925d",
-      "bytes": 23822,
+      "sha256": "4ffe2e6c8cb2417c6bf402f9880cf68a157d13ccb7ab53b268be29e24bcb6fdf",
+      "bytes": 23831,
       "lines": 612
     },
     "index.mjs": {
@@ -33,14 +33,14 @@
     "files": 31,
     "ts": {
       "file-cache/file-hash-cache.ts": {
-        "sha256": "742ebef5998bd6e97ea9e4b19bedfc79602e2339dbc794f4e86da2a2a322edaf",
-        "bytes": 15911,
-        "lines": 491
+        "sha256": "d5e1458308556497157f279a5be94617b628b793b101ca2b995ab0f7d5a06e09",
+        "bytes": 16038,
+        "lines": 498
       },
       "file-cache/format.ts": {
-        "sha256": "579ffe44f5ad07c38eb3d2333b0cd7fd8fc0644dc4fb27d088198faefcad38be",
-        "bytes": 14456,
-        "lines": 460
+        "sha256": "6fe9337c4ff4cf34f37b10a74b718de3ce1473b95cbd50b89fa4a044332f5774",
+        "bytes": 15214,
+        "lines": 476
       },
       "file-cache/manager.ts": {
         "sha256": "88db10a150acc6ea9b95770a37a3dd9b2b83e81ad34be86497111fed8a1cc2bb",
@@ -68,9 +68,9 @@
         "lines": 37
       },
       "native.ts": {
-        "sha256": "7eeb3974a647bbe8812d0bb5e7cd92e9469accc76e2e00f55c661fafca77cf5e",
-        "bytes": 2906,
-        "lines": 103
+        "sha256": "be9151ae83c83d2c7838296f054249a4212ad99a78b6d07a93f588abe971ef9e",
+        "bytes": 3395,
+        "lines": 116
       },
       "types.ts": {
         "sha256": "d61a190efee837f1f6e9fd8f998365a1d6458270f48626b33f4a9fa934530fa8",
@@ -155,9 +155,9 @@
         "lines": 21
       },
       "includes.h": {
-        "sha256": "86dfde79d8ba85c3d4ad61031d4bfc3a9acb729665a102a3e8a972c7beab0447",
-        "bytes": 3571,
-        "lines": 113
+        "sha256": "1c98ce44449402b2b00c83a1134c623c2976effb30fdfcbecc804e30e058b4fd",
+        "bytes": 3575,
+        "lines": 114
       }
     },
     "xxhash": {

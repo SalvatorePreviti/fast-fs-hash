@@ -47,6 +47,12 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Delay between file modifications to guarantee mtime changes.
+ * Windows NTFS can have coarser effective mtime granularity in CI.
+ */
+const MTIME_DELAY = process.platform === "win32" ? 300 : 50;
+
 // ── Manager Tests ────────────────────────────────────────────────────────
 
 describe("FileHashCacheManager", () => {
@@ -143,7 +149,7 @@ describe("FileHashCache", () => {
       await reader.write();
     }
 
-    await sleep(50);
+    await sleep(MTIME_DELAY);
     writeFileSync(fileA(), "no-arg modified\n");
 
     {
@@ -154,7 +160,7 @@ describe("FileHashCache", () => {
       expect(r2.rehashed).toBeGreaterThanOrEqual(1);
     }
 
-    await sleep(50);
+    await sleep(MTIME_DELAY);
     writeFileSync(fileA(), "hello world\n");
   });
 
@@ -184,7 +190,7 @@ describe("FileHashCache", () => {
       await reader.write();
     }
 
-    await sleep(50);
+    await sleep(MTIME_DELAY);
     writeFileSync(fileA(), "modified content\n");
 
     {
@@ -196,7 +202,7 @@ describe("FileHashCache", () => {
       expect(r2.digest.toString("hex")).not.toBe(oldDigest);
     }
 
-    await sleep(50);
+    await sleep(MTIME_DELAY);
     writeFileSync(fileA(), "hello world\n");
   });
 
@@ -213,7 +219,7 @@ describe("FileHashCache", () => {
       await reader.write();
     }
 
-    await sleep(50);
+    await sleep(MTIME_DELAY);
     writeFileSync(fileA(), "temporary change\n");
 
     {
@@ -224,7 +230,7 @@ describe("FileHashCache", () => {
       await reader.write();
     }
 
-    await sleep(50);
+    await sleep(MTIME_DELAY);
     writeFileSync(fileA(), "hello world\n");
 
     {
@@ -711,7 +717,7 @@ describe("FileHashCache", () => {
       await reader.write();
     }
 
-    await sleep(50);
+    await sleep(MTIME_DELAY);
     writeFileSync(fileA(), "changed after serialize\n");
 
     {
@@ -722,7 +728,7 @@ describe("FileHashCache", () => {
       expect(r2.rehashed).toBeGreaterThanOrEqual(1);
     }
 
-    await sleep(50);
+    await sleep(MTIME_DELAY);
     writeFileSync(fileA(), "hello world\n");
   });
 
@@ -1372,7 +1378,7 @@ describe("FileHashCache", () => {
 
       // Total file = header + entries + paths + raw + gzip
       const diskBuf = readFileSync(fp);
-      expect(diskBuf.length).toBe(64 + hdr.entryCount * 40 + hdr.pathsLen + hdr.rawDataLen + hdr.gzipDataLen);
+      expect(diskBuf.length).toBe(64 + hdr.entryCount * 48 + hdr.pathsLen + hdr.rawDataLen + hdr.gzipDataLen);
     }
   });
 
@@ -1450,7 +1456,7 @@ describe("FileHashCache", () => {
     }
 
     // Cycle 2: modify one file — only that file rehashed
-    await sleep(50);
+    await sleep(MTIME_DELAY);
     writeFileSync(fileB(), "modified B\n");
 
     {
@@ -1471,7 +1477,7 @@ describe("FileHashCache", () => {
       expect(r3.rehashed).toBe(0);
     }
 
-    await sleep(50);
+    await sleep(MTIME_DELAY);
     writeFileSync(fileB(), "goodbye world\n");
   });
 

@@ -51,7 +51,7 @@ const FIXTURE_PER_FILE: Record<string, string> = {
 const ALL_COMBINED = "7ee7d0543ef1f9dab996f42490a51f13";
 
 const EXPECTED_HEX_ARRAY = ALL_FIXTURE_FILES.map((f) => {
-  const name = path.relative(FIXTURE_DIR, f);
+  const name = path.relative(FIXTURE_DIR, f).replaceAll("\\", "/");
   return FIXTURE_PER_FILE[name];
 });
 
