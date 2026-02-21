@@ -104,7 +104,9 @@ export function loadNativeXXHash128(): NativeXXHash128Constructor | null {
         return (require(candidate) as NativeBindingExport).XXHash128;
       }
       const parent = dirname(dir);
-      if (parent === dir) break;
+      if (parent === dir) {
+        break;
+      }
       dir = parent;
     }
   } catch {
