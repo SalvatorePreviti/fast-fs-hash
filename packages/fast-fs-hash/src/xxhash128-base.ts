@@ -144,13 +144,11 @@ export abstract class XXHash128Base {
    * @returns A `Buffer` (or the provided `buffer` when one is given).
    */
   public static async hashFilesBulk<T extends Uint8Array>(
-    options: HashFilesBulkOptions<T> & { outputBuffer: T },
+    options: HashFilesBulkOptions<T> & { outputBuffer: T }
   ): Promise<T>;
   public static async hashFilesBulk(options: HashFilesBulkOptions): Promise<Buffer>;
   /** @internal */
-  public static async hashFilesBulk(
-    _options: HashFilesBulkOptions<Uint8Array>,
-  ): Promise<Buffer | Uint8Array> {
+  public static async hashFilesBulk(_options: HashFilesBulkOptions<Uint8Array>): Promise<Buffer | Uint8Array> {
     return notInitialized();
   }
 
@@ -374,7 +372,7 @@ export abstract class XXHash128Base {
  */
 export async function _hashFilesBulkImpl(
   Ctor: XXHash128Ctor,
-  options: HashFilesBulkOptions<Uint8Array>,
+  options: HashFilesBulkOptions<Uint8Array>
 ): Promise<Buffer | Uint8Array> {
   const {
     files,
@@ -398,7 +396,7 @@ export async function _hashFilesBulkImpl(
   if (outputBuffer) {
     if (outputOffset + resultSize > outputBuffer.byteLength) {
       throw new RangeError(
-        `hashFilesBulk: outputBuffer too small (need ${resultSize} bytes at offset ${outputOffset}, have ${outputBuffer.byteLength})`,
+        `hashFilesBulk: outputBuffer too small (need ${resultSize} bytes at offset ${outputOffset}, have ${outputBuffer.byteLength})`
       );
     }
     let writeOff = outputOffset;
@@ -425,4 +423,3 @@ export async function _hashFilesBulkImpl(
   result.set(fileHashes, 16);
   return result;
 }
-

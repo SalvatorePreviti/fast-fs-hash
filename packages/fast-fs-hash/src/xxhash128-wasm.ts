@@ -230,12 +230,10 @@ export class XXHash128Wasm extends XXHash128Base {
 
   /** @inheritdoc */
   public static override async hashFilesBulk<T extends Uint8Array>(
-    options: HashFilesBulkOptions<T> & { outputBuffer: T },
+    options: HashFilesBulkOptions<T> & { outputBuffer: T }
   ): Promise<T>;
   public static override async hashFilesBulk(options: HashFilesBulkOptions): Promise<Buffer>;
-  public static override async hashFilesBulk(
-    options: HashFilesBulkOptions<Uint8Array>,
-  ): Promise<Buffer | Uint8Array> {
+  public static override async hashFilesBulk(options: HashFilesBulkOptions<Uint8Array>): Promise<Buffer | Uint8Array> {
     return _hashFilesBulkImpl(XXHash128Wasm, options);
   }
 

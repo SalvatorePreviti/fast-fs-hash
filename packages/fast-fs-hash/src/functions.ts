@@ -59,6 +59,37 @@ export function encodeFilePaths(paths: Iterable<string>): Buffer {
 }
 
 /**
+ * Iterate file paths from a null-separated buffer without allocating an array.
+ *
+ * Same semantics as {@link decodeFilePaths} — each `\0` byte is a separator,
+ * empty segments are yielded as empty strings, a trailing `\0` is stripped —
+ * but yields one path at a time so the caller never holds all strings at once.
+ */
+export function* iterateFilePaths(buf: Uint8Array): Generator<string, void, undefined> {
+  const len = buf.length;
+  if (len === 0) {
+    return;
+  }
+
+  let segStart = 0;
+
+  for (let i = 0; i < len; i++) {
+    if (buf[i] === 0) {
+      if (i > segStart) {
+        yield bufferFrom(buf.buffer, buf.byteOffset + segStart, i - segStart).toString("utf-8");
+      } else {
+        yield "";
+      }
+      segStart = i + 1;
+    }
+  }
+  // Trailing segment (no final \0)
+  if (segStart < len) {
+    yield bufferFrom(buf.buffer, buf.byteOffset + segStart, len - segStart).toString("utf-8");
+  }
+}
+
+/**
  * Decode a null-separated path buffer into an array of strings.
  *
  * Each `\0` byte is a path separator. Empty segments (consecutive `\0`

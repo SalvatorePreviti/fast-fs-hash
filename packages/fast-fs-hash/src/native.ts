@@ -25,7 +25,12 @@ export interface NativeXXHash128Instance {
   digestTo(output: Buffer, offset: number): void;
   reset(): void;
   updateFilesBulk(pathsBuf: Uint8Array, concurrency: number): Promise<Buffer>;
-  updateFilesBulk(pathsBuf: Uint8Array, concurrency: number, outputBuf: Uint8Array, outputOffset: number): Promise<null>;
+  updateFilesBulk(
+    pathsBuf: Uint8Array,
+    concurrency: number,
+    outputBuf: Uint8Array,
+    outputOffset: number
+  ): Promise<null>;
   updateFilesBulkAggregate(pathsBuf: Uint8Array, concurrency: number): Promise<null>;
   updateFile(path: string): Promise<void>;
 }
@@ -37,7 +42,13 @@ export interface NativeXXHash128Instance {
 export interface NativeXXHash128Constructor {
   new (seedLow: number, seedHigh: number): NativeXXHash128Instance;
   hash(data: Buffer, offset: number, length: number, seedLow: number, seedHigh: number): Buffer;
-  hashFilesBulk(pathsBuf: Uint8Array, concurrency: number, seedLow: number, seedHigh: number, mode: number): Promise<Buffer>;
+  hashFilesBulk(
+    pathsBuf: Uint8Array,
+    concurrency: number,
+    seedLow: number,
+    seedHigh: number,
+    mode: number
+  ): Promise<Buffer>;
 }
 
 /** Shape of the native binding export. */

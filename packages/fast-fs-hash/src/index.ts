@@ -19,9 +19,18 @@
  * @module
  */
 
-export { decodeFilePaths, encodeFilePaths, hashesToHexArray, hashToHex } from "./functions";
+export { FileHashCache } from "./file-cache/file-hash-cache";
+export { FileHashCacheManager } from "./file-cache/manager";
+export type {
+  FileHashCacheDataValue,
+  FileHashCacheHeaderInfo,
+  FileHashCacheManagerOptions,
+  FileHashCacheValidateResult,
+  FileHashCacheWriteOptions,
+} from "./file-cache/types";
+export { decodeFilePaths, encodeFilePaths, hashesToHexArray, hashToHex, iterateFilePaths } from "./functions";
 export type { HashInput } from "./types";
 export { XXHash128 } from "./xxhash128";
-export type { XXHash128LibraryStatus, HashFilesBulkOptions, HashFilesBulkOutputMode } from "./xxhash128-base";
+export type { HashFilesBulkOptions, HashFilesBulkOutputMode, XXHash128LibraryStatus } from "./xxhash128-base";
 export { XXHash128Base } from "./xxhash128-base";
 export { XXHash128Wasm } from "./xxhash128-wasm";
