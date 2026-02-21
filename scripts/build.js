@@ -93,8 +93,8 @@ async function generateTypeDeclarations() {
   rmSync(tmpDir, { recursive: true, force: true });
 
   try {
-    // Step 1: Emit .d.ts via tsc
-    await execAsync(`npx tsc -p tsconfig.json --emitDeclarationOnly --declarationMap false --outDir "${tmpDir}"`, {
+    // Step 1: Emit .d.ts via tsc (uses tsconfig.build.json which only includes src/)
+    await execAsync(`npx tsc -p ${JSON.stringify(resolve(rootDir, "tsconfig.build.json"))}`, {
       cwd: pkgDir,
     }).catch((err) => {
       const msg = (err.stdout || err.stderr || err.message || "").trim();
@@ -156,6 +156,8 @@ console.time("Build completed");
 await Promise.all([buildESMBundle(), buildCJSBundle()]);
 copyFileSync(resolve(srcDir, "xxhash128.wasm"), resolve(distDir, "xxhash128.wasm"));
 console.log("Copied xxhash128.wasm to dist/");
+copyFileSync(resolve(rootDir, "NOTICES.md"), resolve(pkgDir, "NOTICES.md"));
+console.log("Copied NOTICES.md to package dir");
 await generateTypeDeclarations();
 
 // Only inject for CI/publish — controlled by env var

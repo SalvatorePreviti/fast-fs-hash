@@ -4,7 +4,7 @@
  *  - XXHash128 (native backend, falls back to WASM)
  *
  * Verifies: init, static hash, streaming, reset, digestTo, updateFile,
- * hashFiles, seed support, determinism, error handling, libraryStatus,
+ * updateFilesBulk, seed support, determinism, error handling, libraryStatus,
  * and cross-implementation byte-compatibility.
  *
  * Every hash assertion checks the exact expected hex value to catch
@@ -32,8 +32,6 @@ const H_HELLO_WORLD_LF = "eefac9d87100cd1336b2e733a5484425";
 const H_GOODBYE_WORLD_LF = "472e10c9821c728278f31afb08378f2f";
 /** hash("second input") */
 const H_SECOND_INPUT = "3ee0a1fa1aee88446d7fc964fd741cee";
-/** hash("test") */
-const H_TEST = "6c78e0e3bd51d358d01e758642b85fb8";
 /** hash("deterministic test input") */
 const H_DETERMINISTIC = "d4eda7f49d59fcbd3b2a44403aa95841";
 /** hash("alphabetagammadelta") — streaming: alpha + beta + gamma + delta */
@@ -52,11 +50,11 @@ const H_HW_SEED_MAX = "81b1c25a11865b660e073134928addc0";
 /** hash("test", seed 0xffffffff, 0xffffffff) */
 const H_TEST_SEED_MAX = "6cc7cd132e2ff1eeac22e8e10a24ee1d";
 
-/** hashFiles([a,b]) combined digest */
+/** updateFilesBulk([a,b]) combined digest */
 const HF_AB_COMBINED = "14cb7b529dbb3358999291d5315f9ec8";
-/** hashFiles([b,a]) combined digest */
+/** updateFilesBulk([b,a]) combined digest */
 const HF_BA_COMBINED = "b96712ebc4252558f427015fab836b59";
-/** hashFiles([a, missing]) combined digest */
+/** updateFilesBulk([a, missing]) combined digest */
 const HF_A_MISSING_COMBINED = "3bd4a3acde4c43af41d10b55b7dcc098";
 /** Zero hash (unreadable / missing file) */
 const H_ZERO = "0".repeat(32);
@@ -288,70 +286,55 @@ describe.each(implementations)("%s", (_name, Hasher) => {
   // ── updateFile ─────────────────────────────────────────────────────
 
   describe("updateFile()", () => {
-    it("reads a single file and feeds contents into hash", async () => {
+    it("reads a single file and feeds raw content into state", async () => {
       const h = new Hasher();
-      const count = await h.updateFile(fileA());
-      expect(count).toBe(1);
-      expect(h.digest().toString("hex")).toBe(Hasher.hash("hello world\n").toString("hex"));
+      await h.updateFile(fileA());
+      // updateFile feeds raw content — same as update("hello world\n")
+      expect(h.digest().toString("hex")).toBe(H_HELLO_WORLD_LF);
     });
 
-    it("reads multiple files in order", async () => {
+    it("throws on non-existent file", async () => {
       const h = new Hasher();
-      const count = await h.updateFile([fileA(), fileB()]);
-      expect(count).toBe(2);
-
-      const h2 = new Hasher();
-      h2.update("hello world\n");
-      h2.update("goodbye world\n");
-      expect(h.digest().toString("hex")).toBe(h2.digest().toString("hex"));
-    });
-
-    it("skips non-existent files and returns correct count", async () => {
-      const h = new Hasher();
-      const count = await h.updateFile([fileA(), "/no/such/file.txt", fileB()]);
-      expect(count).toBe(2);
-    });
-
-    it("returns 0 for empty array", async () => {
-      const h = new Hasher();
-      const count = await h.updateFile([]);
-      expect(count).toBe(0);
-      expect(h.digest().toString("hex")).toBe(H_EMPTY);
+      await expect(h.updateFile("/no/such/file.txt")).rejects.toThrow();
     });
 
     it("handles empty files", async () => {
       const h = new Hasher();
-      const count = await h.updateFile(fileEmpty());
-      expect(count).toBe(1);
+      await h.updateFile(fileEmpty());
+      // Empty file → update with empty content → hash of ""
       expect(h.digest().toString("hex")).toBe(H_EMPTY);
     });
 
-    it("accepts a single path string", async () => {
+    it("sequential updateFile matches streaming update", async () => {
       const h = new Hasher();
-      const count = await h.updateFile(fileA());
-      expect(count).toBe(1);
-      expect(h.digest().toString("hex")).toBe(Hasher.hash("hello world\n").toString("hex"));
+      await h.updateFile(fileA());
+      await h.updateFile(fileB());
+      // Equivalent to update("hello world\n") then update("goodbye world\n")
+      const expected = new Hasher();
+      expected.update("hello world\n");
+      expected.update("goodbye world\n");
+      expect(h.digest().toString("hex")).toBe(expected.digest().toString("hex"));
     });
   });
 
-  // ── hashFiles ──────────────────────────────────────────────────────
+  // ── updateFilesBulk ────────────────────────────────────────────────
 
-  describe("hashFiles()", () => {
+  describe("updateFilesBulk()", () => {
     it("produces correct combined digest", async () => {
       const h = new Hasher();
-      await h.hashFiles([fileA(), fileB()]);
+      await h.updateFilesBulk([fileA(), fileB()]);
       expect(h.digest().toString("hex")).toBe(HF_AB_COMBINED);
     });
 
     it("returns null when allFiles is falsy", async () => {
       const h = new Hasher();
-      const result = await h.hashFiles([fileA()]);
+      const result = await h.updateFilesBulk([fileA()]);
       expect(result).toBeNull();
     });
 
     it("returns correct per-file hashes when allFiles=true", async () => {
       const h = new Hasher();
-      const result = await h.hashFiles([fileA(), fileB()], true);
+      const result = await h.updateFilesBulk([fileA(), fileB()], true);
       expect(result).not.toBeNull();
       expect(hashesToHexArray(result as Uint8Array)).toEqual([H_HELLO_WORLD_LF, H_GOODBYE_WORLD_LF]);
       expect(h.digest().toString("hex")).toBe(HF_AB_COMBINED);
@@ -360,7 +343,7 @@ describe.each(implementations)("%s", (_name, Hasher) => {
     it("writes per-file hashes into provided Uint8Array", async () => {
       const h = new Hasher();
       const out = new Uint8Array(2 * 16);
-      const result = await h.hashFiles([fileA(), fileB()], out);
+      const result = await h.updateFilesBulk([fileA(), fileB()], out);
       expect(result).toBe(out);
       expect(hashesToHexArray(out)).toEqual([H_HELLO_WORLD_LF, H_GOODBYE_WORLD_LF]);
     });
@@ -368,46 +351,46 @@ describe.each(implementations)("%s", (_name, Hasher) => {
     it("writes per-file hashes into provided Buffer", async () => {
       const h = new Hasher();
       const out = Buffer.alloc(2 * 16);
-      const result = await h.hashFiles([fileA(), fileB()], out);
+      const result = await h.updateFilesBulk([fileA(), fileB()], out);
       expect(result).toBe(out);
       expect(hashesToHexArray(out)).toEqual([H_HELLO_WORLD_LF, H_GOODBYE_WORLD_LF]);
     });
 
     it("throws if provided buffer is too small", async () => {
       const h = new Hasher();
-      await expect(h.hashFiles([fileA(), fileB()], Buffer.alloc(8))).rejects.toThrow(RangeError);
+      await expect(h.updateFilesBulk([fileA(), fileB()], Buffer.alloc(8))).rejects.toThrow(RangeError);
     });
 
     it("empty file list returns empty Buffer with allFiles=true", async () => {
       const h = new Hasher();
-      const result = await h.hashFiles([], true);
+      const result = await h.updateFilesBulk([], true);
       expect(result).not.toBeNull();
       expect((result as Buffer).length).toBe(0);
     });
 
     it("empty file list returns null with allFiles=false", async () => {
       const h = new Hasher();
-      expect(await h.hashFiles([])).toBeNull();
+      expect(await h.updateFilesBulk([])).toBeNull();
     });
 
     it("unreadable files produce zero hashes", async () => {
       const h = new Hasher();
-      const result = await h.hashFiles([fileA(), "/no/such/file.txt"], true);
+      const result = await h.updateFilesBulk([fileA(), "/no/such/file.txt"], true);
       expect(hashesToHexArray(result as Uint8Array)).toEqual([H_HELLO_WORLD_LF, H_ZERO]);
       expect(h.digest().toString("hex")).toBe(HF_A_MISSING_COMBINED);
     });
 
     it("accepts Uint8Array of null-terminated paths", async () => {
       const h = new Hasher();
-      await h.hashFiles(encodeFilePaths([fileA(), fileB()]));
+      await h.updateFilesBulk(encodeFilePaths([fileA(), fileB()]));
       expect(h.digest().toString("hex")).toBe(HF_AB_COMBINED);
     });
 
     it("produces deterministic results", async () => {
       const h1 = new Hasher();
-      const pf1 = await h1.hashFiles([fileA(), fileB()], true);
+      const pf1 = await h1.updateFilesBulk([fileA(), fileB()], true);
       const h2 = new Hasher();
-      const pf2 = await h2.hashFiles([fileA(), fileB()], true);
+      const pf2 = await h2.updateFilesBulk([fileA(), fileB()], true);
       expect(h1.digest().toString("hex")).toBe(HF_AB_COMBINED);
       expect(h2.digest().toString("hex")).toBe(HF_AB_COMBINED);
       expect(hashesToHexArray(pf1 as Uint8Array)).toEqual(hashesToHexArray(pf2 as Uint8Array));
@@ -415,29 +398,29 @@ describe.each(implementations)("%s", (_name, Hasher) => {
 
     it("order matters", async () => {
       const h1 = new Hasher();
-      await h1.hashFiles([fileA(), fileB()]);
+      await h1.updateFilesBulk([fileA(), fileB()]);
       expect(h1.digest().toString("hex")).toBe(HF_AB_COMBINED);
 
       const h2 = new Hasher();
-      await h2.hashFiles([fileB(), fileA()]);
+      await h2.updateFilesBulk([fileB(), fileA()]);
       expect(h2.digest().toString("hex")).toBe(HF_BA_COMBINED);
     });
 
     it("per-file hashes are swapped when order is reversed", async () => {
       const h1 = new Hasher();
-      const ab = await h1.hashFiles([fileA(), fileB()], true);
+      const ab = await h1.updateFilesBulk([fileA(), fileB()], true);
       const h2 = new Hasher();
-      const ba = await h2.hashFiles([fileB(), fileA()], true);
+      const ba = await h2.updateFilesBulk([fileB(), fileA()], true);
       expect(hashesToHexArray(ab as Uint8Array)).toEqual([H_HELLO_WORLD_LF, H_GOODBYE_WORLD_LF]);
       expect(hashesToHexArray(ba as Uint8Array)).toEqual([H_GOODBYE_WORLD_LF, H_HELLO_WORLD_LF]);
     });
 
     it("concurrency=1 produces same result", async () => {
       const h1 = new Hasher();
-      await h1.hashFiles([fileA(), fileB()]);
+      await h1.updateFilesBulk([fileA(), fileB()]);
       const h2 = new Hasher();
       h2.concurrency = 1;
-      await h2.hashFiles([fileA(), fileB()]);
+      await h2.updateFilesBulk([fileA(), fileB()]);
       expect(h1.digest().toString("hex")).toBe(HF_AB_COMBINED);
       expect(h2.digest().toString("hex")).toBe(HF_AB_COMBINED);
     });
@@ -560,16 +543,17 @@ describe("Native ↔ WASM compatibility", () => {
   it("updateFile produces identical output", async () => {
     const hn = new XXHash128();
     const hw = new XXHash128Wasm();
-    await hn.updateFile([fileA(), fileB()]);
-    await hw.updateFile([fileA(), fileB()]);
-    expect(hn.digest().toString("hex")).toBe(hw.digest().toString("hex"));
+    await hn.updateFile(fileA());
+    await hw.updateFile(fileA());
+    expect(hn.digest().toString("hex")).toBe(H_HELLO_WORLD_LF);
+    expect(hw.digest().toString("hex")).toBe(H_HELLO_WORLD_LF);
   });
 
-  it("hashFiles produces identical combined and per-file output", async () => {
+  it("updateFilesBulk produces identical combined and per-file output", async () => {
     const hn = new XXHash128();
-    const nPerFile = await hn.hashFiles([fileA(), fileB()], true);
+    const nPerFile = await hn.updateFilesBulk([fileA(), fileB()], true);
     const hw = new XXHash128Wasm();
-    const wPerFile = await hw.hashFiles([fileA(), fileB()], true);
+    const wPerFile = await hw.updateFilesBulk([fileA(), fileB()], true);
 
     expect(hn.digest().toString("hex")).toBe(HF_AB_COMBINED);
     expect(hw.digest().toString("hex")).toBe(HF_AB_COMBINED);

@@ -11,7 +11,7 @@
  * await XXHash128.init();
  *
  * const h = new XXHash128();
- * await h.hashFiles(["/src/index.ts", "/src/utils.ts"], true);
+ * await h.updateFilesBulk(["/src/index.ts", "/src/utils.ts"], true);
  * console.log(h.digest().toString("hex"));
  * ```
  *

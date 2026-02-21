@@ -10,10 +10,11 @@
  *     small/         — 200 files,  512 B – 4 KiB each
  *     medium/        — 150 files,  4 KiB – 64 KiB each
  *     large/         — 50 files,  64 KiB – 256 KiB each
+ *     xlarge/        — 4 files,   1 MiB each
  *     mixed/         — 100 files,   0 B  – 128 KiB each (some empty)
  *     list.json      — sorted array of all relative paths (including itself)
  *
- * Total: ~700 files, deterministic content seeded from file index.
+ * Total: ~704 files, deterministic content seeded from file index.
  *
  * Run:  node test/bench/generate-raw-data.cjs
  */
@@ -69,6 +70,7 @@ const DIRS = [
   { name: "small", count: 200, minSize: 512, maxSize: 4096 },
   { name: "medium", count: 150, minSize: 4096, maxSize: 65536 },
   { name: "large", count: 50, minSize: 65536, maxSize: 262144 },
+  { name: "xlarge", count: 4, minSize: 1048576, maxSize: 1048577 },
   { name: "mixed", count: 100, minSize: 0, maxSize: 131072 },
 ];
 

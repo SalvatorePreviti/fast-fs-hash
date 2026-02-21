@@ -1,8 +1,7 @@
+#pragma once
+
 #include "includes.h"
-#include "hasher.h"
 #include "FileHandle.h"
-#include "PathIndex.h"
-#include "thread-spawner.h"
 
 namespace fast_fs_hash {
 
@@ -15,12 +14,15 @@ namespace fast_fs_hash {
    *  and to avoid false sharing between threads writing adjacent slots. */
   static constexpr size_t OUTPUT_ALIGNMENT = 64;
 
+  /** Maximum thread count (maximum number of processors supported) */
+  static constexpr int MAX_STACK_THREADS = 24;
+
   /**
    * Large-file streaming hash — cold path, kept out-of-line to minimize
    * icache pressure in the hot single-read loop.  The XXH3_state_t (576 B)
    * lives only on this frame, not on the hot-path stack.
    */
-  static void hash_large_file(unsigned char * rbuf, size_t initial_bytes, FileHandle & file, uint8_t * dest) {
+  FSH_NO_INLINE static void hash_large_file(unsigned char * rbuf, size_t initial_bytes, FileHandle & file, uint8_t * dest) {
     XXH3_state_t state;
     XXH3_128bits_reset(&state);
     XXH3_128bits_update(&state, rbuf, initial_bytes);
@@ -43,6 +45,32 @@ namespace fast_fs_hash {
     const size_t file_count;
     std::atomic<size_t> & next_index;
     uint8_t * output_data;
+
+    /** Hash all files in parallel: spawns N-1 threads + uses calling thread. */
+    static void run(const char * const * segments, size_t file_count, uint8_t * output, int concurrency) {
+      int hw = static_cast<int>(std::thread::hardware_concurrency());
+      if (FSH_UNLIKELY(hw <= 2)) {
+        hw = 2;
+      }
+      int tc = concurrency > 0 ? concurrency : hw * 2;
+      if (FSH_UNLIKELY(tc > MAX_STACK_THREADS)) {
+        tc = MAX_STACK_THREADS;
+      }
+      if (static_cast<size_t>(tc) > file_count) {
+        tc = static_cast<int>(file_count);
+      }
+
+      std::atomic<size_t> next_index{0};
+      HashFilesWorker worker{segments, file_count, next_index, output};
+
+      const int spawned = tc - 1;
+      std::thread threads[MAX_STACK_THREADS];
+      for (int i = 0; i < spawned; ++i)
+        threads[i] = std::thread(worker);
+      worker();  // calling thread does work too
+      for (int i = 0; i < spawned; ++i)
+        threads[i].join();
+    }
 
     void operator()() const {
       alignas(64) unsigned char rbuf[READ_BUFFER_SIZE];
@@ -82,21 +110,5 @@ namespace fast_fs_hash {
       }
     }
   };
-
-  size_t hash_files(const uint8_t * paths_buf, size_t paths_len, int concurrency, uint8_t *& output) {
-    PathIndex paths(paths_buf, paths_len);
-    const size_t file_count = paths.count;
-
-    if (FSH_LIKELY(file_count > 0)) {
-      if (!output) {
-        output = static_cast<uint8_t *>(aligned_malloc(OUTPUT_ALIGNMENT, file_count * 16));
-      }
-      std::atomic<size_t> next_index{0};
-      HashFilesWorker worker{paths.segments, file_count, next_index, output};
-      spawn_workers(concurrency, file_count, worker);
-    }
-
-    return file_count;
-  }
 
 }  // namespace fast_fs_hash

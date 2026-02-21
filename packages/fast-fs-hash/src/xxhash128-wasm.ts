@@ -14,8 +14,9 @@ import { XXHash128Base } from "./xxhash128-base";
 
 // ── WASM types ───────────────────────────────────────────────────────────
 
-/** Maximum data chunk the WASM I/O buffer can hold at once (16 KiB). */
-const MAX_HEAP = 16 * 1024;
+/** Maximum data chunk the WASM I/O buffer can hold at once (16 KiB).
+ *  This is a hard limit set by the compiled WASM module's internal buffer. */
+const WASM_BUF_SIZE = 16 * 1024;
 
 /** WASM exports shape. */
 interface WasmExports {
@@ -33,6 +34,7 @@ interface WasmState {
   readonly ex: WasmExports;
   readonly mem: Uint8Array;
   readonly bufOffset: number;
+  readonly stateSize: number;
 }
 
 /** Instance shape when WASM methods are active on the prototype. */
@@ -77,12 +79,14 @@ function createWasmState(): WasmState {
   }
   const instance = new WA.Instance(_wasmModule);
   const ex = instance.exports as unknown as WasmExports;
-  return { ex, mem: new Uint8Array(ex.memory.buffer, ex.Hash_GetBuffer(), MAX_HEAP), bufOffset: ex.Hash_GetBuffer() };
-}
-
-function getStateSize(ex: WasmExports): number {
   const s = ex.STATE_SIZE;
-  return typeof s === "number" ? s : s.value;
+  const bufOffset = ex.Hash_GetBuffer();
+  return {
+    ex,
+    mem: new Uint8Array(ex.memory.buffer, bufOffset, WASM_BUF_SIZE),
+    bufOffset,
+    stateSize: typeof s === "number" ? s : s.value,
+  };
 }
 
 /** Set up WASM instance state on any XXHash128Base instance. */
@@ -114,21 +118,28 @@ function wasmUpdate(this: WasmInstance, input: HashInput, inputOffset?: number, 
   const { mem, ex } = this._wasm;
   let read = 0;
   while (read < length) {
-    const chunk = Math.min(length - read, MAX_HEAP);
+    const chunk = Math.min(length - read, WASM_BUF_SIZE);
     mem.set(buf.subarray(offset + read, offset + read + chunk));
     ex.Hash_Update(chunk);
     read += chunk;
   }
 }
 
-function wasmDigest(this: WasmInstance): Buffer {
-  const { ex } = this._wasm;
+/** Save state, finalize, execute callback, restore state. */
+function wasmFinalizeWithRestore(wasm: WasmState, fn: (bufOffset: number, memBuf: ArrayBuffer) => void): void {
+  const { ex, stateSize } = wasm;
   const stateOffset = ex.Hash_GetState();
-  const stateSize = getStateSize(ex);
   const saved = new Uint8Array(ex.memory.buffer, stateOffset, stateSize).slice();
   ex.Hash_Final();
-  const result = Buffer.from(this._wasm.mem.slice(0, 16));
+  fn(wasm.bufOffset, ex.memory.buffer);
   new Uint8Array(ex.memory.buffer, stateOffset, stateSize).set(saved);
+}
+
+function wasmDigest(this: WasmInstance): Buffer {
+  let result!: Buffer;
+  wasmFinalizeWithRestore(this._wasm, (bufOffset, memBuf) => {
+    result = Buffer.from(new Uint8Array(memBuf, bufOffset, 16).slice());
+  });
   return result;
 }
 
@@ -137,16 +148,57 @@ function wasmDigestTo(this: WasmInstance, output: Uint8Array, outputOffset?: num
   if (off + 16 > output.byteLength) {
     throw new RangeError("digestTo: output buffer too small (need 16 bytes)");
   }
-  const { ex, bufOffset } = this._wasm;
-  const stateOffset = ex.Hash_GetState();
-  const stateSize = getStateSize(ex);
-  const saved = new Uint8Array(ex.memory.buffer, stateOffset, stateSize).slice();
-  ex.Hash_Final();
-  output.set(new Uint8Array(ex.memory.buffer, bufOffset, 16), off);
-  new Uint8Array(ex.memory.buffer, stateOffset, stateSize).set(saved);
+  wasmFinalizeWithRestore(this._wasm, (bufOffset, memBuf) => {
+    output.set(new Uint8Array(memBuf, bufOffset, 16), off);
+  });
 }
 
 // ── Prototype patching ───────────────────────────────────────────────────
+
+/**
+ * Optimized batch file hasher for the WASM backend.
+ *
+ * Accesses WASM linear memory directly — avoids method dispatch,
+ * state save/restore (destructive finalize), and per-file object creation.
+ * Creates ONE WASM instance for the entire batch, with pre-allocated
+ * TypedArray views that produce zero garbage per file.
+ */
+function wasmHashFileBuffers(this: unknown, buffers: (Buffer | null)[], hashes: Uint8Array): void {
+  const ws = createWasmState();
+  const { ex, mem, bufOffset } = ws;
+  const memBuf = ex.memory.buffer;
+  const seedDv = new DataView(memBuf, bufOffset);
+  const digestView = new Uint8Array(memBuf, bufOffset, 16);
+
+  for (let i = 0; i < buffers.length; i++) {
+    const data = buffers[i];
+    if (data == null) {
+      continue;
+    }
+
+    // Reset — inline seed write + init (no DataView recreation)
+    seedDv.setUint32(0, 0, true);
+    seedDv.setUint32(4, 0, true);
+    ex.Hash_Init();
+
+    // Update — copy chunks directly into WASM linear memory
+    if (data.length > 0) {
+      let read = 0;
+      const len = data.length;
+      while (read < len) {
+        const remain = len - read;
+        const n = remain < WASM_BUF_SIZE ? remain : WASM_BUF_SIZE;
+        mem.set(data.subarray(read, read + n));
+        ex.Hash_Update(n);
+        read += n;
+      }
+    }
+
+    // Finalize — destructive (no state save/restore — next iteration resets)
+    ex.Hash_Final();
+    hashes.set(digestView, i * 16);
+  }
+}
 
 function patchBaseWithWasm(): void {
   const proto = XXHash128Base.prototype;
@@ -154,6 +206,7 @@ function patchBaseWithWasm(): void {
   Object.defineProperty(proto, "update", { value: wasmUpdate, writable: true, configurable: true });
   Object.defineProperty(proto, "digest", { value: wasmDigest, writable: true, configurable: true });
   Object.defineProperty(proto, "digestTo", { value: wasmDigestTo, writable: true, configurable: true });
+  Object.defineProperty(proto, "_hashFileBuffers", { value: wasmHashFileBuffers, writable: true, configurable: true });
 }
 
 // ── XXHash128Wasm class ──────────────────────────────────────────────────

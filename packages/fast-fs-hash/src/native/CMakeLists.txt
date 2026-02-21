@@ -19,9 +19,9 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 include(FetchContent)
 FetchContent_Declare(
     xxHash
-    GIT_REPOSITORY https://github.com/Cyan4973/xxHash.git
-    GIT_TAG        v0.8.3
-    GIT_SHALLOW    TRUE
+    URL        https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.3.tar.gz
+    URL_HASH   SHA256=aae608dfe8213dfd05d909a57718ef82f30722c392344583d3f39050c7f29a80
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     EXCLUDE_FROM_ALL
 )
 # We only need the xxhash.h header, not xxHash's own build targets.
@@ -54,7 +54,7 @@ include_directories(${xxhash_SOURCE_DIR})
 
 add_library(${PROJECT_NAME} SHARED
     binding.cpp
-    hasher.cpp
+    InstanceHashWorker.cpp
     ${CMAKE_JS_SRC}
 )
 

@@ -7,16 +7,35 @@
  */
 
 import { execSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const rootDir = resolve(import.meta.dirname, "..");
 
 const BENCH_JSON = resolve(rootDir, "test", "tmp", "bench-output.json");
 const README = resolve(rootDir, "README.md");
+const RAW_DATA_DIR = resolve(rootDir, "test", "bench", "raw-data");
+const LIST_JSON_PATH = resolve(RAW_DATA_DIR, "list.json");
 
 const BENCHMARKS_START = "<!-- BENCHMARKS:START -->";
 const BENCHMARKS_END = "<!-- BENCHMARKS:END -->";
+
+// ── Benchmark data size ──────────────────────────────────────────────────────
+
+/** Compute total bytes of the benchmark fixture files. */
+function getBenchmarkTotalBytes() {
+  if (!existsSync(LIST_JSON_PATH)) {
+    return 0;
+  }
+  const list = JSON.parse(readFileSync(LIST_JSON_PATH, "utf8"));
+  let total = 0;
+  for (const rel of list) {
+    try {
+      total += statSync(resolve(RAW_DATA_DIR, rel)).size;
+    } catch {}
+  }
+  return total;
+}
 
 // ── Formatting helpers ───────────────────────────────────────────────────────
 
@@ -64,7 +83,7 @@ function findBenchesInGroup(data, groupSubstring) {
   const results = [];
   for (const file of data.files ?? []) {
     for (const group of file.groups ?? []) {
-      if (group.fullName && group.fullName.includes(groupSubstring)) {
+      if (group.fullName?.includes(groupSubstring)) {
         for (const b of group.benchmarks ?? []) {
           if (b.mean != null) {
             results.push(b);
@@ -81,7 +100,7 @@ function findBenchesInGroup(data, groupSubstring) {
 // ── Section builders ─────────────────────────────────────────────────────────
 
 /** Build a comparison table for a set of benchmarks (slowest = baseline). */
-function buildComparisonTable(benches) {
+function buildComparisonTable(benches, totalBytes) {
   if (benches.length === 0) {
     return ["_No benchmark data available._"];
   }
@@ -90,10 +109,13 @@ function buildComparisonTable(benches) {
   const rows = benches.map((b) => {
     const speedup = baseline.mean / b.mean;
     const relative = b === baseline ? "baseline" : `**${fmt(speedup, 1)}× faster**`;
-    return [b.name, `${fmt(b.mean, 1)} ms`, fmt(b.hz, 1), relative];
+    // Throughput in GB/s: totalBytes / mean_ms * 1000 / 1e9
+    const gbps = totalBytes > 0 ? ((totalBytes / b.mean) * 1000) / 1e9 : 0;
+    const gbpsStr = totalBytes > 0 ? `${gbps.toFixed(1)} GB/s` : "—";
+    return [b.name, `${fmt(b.mean, 1)} ms`, gbpsStr, relative];
   });
 
-  return [markdownTable(["Scenario", "Mean", "Throughput (hz)", "Relative"], rows)];
+  return [markdownTable(["Scenario", "Mean", "Throughput", "Relative"], rows)];
 }
 
 // ── README update ────────────────────────────────────────────────────────────
@@ -120,11 +142,12 @@ function updateReadme(content) {
 const benchData = runBenchmarks();
 
 const benches = findBenchesInGroup(benchData, "hashFiles");
+const totalBytes = getBenchmarkTotalBytes();
 
 const sections = [
   `Results from Node.js ${process.version}, Vitest ${benchData.version ?? "4.x"}:`,
   "",
-  ...buildComparisonTable(benches),
+  ...buildComparisonTable(benches, totalBytes),
   "",
   "_Results vary by hardware, file sizes, and OS cache state._",
 ];

@@ -19,7 +19,9 @@
     }
   },
   "files": [
+    "package.json",
     "LICENSE",
+    "NOTICES.md",
     "dist/index.mjs",
     "dist/index.d.ts",
     "dist/index.cjs",

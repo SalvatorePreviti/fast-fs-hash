@@ -1,5 +1,5 @@
 /**
- * Tests for hashFiles with persistent fixtures (test/fixtures/hash-fixture/).
+ * Tests for updateFilesBulk with persistent fixtures (test/fixtures/hash-fixture/).
  * These fixtures are checked into git and never change, so we can hard-code
  * the expected hash values.
  *
@@ -79,13 +79,13 @@ describe.each(implementations)("%s — persistent fixtures", (_name, Hasher) => 
 
   it("7 files combined digest", async () => {
     const h = new Hasher();
-    await h.hashFiles(ALL_FIXTURE_FILES);
+    await h.updateFilesBulk(ALL_FIXTURE_FILES);
     expect(h.digest().toString("hex")).toBe(ALL_COMBINED);
   });
 
   it("7 files per-file hashes", async () => {
     const h = new Hasher();
-    const pf = await h.hashFiles(ALL_FIXTURE_FILES, true);
+    const pf = await h.updateFilesBulk(ALL_FIXTURE_FILES, true);
     expect(h.digest().toString("hex")).toBe(ALL_COMBINED);
     expect(hashesToHexArray(pf as Uint8Array)).toEqual(EXPECTED_HEX_ARRAY);
   });
@@ -93,7 +93,7 @@ describe.each(implementations)("%s — persistent fixtures", (_name, Hasher) => 
   it("7 files per-file into pre-allocated Buffer", async () => {
     const h = new Hasher();
     const out = Buffer.alloc(ALL_FIXTURE_FILES.length * 16);
-    const result = await h.hashFiles(ALL_FIXTURE_FILES, out);
+    const result = await h.updateFilesBulk(ALL_FIXTURE_FILES, out);
     expect(result).toBe(out);
     expect(hashesToHexArray(out)).toEqual(EXPECTED_HEX_ARRAY);
     expect(h.digest().toString("hex")).toBe(ALL_COMBINED);
@@ -104,7 +104,7 @@ describe.each(implementations)("%s — persistent fixtures", (_name, Hasher) => 
   for (const [name, expected] of Object.entries(FIXTURE_PER_FILE)) {
     it(`individual file: ${name}`, async () => {
       const h = new Hasher();
-      const pf = await h.hashFiles([fp(name)], true);
+      const pf = await h.updateFilesBulk([fp(name)], true);
       expect(hashesToHexArray(pf as Uint8Array)).toEqual([expected]);
     });
   }
@@ -113,21 +113,21 @@ describe.each(implementations)("%s — persistent fixtures", (_name, Hasher) => 
 
   it("subset: a.txt + b.txt", async () => {
     const h = new Hasher();
-    const pf = await h.hashFiles([fp("a.txt"), fp("b.txt")], true);
+    const pf = await h.updateFilesBulk([fp("a.txt"), fp("b.txt")], true);
     expect(hashesToHexArray(pf as Uint8Array)).toEqual([FIXTURE_PER_FILE["a.txt"], FIXTURE_PER_FILE["b.txt"]]);
     expect(h.digest().toString("hex")).toBe("14cb7b529dbb3358999291d5315f9ec8");
   });
 
   it("subset: b.txt + a.txt (reversed)", async () => {
     const h = new Hasher();
-    const pf = await h.hashFiles([fp("b.txt"), fp("a.txt")], true);
+    const pf = await h.updateFilesBulk([fp("b.txt"), fp("a.txt")], true);
     expect(hashesToHexArray(pf as Uint8Array)).toEqual([FIXTURE_PER_FILE["b.txt"], FIXTURE_PER_FILE["a.txt"]]);
     expect(h.digest().toString("hex")).toBe("b96712ebc4252558f427015fab836b59");
   });
 
   it("subset: a.txt + b.txt + subdir/c.txt", async () => {
     const h = new Hasher();
-    const pf = await h.hashFiles([fp("a.txt"), fp("b.txt"), fp("subdir/c.txt")], true);
+    const pf = await h.updateFilesBulk([fp("a.txt"), fp("b.txt"), fp("subdir/c.txt")], true);
     expect(hashesToHexArray(pf as Uint8Array)).toEqual([
       FIXTURE_PER_FILE["a.txt"],
       FIXTURE_PER_FILE["b.txt"],
@@ -140,7 +140,7 @@ describe.each(implementations)("%s — persistent fixtures", (_name, Hasher) => 
 
   it("missing file produces zero hash in per-file output", async () => {
     const h = new Hasher();
-    const pf = await h.hashFiles([fp("a.txt"), "/no/such/file.txt"], true);
+    const pf = await h.updateFilesBulk([fp("a.txt"), "/no/such/file.txt"], true);
     expect(hashesToHexArray(pf as Uint8Array)).toEqual([FIXTURE_PER_FILE["a.txt"], H_ZERO]);
     expect(h.digest().toString("hex")).toBe("3bd4a3acde4c43af41d10b55b7dcc098");
   });
@@ -149,7 +149,7 @@ describe.each(implementations)("%s — persistent fixtures", (_name, Hasher) => 
 
   it("empty list with allFiles=true returns empty buffer", async () => {
     const h = new Hasher();
-    const pf = await h.hashFiles([], true);
+    const pf = await h.updateFilesBulk([], true);
     expect(pf).not.toBeNull();
     expect((pf as Buffer).length).toBe(0);
   });
@@ -158,7 +158,7 @@ describe.each(implementations)("%s — persistent fixtures", (_name, Hasher) => 
 
   it("single empty file", async () => {
     const h = new Hasher();
-    const pf = await h.hashFiles([fp("empty.txt")], true);
+    const pf = await h.updateFilesBulk([fp("empty.txt")], true);
     expect(hashesToHexArray(pf as Uint8Array)).toEqual([FIXTURE_PER_FILE["empty.txt"]]);
     expect(h.digest().toString("hex")).toBe("88dffc9e4422ed4caabe9acf44c07a05");
   });
@@ -169,7 +169,7 @@ describe.each(implementations)("%s — persistent fixtures", (_name, Hasher) => 
     const results: string[] = [];
     for (let i = 0; i < 5; i++) {
       const h = new Hasher();
-      await h.hashFiles(ALL_FIXTURE_FILES);
+      await h.updateFilesBulk(ALL_FIXTURE_FILES);
       results.push(h.digest().toString("hex"));
     }
     for (const r of results) {
@@ -184,17 +184,17 @@ describe("Native ↔ WASM — persistent fixtures", () => {
   it("combined digest matches", async () => {
     const hn = new XXHash128();
     const hw = new XXHash128Wasm();
-    await hn.hashFiles(ALL_FIXTURE_FILES);
-    await hw.hashFiles(ALL_FIXTURE_FILES);
+    await hn.updateFilesBulk(ALL_FIXTURE_FILES);
+    await hw.updateFilesBulk(ALL_FIXTURE_FILES);
     expect(hn.digest().toString("hex")).toBe(ALL_COMBINED);
     expect(hw.digest().toString("hex")).toBe(ALL_COMBINED);
   });
 
   it("all per-file hashes match", async () => {
     const hn = new XXHash128();
-    const nPf = await hn.hashFiles(ALL_FIXTURE_FILES, true);
+    const nPf = await hn.updateFilesBulk(ALL_FIXTURE_FILES, true);
     const hw = new XXHash128Wasm();
-    const wPf = await hw.hashFiles(ALL_FIXTURE_FILES, true);
+    const wPf = await hw.updateFilesBulk(ALL_FIXTURE_FILES, true);
     const nHex = hashesToHexArray(nPf as Uint8Array);
     const wHex = hashesToHexArray(wPf as Uint8Array);
     expect(nHex).toEqual(EXPECTED_HEX_ARRAY);

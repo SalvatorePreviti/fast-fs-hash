@@ -94,6 +94,33 @@ describe("encodeFilePaths", () => {
     expect(buf.length).toBe(1);
     expect(buf[0]).toBe(0);
   });
+
+  it("accepts a Set of paths", () => {
+    const buf = encodeFilePaths(new Set(["/a.txt", "/b.txt"]));
+    const decoded = decodeFilePaths(buf);
+    expect(decoded).toEqual(["/a.txt", "/b.txt"]);
+  });
+
+  it("accepts an empty Set", () => {
+    const buf = encodeFilePaths(new Set<string>());
+    expect(buf.length).toBe(0);
+  });
+
+  it("accepts a generator", () => {
+    function* paths() {
+      yield "/x.txt";
+      yield "/y.txt";
+    }
+    const buf = encodeFilePaths(paths());
+    const decoded = decodeFilePaths(buf);
+    expect(decoded).toEqual(["/x.txt", "/y.txt"]);
+  });
+
+  it("accepts a Set with \\0-containing paths", () => {
+    const buf = encodeFilePaths(new Set(["/ok.txt", "bad\0path", "/also-ok.txt"]));
+    const expected = Buffer.from("/ok.txt\0\0/also-ok.txt\0");
+    expect(buf.equals(expected)).toBe(true);
+  });
 });
 
 describe("decodeFilePaths", () => {

@@ -7,7 +7,7 @@
  * @module
  */
 
-import { bufferAlloc, bufferAllocUnsafe, bufferByteLength, bufferFrom, isBuffer } from "./helpers";
+import { bufferAlloc, bufferAllocUnsafe, bufferByteLength, bufferFrom } from "./helpers";
 
 // ── File path encoding / decoding ────────────────────────────────────────
 
@@ -22,8 +22,9 @@ import { bufferAlloc, bufferAllocUnsafe, bufferByteLength, bufferFrom, isBuffer 
  * Two-pass for minimal allocation: first computes total length,
  * then writes everything into a single pre-allocated buffer.
  */
-export function encodeFilePaths(paths: string[]): Buffer {
-  const n = paths.length;
+export function encodeFilePaths(paths: Iterable<string>): Buffer {
+  const arr = Array.isArray(paths) ? paths : Array.from(paths);
+  const n = arr.length;
   if (n === 0) {
     return bufferAlloc(0);
   }
@@ -32,7 +33,7 @@ export function encodeFilePaths(paths: string[]): Buffer {
   let totalLen = 0;
   let firstNullAt = -1;
   for (let i = 0; i < n; i++) {
-    const p = paths[i];
+    const p = arr[i];
     if (p.length > 0) {
       if (p.indexOf("\0") !== -1) {
         if (firstNullAt < 0) {
@@ -49,7 +50,7 @@ export function encodeFilePaths(paths: string[]): Buffer {
   const out = bufferAllocUnsafe(totalLen);
   let offset = 0;
   for (let i = 0; i < n; i++) {
-    const p = paths[i];
+    const p = arr[i];
     if (p.length > 0 && (firstNullAt < 0 || i < firstNullAt || p.indexOf("\0") === -1)) {
       offset += out.write(p, offset, "utf-8");
     }
@@ -96,8 +97,17 @@ export function decodeFilePaths(buf: Uint8Array): string[] {
 
 // ── Hash buffer utilities ────────────────────────────────────────────────
 
+// Pre-computed hex lookup table (0x00–0xff → "00"–"ff").
+const HEX_TABLE: string[] = new Array<string>(256);
+for (let i = 0; i < 256; i++) {
+  HEX_TABLE[i] = (i < 16 ? "0" : "") + i.toString(16);
+}
+
 /**
  * Split a buffer of concatenated 16-byte hashes into an array of hex strings.
+ *
+ * Uses a pre-computed lookup table for direct byte→hex conversion,
+ * avoiding Buffer.toString("hex") overhead and subarray allocation per hash.
  *
  * @param hashes A `Uint8Array` or `Buffer` whose length is a multiple of 16.
  * @returns Array of lowercase hex strings, one per 16-byte hash.
@@ -106,9 +116,25 @@ export function hashesToHexArray(hashes: Uint8Array): string[] {
   const len = hashes.length;
   const count = len >>> 4; // len / 16
   const result = new Array<string>(count);
-  const buf = isBuffer(hashes) ? hashes : bufferFrom(hashes.buffer, hashes.byteOffset, hashes.byteLength);
   for (let i = 0; i < count; i++) {
-    result[i] = buf.subarray(i * 16, i * 16 + 16).toString("hex");
+    const off = i << 4;
+    result[i] =
+      HEX_TABLE[hashes[off]] +
+      HEX_TABLE[hashes[off + 1]] +
+      HEX_TABLE[hashes[off + 2]] +
+      HEX_TABLE[hashes[off + 3]] +
+      HEX_TABLE[hashes[off + 4]] +
+      HEX_TABLE[hashes[off + 5]] +
+      HEX_TABLE[hashes[off + 6]] +
+      HEX_TABLE[hashes[off + 7]] +
+      HEX_TABLE[hashes[off + 8]] +
+      HEX_TABLE[hashes[off + 9]] +
+      HEX_TABLE[hashes[off + 10]] +
+      HEX_TABLE[hashes[off + 11]] +
+      HEX_TABLE[hashes[off + 12]] +
+      HEX_TABLE[hashes[off + 13]] +
+      HEX_TABLE[hashes[off + 14]] +
+      HEX_TABLE[hashes[off + 15]];
   }
   return result;
 }

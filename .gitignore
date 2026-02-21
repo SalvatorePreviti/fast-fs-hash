@@ -8,3 +8,4 @@ dist-types-tmp/
 packages/*/dist/
 test/bench/raw-data/
 test/tmp/
+_tmp_*

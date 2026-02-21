@@ -12,10 +12,12 @@
  */
 
 import { readFile as fsReadFile } from "node:fs/promises";
-import { availableParallelism } from "node:os";
+import { types as utilTypes } from "node:util";
 import { decodeFilePaths } from "./functions";
 import { bufferAlloc, notInitialized } from "./helpers";
 import type { HashInput } from "./types";
+
+const { isUint8Array } = utilTypes;
 
 // ── Public types ─────────────────────────────────────────────────────────
 
@@ -33,6 +35,18 @@ export type XXHash128Ctor = new (seedLow: number, seedHigh: number) => XXHash128
  * Core methods (`update`, `digest`, `reset`) throw by default.
  * After a subclass `init()` call patches the prototypes, instances
  * created from any concrete subclass will work.
+ *
+ * **File hashing methods:**
+ *
+ * - {@link updateFile} — read one file and feed its **raw content** into
+ *   the streaming state. Equivalent to `update(await readFile(path))`.
+ *
+ * - {@link updateFilesBulk} — hash many files in parallel using a
+ *   **two-level scheme**: each file is hashed individually (XXH3-128,
+ *   seed 0) to produce a 16-byte per-file hash; all per-file hashes are
+ *   then concatenated in order and fed as one block into the streaming
+ *   state. This enables multi-threaded I/O + hashing while keeping the
+ *   aggregate deterministic.
  */
 export abstract class XXHash128Base {
   /** @internal — Lower 32 bits of the seed. */
@@ -116,70 +130,39 @@ export abstract class XXHash128Base {
   // ── Higher-level methods (use core primitives) ─────────────────────
 
   /**
-   * Read one or more files and feed their contents into the hasher.
+   * Read a single file and feed its **raw content** directly into the hasher.
    *
-   * Files are processed **in the order given** so the resulting hash
-   * is deterministic. When {@link concurrency} allows parallel reads,
-   * files are read concurrently but fed in order. Files that cannot be
-   * opened are silently skipped.
+   * Unlike {@link updateFilesBulk}, this does **not** compute a per-file hash.
+   * The file bytes are fed directly into the streaming state, so:
    *
-   * @param path A single path or array of paths.
-   * @returns The number of files successfully read and fed into the hasher.
+   * ```ts
+   * await h.updateFile("a.txt");
+   * // is equivalent to:
+   * h.update(await readFile("a.txt"));
+   * ```
+   *
+   * @param path  Path to the file to read.
+   * @throws If the file cannot be read (ENOENT, EPERM, etc.).
    */
-  public async updateFile(path: string | string[]): Promise<number> {
-    const paths = typeof path === "string" ? [path] : path;
-    if (paths.length === 0) {
-      return 0;
-    }
-
-    const maxLanes = this.concurrency > 0 ? this.concurrency : availableParallelism();
-    const lanes = Math.min(maxLanes, paths.length);
-
-    // Read all files concurrently, storing contents.
-    const results: (Buffer | null)[] = new Array<Buffer | null>(paths.length).fill(null);
-    let cursor = 0;
-
-    const reader = async (): Promise<void> => {
-      for (;;) {
-        const idx = cursor++;
-        if (idx >= paths.length) {
-          break;
-        }
-        try {
-          results[idx] = await fsReadFile(paths[idx]);
-        } catch {
-          // Unreadable files remain null
-        }
-      }
-    };
-
-    const workers = new Array<Promise<void>>(lanes);
-    for (let i = 0; i < lanes; i++) {
-      workers[i] = reader();
-    }
-    await Promise.all(workers);
-
-    // Feed in order, counting successes.
-    let count = 0;
-    for (let i = 0; i < paths.length; i++) {
-      const data = results[i];
-      if (data !== null) {
-        if (data.length > 0) {
-          this.update(data, 0, data.length);
-        }
-        count++;
-      }
-    }
-    return count;
+  public async updateFile(path: string): Promise<void> {
+    const content = await fsReadFile(path);
+    this.update(content);
   }
 
   /**
-   * Hash files and feed per-file hashes into this hasher's state.
+   * Hash files in parallel and feed per-file hashes into this hasher's state.
    *
-   * Each file is hashed individually (xxHash3-128, seed 0). The resulting
-   * 16-byte per-file hash is then fed into **this** instance via
-   * {@link update} as one contiguous block, so the combined digest
-   * accumulates all files.
+   * **Two-level hashing:** Each file is hashed individually with XXH3-128
+   * (seed 0) producing a 16-byte per-file hash. All per-file hashes are
+   * then concatenated in order and fed as one contiguous block into
+   * **this** instance's streaming state via {@link update}.
+   *
+   * This approach enables parallel file hashing (using {@link concurrency}
+   * threads in the native backend) while keeping the aggregate deterministic
+   * regardless of I/O scheduling.
+   *
+   * Files that cannot be read (ENOENT, EPERM, etc.) produce 16 zero bytes,
+   * matching a zeroed hash slot.
    *
    * Uses {@link concurrency} to control parallelism (0 = auto).
    *
@@ -187,20 +170,20 @@ export abstract class XXHash128Base {
    *              null-terminated UTF-8 paths.
    * @returns `null` (no per-file output).
    */
-  public async hashFiles(files: string[] | Uint8Array): Promise<null>;
+  public async updateFilesBulk(files: Iterable<string> | Uint8Array): Promise<null>;
 
   /**
-   * Hash files, feed per-file hashes into this hasher, and return
+   * Hash files in parallel, feed per-file hashes into this hasher, and return
    * a newly allocated `Buffer` of all per-file hashes (N × 16 bytes).
    *
    * @param files    File paths.
    * @param allFiles Pass `true` to allocate and return per-file hashes.
    * @returns New `Buffer` of `N × 16` bytes.
    */
-  public async hashFiles(files: string[] | Uint8Array, allFiles: true): Promise<Buffer>;
+  public async updateFilesBulk(files: Iterable<string> | Uint8Array, allFiles: true): Promise<Buffer>;
 
   /**
-   * Hash files, feed per-file hashes into this hasher, and write
+   * Hash files in parallel, feed per-file hashes into this hasher, and write
    * per-file hashes into the provided buffer.
    *
    * @param files        File paths.
@@ -209,19 +192,19 @@ export abstract class XXHash128Base {
    * @returns The same `output` buffer, typed generically.
    * @throws {RangeError} If the buffer is too small for `N × 16` bytes at the given offset.
    */
-  public async hashFiles<T extends Uint8Array>(
-    files: string[] | Uint8Array,
+  public async updateFilesBulk<T extends Uint8Array>(
+    files: Iterable<string> | Uint8Array,
     output: T,
     outputOffset?: number
   ): Promise<T>;
 
   /** Implementation. */
-  public async hashFiles(
-    files: string[] | Uint8Array,
+  public async updateFilesBulk(
+    files: Iterable<string> | Uint8Array,
     allFilesOrOutput?: boolean | Uint8Array,
     outputOffset?: number
   ): Promise<Buffer | Uint8Array | null> {
-    const paths = Array.isArray(files) ? files : decodeFilePaths(files);
+    const paths = isUint8Array(files) ? decodeFilePaths(files) : Array.from(files);
     const fileCount = paths.length;
 
     if (fileCount === 0) {
@@ -237,39 +220,32 @@ export abstract class XXHash128Base {
     // Single contiguous buffer for all per-file hashes (N × 16 bytes, zero-init).
     const hashes = bufferAlloc(fileCount * 16);
 
-    // Hash each file individually using parallel workers.
-    // Each worker reuses ONE hasher instance (reset between files) to avoid
-    // creating hundreds of WASM/native instances.
-    const Ctor = this.constructor as unknown as XXHash128Ctor;
-    const maxLanes = this.concurrency > 0 ? this.concurrency : availableParallelism();
-    const lanes = Math.min(maxLanes, fileCount);
-
+    // Phase 1: Read all files in parallel (I/O-bound — use high concurrency).
+    const ioLanes = Math.min(this.concurrency > 0 ? this.concurrency : 64, fileCount);
+    const buffers = new Array<Buffer | null>(fileCount);
     let cursor = 0;
-    const worker = async (): Promise<void> => {
-      const h = new Ctor(0, 0);
+    const reader = async (): Promise<void> => {
       for (;;) {
         const idx = cursor++;
         if (idx >= fileCount) {
           break;
         }
         try {
-          const data = await fsReadFile(paths[idx]);
-          h.reset();
-          if (data.length > 0) {
-            h.update(data, 0, data.length);
-          }
-          h.digestTo(hashes, idx * 16);
+          buffers[idx] = await fsReadFile(paths[idx]);
         } catch {
-          // Slot remains zeroed — unreadable files get zero hash
+          // Unreadable files remain null → zero hash
         }
       }
     };
-
-    const workers = new Array<Promise<void>>(lanes);
-    for (let i = 0; i < lanes; i++) {
-      workers[i] = worker();
+    const workers = new Array<Promise<void>>(ioLanes);
+    for (let i = 0; i < ioLanes; i++) {
+      workers[i] = reader();
     }
     await Promise.all(workers);
+
+    // Phase 2: Hash all files synchronously with a single hasher instance.
+    // Subclasses can override _hashFileBuffers for backend-specific optimizations.
+    this._hashFileBuffers(buffers, hashes);
 
     // Feed all per-file hashes into this instance as one contiguous block.
     this.update(hashes, 0, fileCount * 16);
@@ -283,12 +259,39 @@ export abstract class XXHash128Base {
       const needed = fileCount * 16;
       if (off + needed > allFilesOrOutput.byteLength) {
         throw new RangeError(
-          `hashFiles: output buffer too small (need ${needed} bytes at offset ${off}, have ${allFilesOrOutput.byteLength})`
+          `updateFilesBulk: output buffer too small (need ${needed} bytes at offset ${off}, have ${allFilesOrOutput.byteLength})`
         );
       }
       allFilesOrOutput.set(hashes, off);
       return allFilesOrOutput;
     }
     return null;
+  }
+
+  // ── Internal batch-hash helper (overridden by WASM for direct access) ──
+
+  /**
+   * Hash an array of pre-read file buffers and write 16-byte per-file
+   * hashes into the output array.
+   *
+   * The default implementation uses reset/update/digestTo.
+   * The WASM backend patches this with a zero-GC version that accesses
+   * WASM memory directly and skips state save/restore.
+   *
+   * @internal
+   */
+  public _hashFileBuffers(buffers: (Buffer | null)[], hashes: Uint8Array): void {
+    const Ctor = this.constructor as unknown as XXHash128Ctor;
+    const h = new Ctor(0, 0);
+    for (let i = 0; i < buffers.length; i++) {
+      const data = buffers[i];
+      if (data != null) {
+        h.reset();
+        if (data.length > 0) {
+          h.update(data, 0, data.length);
+        }
+        h.digestTo(hashes, i * 16);
+      }
+    }
   }
 }

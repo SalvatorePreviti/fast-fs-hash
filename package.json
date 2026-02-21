@@ -12,8 +12,8 @@
     "bench": "vitest bench",
     "update-benchmarks": "node scripts/update-benchmarks.js",
     "typecheck": "tsc --noEmit",
-    "lint": "npx @biomejs/biome check packages/ test/",
-    "lint:fix": "biome check packages/ test/ --write ."
+    "lint": "biome check .",
+    "lint:fix": "biome check --write ."
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.3",

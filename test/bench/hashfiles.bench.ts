@@ -1,5 +1,5 @@
 /**
- * Benchmark: hashFiles — native vs WASM vs Node.js crypto,
+ * Benchmark: updateFilesBulk — native vs WASM vs Node.js crypto,
  * with and without per-file output.
  *
  * Uses deterministic fixture files in test/bench/raw-data/.
@@ -53,7 +53,7 @@ async function rawNodeCryptoHash(files: string[], perFile: boolean): Promise<str
   return master.digest("hex");
 }
 
-describe("hashFiles", async () => {
+describe("updateFilesBulk", async () => {
   ensureRawData();
   const files = loadFileList();
   await XXHash128.init();
@@ -61,33 +61,33 @@ describe("hashFiles", async () => {
 
   bench("native", async () => {
     const h = new XXHash128();
-    await h.hashFiles(files);
+    await h.updateFilesBulk(files);
     h.digest();
   });
 
-  bench("WASM", async () => {
-    const h = new XXHash128Wasm();
-    await h.hashFiles(files);
-    h.digest();
-  });
+  // bench("WASM", async () => {
+  //   const h = new XXHash128Wasm();
+  //   await h.updateFilesBulk(files);
+  //   h.digest();
+  // });
 
-  bench("Node.js crypto (md5)", async () => {
-    await rawNodeCryptoHash(files, false);
-  });
+  // bench("Node.js crypto (md5)", async () => {
+  //   await rawNodeCryptoHash(files, false);
+  // });
 
-  bench("native (per file output)", async () => {
-    const h = new XXHash128();
-    await h.hashFiles(files, true);
-    h.digest();
-  });
+  // bench("native (per file output)", async () => {
+  //   const h = new XXHash128();
+  //   await h.updateFilesBulk(files, true);
+  //   h.digest();
+  // });
 
-  bench("WASM (per file output)", async () => {
-    const h = new XXHash128Wasm();
-    await h.hashFiles(files, true);
-    h.digest();
-  });
+  // bench("WASM (per file output)", async () => {
+  //   const h = new XXHash128Wasm();
+  //   await h.updateFilesBulk(files, true);
+  //   h.digest();
+  // });
 
-  bench("Node.js crypto (per file output)", async () => {
-    await rawNodeCryptoHash(files, true);
-  });
+  // bench("Node.js crypto (per file output)", async () => {
+  //   await rawNodeCryptoHash(files, true);
+  // });
 });

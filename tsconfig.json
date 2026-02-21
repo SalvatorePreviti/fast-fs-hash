@@ -17,6 +17,9 @@
     "noUnusedParameters": true,
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
+    "noEmit": true,
     "types": ["node"]
-  }
+  },
+  "include": ["packages/fast-fs-hash/src/**/*.ts", "test/**/*.ts", "scripts/**/*.js"],
+  "exclude": ["node_modules", "**/node_modules", "**/dist", "**/build"]
 }
