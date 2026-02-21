@@ -7,8 +7,8 @@
   "scripts": {
     "build": "node scripts/build.js",
     "build:all": "npm run build && npm run build:native",
-    "build:native": "cmake-js compile",
-    "build:native:release": "cmake-js compile --release",
+    "build:native": "cmake-js compile --out packages/fast-fs-hash/build",
+    "build:native:release": "cmake-js compile --release --out packages/fast-fs-hash/build",
     "test": "vitest run",
     "bench": "vitest bench",
     "update-benchmarks": "node scripts/update-benchmarks.js",

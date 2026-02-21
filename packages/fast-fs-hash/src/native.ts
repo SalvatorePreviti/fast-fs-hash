@@ -3,7 +3,7 @@
  *
  * Attempts to load the pre-built platform-specific `.node` addon from
  * optional dependency packages (e.g. `@fast-fs-hash/darwin-arm64`).
- * Falls back to a local development build at `build/Release/`.
+ * Falls back to a local development build at `../build/Release/`.
  *
  * Returns `null` when no native binding is available.
  *
@@ -11,7 +11,6 @@
  * @internal
  */
 
-import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -95,22 +94,14 @@ export function loadNativeXXHash128(): NativeXXHash128Constructor | null {
     }
   }
 
-  // Dev mode: walk up from this file to find the local build output
+  // Dev mode: load from the local cmake-js build output.
+  // The .node file lives at packages/fast-fs-hash/build/Release/fast_fs_hash.node,
+  // one level up from both src/ (vitest) and dist/ (bundled).
   try {
-    let dir = dirname(fileURLToPath(import.meta.url));
-    for (let i = 0; i < 6; i++) {
-      const candidate = resolve(dir, "build", "Release", "fast_fs_hash.node");
-      if (existsSync(candidate)) {
-        return (require(candidate) as NativeBindingExport).XXHash128;
-      }
-      const parent = dirname(dir);
-      if (parent === dir) {
-        break;
-      }
-      dir = parent;
-    }
+    const thisDir = dirname(fileURLToPath(import.meta.url));
+    return (require(resolve(thisDir, "..", "build", "Release", "fast_fs_hash.node")) as NativeBindingExport).XXHash128;
   } catch {
-    // Not in dev mode or build not available
+    // Build not available
   }
 
   return null;

@@ -12,8 +12,8 @@
 #   ARM64 — xxhash.c with NEON (always available on AArch64, auto-detected).
 #
 # Build:
-#   npx cmake-js compile
-#   npx cmake-js compile --release
+#   npm run build:native
+#   npm run build:native:release
 
 cmake_minimum_required(VERSION 3.15)
 project(fast_fs_hash LANGUAGES C CXX)

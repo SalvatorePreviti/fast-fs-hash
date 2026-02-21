@@ -446,6 +446,15 @@ export class FileHashCache {
 
     const outPath = options?.filePath ?? this.filePath;
     await mkdir(path.dirname(outPath), { recursive: true });
+
+    // Close the read handle before the atomic rename — Windows cannot
+    // replace a file that has an open handle.
+    const fh = this._fh;
+    if (fh) {
+      this._fh = null;
+      await fh.close();
+    }
+
     const tmp = `${outPath}.tmp-${process.pid}`;
     await fsWriteFile(tmp, buf);
     await rename(tmp, outPath);

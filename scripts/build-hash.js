@@ -39,18 +39,24 @@ async function findFiles(baseDir, pattern) {
   return results.sort();
 }
 
-/** Hash files and return { relPath: { sha256, bytes, lines } } with sorted keys. */
+/** Extensions treated as binary (no line count). */
+const BINARY_EXTENSIONS = new Set([".wasm", ".node"]);
+
+/** Hash files and return { relPath: { sha256, bytes, lines? } } with sorted keys. */
 async function hashFiles(baseDir, relPaths) {
   const result = {};
   for (const relPath of relPaths.sort()) {
     const absPath = path.resolve(baseDir, relPath);
     try {
       const content = await fs.promises.readFile(absPath);
-      result[relPath] = {
+      const entry = {
         sha256: crypto.createHash("sha256").update(content).digest("hex"),
         bytes: content.length,
-        lines: content.toString("utf8").split("\n").length,
       };
+      if (!BINARY_EXTENSIONS.has(path.extname(relPath))) {
+        entry.lines = content.toString("utf8").split("\n").length;
+      }
+      result[relPath] = entry;
     } catch {
       result[relPath] = null;
     }
@@ -111,7 +117,7 @@ function logFileDiffs(label, current, previous) {
   for (const relPath of Object.keys(current)) {
     const cur = current[relPath];
     const prev = previous?.[relPath];
-    const info = cur ? ` (${cur.bytes} bytes, ${cur.lines} lines)` : "";
+    const info = cur ? ` (${cur.bytes} bytes${cur.lines != null ? `, ${cur.lines} lines` : ""})` : "";
     if (!cur) {
       console.log(`    ${relPath}: missing`);
     } else if (!prev) {
@@ -199,8 +205,4 @@ export async function writeBuildHash() {
   }
 
   logFileDiffs("dist artifacts", distFiles, prev?.distArtifacts);
-  logFileDiffs("source/ts", tsFiles, prev?.source?.ts);
-  logFileDiffs("source/native", nativeFiles, prev?.source?.native);
-  logFileDiffs("source/xxhash", xxhashFiles, prev?.source?.xxhash);
-  logFileDiffs("source/cmake", cmakeFiles, prev?.source?.cmake);
 }

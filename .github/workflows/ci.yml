@@ -25,7 +25,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ── Lint, typecheck & test (JS-only fallback, no native build) ─────────
+  # ── Lint, typecheck & test ─────────────────────────────────────────────
   lint-and-test:
     name: Lint & Test (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
@@ -42,9 +42,11 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
-      - run: npx tsc --noEmit
+      - run: npm run typecheck
       - run: npm run build
+      - run: npm run build:native:release
       - run: npm test
+      - run: npm run bench
 
   # ── Build + test native addon for every platform ───────────────────────
   #
@@ -111,11 +113,11 @@ jobs:
 
       - name: Build native addon
         if: ${{ !matrix.use-docker && !matrix.target-arch }}
-        run: npx cmake-js compile --release
+        run: npm run build:native:release
 
       - name: Build native addon (cross-arch)
         if: ${{ matrix.target-arch }}
-        run: npx cmake-js compile --release --arch ${{ matrix.target-arch }}
+        run: npx cmake-js compile --release --out packages/fast-fs-hash/build --arch ${{ matrix.target-arch }}
 
       # ── Test native binding (platforms where we can run) ───────────────
       - name: Build JS bundles
@@ -126,6 +128,10 @@ jobs:
         if: ${{ matrix.can-test }}
         run: npm test
 
+      - name: Run benchmarks
+        if: ${{ matrix.can-test }}
+        run: npm run bench
+
       # ── Docker builds (Linux musl via Alpine) ──────────────────────────
       - name: Build native addon (Alpine/musl)
         if: ${{ matrix.use-docker }}
@@ -133,14 +139,14 @@ jobs:
           docker run --rm -v "$PWD:/workspace" -w /workspace node:22-alpine sh -c "
             apk add --no-cache cmake make g++ python3 linux-headers git &&
             npm ci &&
-            npx cmake-js compile --release
+            npm run build:native:release
           "
 
       # ── Print binary size ──────────────────────────────────────────────
       - name: Print .node file size
         shell: bash
         run: |
-          file="build/Release/fast_fs_hash.node"
+          file="packages/fast-fs-hash/build/Release/fast_fs_hash.node"
           if [ -f "$file" ]; then
             size=$(wc -c < "$file" | tr -d ' ')
             kb=$((size / 1024))
@@ -154,7 +160,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: binding-${{ matrix.target }}
-          path: build/Release/fast_fs_hash.node
+          path: packages/fast-fs-hash/build/Release/fast_fs_hash.node
           if-no-files-found: error
 
   # ── Test musl bindings (run test suite inside Alpine containers) ───────
@@ -179,14 +185,15 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: binding-${{ matrix.target }}
-          path: build/Release
+          path: packages/fast-fs-hash/build/Release
 
       - name: Test inside Alpine
         run: |
           docker run --rm -v "$PWD:/workspace" -w /workspace node:22-alpine sh -c "
             npm ci &&
             npm run build &&
-            npx vitest run
+            npm test &&
+            npm run bench
           "
 
   # ── FreeBSD (build + test inside a FreeBSD VM) ────────────────────────
@@ -210,15 +217,16 @@ jobs:
             sudo pkg install -y cmake node22 npm-node22 git
             npm ci
             npm run build
-            npx cmake-js compile --release
-            ls -lh build/Release/fast_fs_hash.node
-            npx vitest run --pool=threads
+            npm run build:native:release
+            ls -lh packages/fast-fs-hash/build/Release/fast_fs_hash.node
+            npm test -- --pool=threads
+            npm run bench -- --pool=threads
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: binding-freebsd-x64
-          path: build/Release/fast_fs_hash.node
+          path: packages/fast-fs-hash/build/Release/fast_fs_hash.node
           if-no-files-found: error
 
   # ── Publish (ONLY after ALL builds + tests pass) ───────────────────────
@@ -341,7 +349,7 @@ jobs:
 
       # ── Deploy API docs to GitHub Pages ──────────────────────────────────
       - name: Generate API docs
-        run: npx typedoc
+        run: npm run docs
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

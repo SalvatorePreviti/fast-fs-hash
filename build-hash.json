@@ -1,11 +1,11 @@
 {
   "_description": "SHA-256 hashes of build artifacts and source code. Regenerated on every build.",
-  "generatedAt": "2026-02-21T19:54:02.334Z",
+  "generatedAt": "2026-02-21T20:12:09.330Z",
   "distArtifacts": {
     "index.cjs": {
-      "sha256": "9fbd71bfbb2f835f9468cd3b5123fbefa43a87b2f874dff28a161b92c3312377",
-      "bytes": 50426,
-      "lines": 1482
+      "sha256": "b815f7a9894af3ef62a394524eaa6f1a5c9e842e16cca3d0030b695af122696f",
+      "bytes": 50295,
+      "lines": 1480
     },
     "index.d.cts": {
       "sha256": "97e1818573679b5d3d697406abd3e5f1e9cd00da1f2783ab236912180462f5be",
@@ -24,8 +24,7 @@
     },
     "xxhash128.wasm": {
       "sha256": "a02165ba1a90d88728f125e1e58b8821f5e46d4a7602b66b4a0458dc250c5fd1",
-      "bytes": 10302,
-      "lines": 77
+      "bytes": 10302
     }
   },
   "source": {
@@ -33,9 +32,9 @@
     "files": 31,
     "ts": {
       "file-cache/file-hash-cache.ts": {
-        "sha256": "d5e1458308556497157f279a5be94617b628b793b101ca2b995ab0f7d5a06e09",
-        "bytes": 16038,
-        "lines": 498
+        "sha256": "8e544911a75ae7226efed98c21116ec5c10697d11b53b09d2a214a4dafd3869b",
+        "bytes": 16252,
+        "lines": 507
       },
       "file-cache/format.ts": {
         "sha256": "6fe9337c4ff4cf34f37b10a74b718de3ce1473b95cbd50b89fa4a044332f5774",
@@ -68,9 +67,9 @@
         "lines": 37
       },
       "native.ts": {
-        "sha256": "be9151ae83c83d2c7838296f054249a4212ad99a78b6d07a93f588abe971ef9e",
-        "bytes": 3395,
-        "lines": 116
+        "sha256": "b4d3affd416c96dcecdbb4077b62454b7d93fb8d6f2fc1b2ac07c4a288341721",
+        "bytes": 3283,
+        "lines": 109
       },
       "types.ts": {
         "sha256": "d61a190efee837f1f6e9fd8f998365a1d6458270f48626b33f4a9fa934530fa8",
@@ -94,8 +93,7 @@
       },
       "xxhash128.wasm": {
         "sha256": "a02165ba1a90d88728f125e1e58b8821f5e46d4a7602b66b4a0458dc250c5fd1",
-        "bytes": 10302,
-        "lines": 77
+        "bytes": 10302
       }
     },
     "native": {
@@ -189,8 +187,8 @@
     },
     "cmake": {
       "CMakeLists.txt": {
-        "sha256": "a0bf280f127ec32565692d243061ec5ceb1b01bd2593286106d66c4f8d28900c",
-        "bytes": 9323,
+        "sha256": "7a8465c2a6aacb6867140385ccfb2f78ec1d4325abd93789b4fabab8dd1107cb",
+        "bytes": 9321,
         "lines": 216
       }
     }
