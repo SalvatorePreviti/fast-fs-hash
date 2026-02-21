@@ -171,33 +171,24 @@ endif()
 # any CPU that lacks AVX2 — with no fallback.
 #
 # Strategy (2026 baseline):
-#   x86_64 — SSE2 is implicit (always available on x86_64). We add -msse4.2
-#            which is universal on all x86_64 server CPUs since 2009 (Nehalem).
-#            We intentionally do NOT enable AVX2: xxHash3-SSE2 still runs at
-#            ~31 GB/s which is 4-8× faster than NVMe storage, so the AVX2
-#            speedup (~59 GB/s) provides no real-world benefit for file hashing
-#            while risking SIGILL on older Xeons, certain cloud VMs, and
-#            low-power x86 devices.
+#   x86_64 — SSE2 is implicit (always available on x86_64) and is the only
+#            SIMD level we rely on. xxHash3-SSE2 runs at ~31 GB/s which is
+#            4-8× faster than NVMe storage — more than sufficient for file
+#            hashing. We intentionally do NOT enable SSE4.2 or AVX2:
+#            - SSE4.2 adds POPCNT/CRC32C which provide marginal benefit but
+#              can SIGILL on QEMU VMs without full instruction emulation.
+#            - AVX2 (~59 GB/s) provides no real-world benefit for file hashing
+#              while risking SIGILL on older Xeons, certain cloud VMs, and
+#              low-power x86 devices.
 #   ARM64 — NEON is always available on AArch64 and xxHash auto-detects it.
 #            We add armv8-a+crypto (AES/SHA) which is supported by virtually
 #            all server-grade ARM64 CPUs (AWS Graviton, Ampere, Apple Silicon).
 
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
-    if(NOT MSVC)
-        # SSE4.2: universal on all x86_64 server hardware since 2009.
-        # xxHash itself uses SSE2 (always available on x86_64), but SSE4.2
-        # enables POPCNT and CRC32C which can help the compiler elsewhere.
-        check_cxx_compiler_flag("-msse4.2" HAS_SSE42)
-        if(HAS_SSE42)
-            target_compile_options(${PROJECT_NAME} PRIVATE -msse4.2)
-        endif()
-
-        # NOTE: We deliberately omit -mavx2 and -mbmi2.
-        # xxHash has no runtime SIMD dispatch in header-only mode — enabling
-        # AVX2 at compile time would make the binary crash (SIGILL) on any
-        # CPU without AVX2 support. The SSE2 codepath is already far faster
-        # than any storage I/O, so the trade-off is not worth it.
-    endif()
+    # SSE2 is the implicit baseline for x86_64 — no extra flags needed.
+    # xxHash selects its SIMD path at compile time with no runtime dispatch
+    # in header-only mode, so we must not enable instruction sets that may
+    # be absent at runtime (e.g. SSE4.2 in QEMU VMs, AVX2 on older CPUs).
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
     # NEON is always available on AArch64 — xxHash enables it automatically.
     # Crypto extensions (AES/SHA/PMULL) are present on essentially all
