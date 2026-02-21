@@ -38,7 +38,7 @@ async function buildCJSBundle() {
     output: {
       file: resolve(distDir, "index.cjs"),
       format: "cjs",
-      sourcemap: false,
+      sourcemap: true,
       comments: { jsdoc: true, annotation: true, legal: true },
     },
     resolve: {

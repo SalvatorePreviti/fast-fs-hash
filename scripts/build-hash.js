@@ -70,7 +70,9 @@ function readInstalledVersion(depName) {
 function getNestedField(obj, dotPath) {
   let cur = obj;
   for (const part of dotPath.split(".")) {
-    if (cur == null || typeof cur !== "object") return undefined;
+    if (cur == null || typeof cur !== "object") {
+      return undefined;
+    }
     cur = cur[part];
   }
   return cur;
@@ -83,7 +85,9 @@ function collectPackageJsonSecurity() {
   const deps = {};
   for (const field of PACKAGE_JSON_DEP_FIELDS) {
     const entries = pkg[field];
-    if (!entries || typeof entries !== "object") continue;
+    if (!entries || typeof entries !== "object") {
+      continue;
+    }
     for (const [name, declared] of Object.entries(entries).sort(([a], [b]) => a.localeCompare(b))) {
       const installed = readInstalledVersion(name);
       deps[name] = { declared, installed, field };
@@ -143,8 +147,7 @@ export async function writeBuildHash() {
     Object.keys(tsFiles).length + Object.keys(nativeFiles).length + Object.keys(cmakeFiles).length;
 
   const obj = {
-    _description:
-      "SHA-256 hashes of build artifacts and source code. Regenerated on every build.",
+    _description: "SHA-256 hashes of build artifacts and source code. Regenerated on every build.",
     generatedAt: new Date().toISOString(),
     distArtifacts: distFiles,
     source: {
