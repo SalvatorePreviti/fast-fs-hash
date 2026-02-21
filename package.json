@@ -6,6 +6,7 @@
   ],
   "scripts": {
     "build": "node scripts/build.js",
+    "build:all": "npm run build && npm run build:native",
     "build:native": "cmake-js compile -d packages/fast-fs-hash/src/native",
     "build:native:release": "cmake-js compile -d packages/fast-fs-hash/src/native --release",
     "test": "vitest run",
@@ -13,7 +14,8 @@
     "update-benchmarks": "node scripts/update-benchmarks.js",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
-    "lint:fix": "biome check --write ."
+    "lint:fix": "biome check --write .",
+    "docs": "npx typedoc"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.3",
@@ -23,6 +25,7 @@
     "node-addon-api": "^8.5.0",
     "rolldown": "^1.0.0-rc.5",
     "rollup-plugin-dts": "^6.3.0",
+    "typedoc": "^0.28.17",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
   },

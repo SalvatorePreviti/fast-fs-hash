@@ -6,7 +6,7 @@
 #   2. build-native    — Matrix: build + test native .node on each platform
 #   3. build-freebsd   — FreeBSD VM: build + test
 #   4. test-musl       — Download musl artifacts → test inside Alpine Docker
-#   5. publish         — ONLY after ALL above pass: verify, dry-run, publish
+#   5. publish         — ONLY after ALL above pass: verify, dry-run, publish + deploy docs
 #
 #   If ANY build or test fails, nothing is published.
 # ═══════════════════════════════════════════════════════════════════════════
@@ -15,7 +15,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, publish]
     tags: ["v*"]
   pull_request:
     branches: [main]
@@ -41,6 +41,7 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npx tsc --noEmit
+      - run: npm run build
       - run: npm test
 
   # ── Build + test native addon for every platform ───────────────────────
@@ -58,10 +59,10 @@ jobs:
         include:
           # ── macOS (build + test natively) ──────────────────────────────
           - target: darwin-arm64
-            os: macos-14
+            os: macos-latest
             can-test: true
           - target: darwin-x64
-            os: macos-13
+            os: macos-latest
             can-test: true
 
           # ── Linux glibc (build + test natively) ────────────────────────
@@ -113,6 +114,10 @@ jobs:
         run: npx cmake-js compile -d packages/fast-fs-hash/src/native --release --arch ${{ matrix.target-arch }}
 
       # ── Test native binding (platforms where we can run) ───────────────
+      - name: Build JS bundles
+        if: ${{ matrix.can-test }}
+        run: npm run build
+
       - name: Test with native binding
         if: ${{ matrix.can-test }}
         run: npm test
@@ -174,6 +179,7 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/workspace" -w /workspace node:22-alpine sh -c "
             npm ci &&
+            npm run build &&
             npx vitest run
           "
 
@@ -185,7 +191,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build & test in FreeBSD VM
-        uses: cross-platform-actions/action@v0.25.0
+        uses: cross-platform-actions/action@v0.26.0
         with:
           operating_system: freebsd
           version: "14.2"
@@ -195,6 +201,7 @@ jobs:
           run: |
             sudo pkg install -y cmake node22 npm-node22 git
             npm ci
+            npm run build
             npx cmake-js compile -d packages/fast-fs-hash/src/native --release
             ls -lh packages/fast-fs-hash/src/native/build/Release/fast_fs_hash.node
             npm test
@@ -215,12 +222,16 @@ jobs:
   #
   publish:
     name: Publish to npm
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref == 'refs/heads/publish'
     needs: [lint-and-test, build-native, build-freebsd, test-musl]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
+      pages: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -317,3 +328,19 @@ jobs:
           echo "All 10 packages published successfully."
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # ── Deploy API docs to GitHub Pages ──────────────────────────────────
+      - name: Generate API docs
+        run: npx typedoc
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload docs artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/api
+
+      - name: Deploy docs to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

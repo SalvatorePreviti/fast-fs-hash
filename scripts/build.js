@@ -15,6 +15,7 @@ import { exec } from "node:child_process";
 import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
+import { writeBuildHash } from "./build-hash.js";
 
 const execAsync = promisify(exec);
 
@@ -37,7 +38,7 @@ async function buildCJSBundle() {
     output: {
       file: resolve(distDir, "index.cjs"),
       format: "cjs",
-      sourcemap: true,
+      sourcemap: false,
       comments: { jsdoc: true, annotation: true, legal: true },
     },
     resolve: {
@@ -179,5 +180,7 @@ await generateTypeDeclarations();
 if (process.env.INJECT_OPTIONAL_DEPS === "1") {
   injectOptionalDeps();
 }
+
+await writeBuildHash();
 
 console.timeEnd("Build completed");

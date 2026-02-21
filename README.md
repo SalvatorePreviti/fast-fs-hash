@@ -147,6 +147,8 @@ console.log(h.digest().toString("hex"));
 
 ---
 
+> **[Full API Documentation](https://SalvatorePreviti.github.io/fast-fs-hash/)** — complete TypeDoc reference with all classes, methods, types, and options.
+
 ## API
 
 ### `XXHash128`

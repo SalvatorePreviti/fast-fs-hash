@@ -94,7 +94,7 @@ describe("Worker Threads", () => {
 
     expect(result.hashHex).toBe(H_HELLO_WORLD);
     expect(result.fileHashHex).toBe(H_HELLO_WORLD_LF);
-    // Workers import from dist — may load native or fall back to WASM.
+    // Workers may load native or fall back to WASM.
     // Both backends are valid; the key assertion is correct hash output.
     expect(["native", "wasm"]).toContain(result.libraryStatus);
   });

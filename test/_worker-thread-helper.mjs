@@ -1,9 +1,9 @@
 /**
  * Worker Thread helper for worker-threads.test.ts.
  *
- * This is a plain .mjs file (not TypeScript) so it can be loaded directly
- * by Node.js Worker Threads without vitest's TS transform.
- * Imports from the built dist (fast-fs-hash package via workspace resolution).
+ * Plain .mjs file so Node.js Worker Threads can load it directly
+ * without any TypeScript transform. Imports from the built dist
+ * (fast-fs-hash package via workspace resolution).
  */
 
 import path from "node:path";
