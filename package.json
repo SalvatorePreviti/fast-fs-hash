@@ -6,6 +6,7 @@
     "packages/fast-fs-hash"
   ],
   "scripts": {
+    "prepare": "lefthook install",
     "build": "node scripts/build-all.js",
     "build:all": "node scripts/build-all.js",
     "build:ts": "node scripts/build-ts.js",
@@ -25,6 +26,7 @@
     "ansis": "^4.2.0",
     "cmake-js": "^8.0.0",
     "hash-wasm": "4.12.0",
+    "lefthook": "^2.1.1",
     "node-addon-api": "^8.5.0",
     "rolldown": "^1.0.0-rc.5",
     "rollup-plugin-dts": "^6.3.0",

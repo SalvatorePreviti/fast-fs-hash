@@ -172,7 +172,7 @@ function diffHashMaps(label, current, previous) {
       diffs.push(
         `${label}/${relPath}: hash differs — ` +
           `expected ${prev.sha256.slice(0, 16)}… (${prev.bytes}B), ` +
-          `got ${cur.sha256.slice(0, 16)}… (${cur.bytes}B)`,
+          `got ${cur.sha256.slice(0, 16)}… (${cur.bytes}B)`
       );
     } else if (cur.bytes !== prev.bytes) {
       diffs.push(`${label}/${relPath}: size differs — expected ${prev.bytes}B, got ${cur.bytes}B`);
