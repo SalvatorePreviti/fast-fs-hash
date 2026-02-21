@@ -10,20 +10,3 @@ test/bench/raw-data/
 test/tmp/
 docs/
 _tmp_*
-
-# Vendored xxHash v0.8.3 source — committed so CI builds don't depend on GitHub downloads.
-# Each parent must be un-ignored for git to traverse into the nested path.
-!packages/fast-fs-hash/src/native/build/
-packages/fast-fs-hash/src/native/build/*
-!packages/fast-fs-hash/src/native/build/_deps/
-packages/fast-fs-hash/src/native/build/_deps/*
-!packages/fast-fs-hash/src/native/build/_deps/xxhash-src/
-packages/fast-fs-hash/src/native/build/_deps/xxhash-src/*
-!packages/fast-fs-hash/src/native/build/_deps/xxhash-src/xxhash.h
-!packages/fast-fs-hash/src/native/build/_deps/xxhash-src/xxhash.c
-!packages/fast-fs-hash/src/native/build/_deps/xxhash-src/xxh3.h
-!packages/fast-fs-hash/src/native/build/_deps/xxhash-src/xxh_x86dispatch.h
-!packages/fast-fs-hash/src/native/build/_deps/xxhash-src/xxh_x86dispatch.c
-!packages/fast-fs-hash/src/native/build/_deps/xxhash-src/LICENSE
-!packages/fast-fs-hash/src/native/build/_deps/xxhash-src/README.md
-!packages/fast-fs-hash/src/native/build/_deps/xxhash-src/SECURITY.md

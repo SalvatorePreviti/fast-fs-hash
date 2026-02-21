@@ -1,8 +1,7 @@
 # fast-fs-hash — Native addon build configuration
 #
-# Uses cmake-js for Node.js addon compilation and CMake FetchContent
-# to pull in xxHash. The xxHash source files are also committed to git
-# (build/_deps/xxhash-src/) so CI builds work even if GitHub is down.
+# Uses cmake-js for Node.js addon compilation. xxHash is included as a
+# git submodule at deps/xxHash (pinned to v0.8.3).
 #
 # xxHash SIMD strategy:
 #   x86_64 (GCC/Clang) — xxh_x86dispatch.c provides runtime CPU dispatch
@@ -13,8 +12,8 @@
 #   ARM64 — xxhash.c with NEON (always available on AArch64, auto-detected).
 #
 # Build:
-#   npx cmake-js compile -d src/native
-#   npx cmake-js compile -d src/native --release
+#   npx cmake-js compile
+#   npx cmake-js compile --release
 
 cmake_minimum_required(VERSION 3.15)
 project(fast_fs_hash LANGUAGES C CXX)
@@ -25,22 +24,14 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# ── xxHash via FetchContent ───────────────────────────────────────────────
+# Native C++ source directory
+set(NATIVE_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/packages/fast-fs-hash/src/native)
 
-# Skip re-downloading once xxHash is already populated (the source files
-# are committed to git, so this avoids network dependency on fresh checkouts).
-set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
+# ── xxHash (git submodule) ────────────────────────────────────────────────
 
-include(FetchContent)
-FetchContent_Declare(
-    xxHash
-    URL        https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.3.tar.gz
-    URL_HASH   SHA256=aae608dfe8213dfd05d909a57718ef82f30722c392344583d3f39050c7f29a80
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-    EXCLUDE_FROM_ALL
-)
-# We only need the xxhash.h header, not xxHash's own build targets.
-FetchContent_MakeAvailable(xxHash)
+# xxHash is included as a git submodule at deps/xxHash, pinned to v0.8.3.
+# We only use the header + .c source directly — no need for xxHash's CMake targets.
+set(XXHASH_DIR ${CMAKE_CURRENT_SOURCE_DIR}/deps/xxHash)
 
 # ── Node.js / N-API headers ──────────────────────────────────────────────
 
@@ -55,7 +46,7 @@ include_directories(${CMAKE_JS_INC})
 # cmake-js already adds this but we make it explicit for clarity.
 execute_process(
     COMMAND node -p "require('node-addon-api').include"
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/../..
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     OUTPUT_VARIABLE NODE_ADDON_API_DIR
     OUTPUT_STRIP_TRAILING_WHITESPACE
 )
@@ -63,12 +54,15 @@ string(REPLACE "\"" "" NODE_ADDON_API_DIR ${NODE_ADDON_API_DIR})
 include_directories(${NODE_ADDON_API_DIR})
 
 # xxHash header directory
-include_directories(${xxhash_SOURCE_DIR})
+include_directories(${XXHASH_DIR})
+
+# Native C++ headers
+include_directories(${NATIVE_SRC_DIR})
 
 # ── Compile the addon ────────────────────────────────────────────────────
 
 add_library(${PROJECT_NAME} SHARED
-    binding.cpp
+    ${NATIVE_SRC_DIR}/binding.cpp
     ${CMAKE_JS_SRC}
 )
 
@@ -84,9 +78,9 @@ add_library(${PROJECT_NAME} SHARED
 # paths to the same SSE2 code — no point in the extra complexity.
 
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64" AND NOT MSVC)
-    target_sources(${PROJECT_NAME} PRIVATE ${xxhash_SOURCE_DIR}/xxh_x86dispatch.c)
+    target_sources(${PROJECT_NAME} PRIVATE ${XXHASH_DIR}/xxh_x86dispatch.c)
 else()
-    target_sources(${PROJECT_NAME} PRIVATE ${xxhash_SOURCE_DIR}/xxhash.c)
+    target_sources(${PROJECT_NAME} PRIVATE ${XXHASH_DIR}/xxhash.c)
 endif()
 
 # N-API: don't throw C++ exceptions, use Napi::Error instead.

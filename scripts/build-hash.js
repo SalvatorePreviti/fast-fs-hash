@@ -21,7 +21,7 @@ const PKG_DIR = path.resolve(ROOT_DIR, "packages/fast-fs-hash");
 const SRC_DIR = path.resolve(PKG_DIR, "src");
 const DIST_DIR = path.resolve(PKG_DIR, "dist");
 const NATIVE_DIR = path.resolve(SRC_DIR, "native");
-const XXHASH_SRC_DIR = path.resolve(NATIVE_DIR, "build/_deps/xxhash-src");
+const XXHASH_SRC_DIR = path.resolve(ROOT_DIR, "deps/xxHash");
 const BUILD_HASH_PATH = path.resolve(ROOT_DIR, "build-hash.json");
 
 /** package.json dependency fields to track for supply-chain security. */
@@ -126,25 +126,30 @@ function logFileDiffs(label, current, previous) {
 
 export async function writeBuildHash() {
   // Discover files via glob
-  const [distPaths, tsPaths, nativePaths, cmakePaths] = await Promise.all([
+  const [distPaths, tsPaths, nativePaths, xxhashPaths, cmakePaths] = await Promise.all([
     findFiles(DIST_DIR, "*.{cjs,mjs,d.ts,d.cts,wasm}"),
     findFiles(SRC_DIR, "**/*.{ts,wasm}").then((ps) => ps.filter((p) => !p.startsWith("native/"))),
-    findFiles(NATIVE_DIR, "*.{cpp,h,txt}"),
+    findFiles(NATIVE_DIR, "*.{cpp,h}"),
     findFiles(XXHASH_SRC_DIR, "*.{c,h}"),
+    findFiles(ROOT_DIR, "CMakeLists.txt"),
   ]);
 
   // Hash all categories in parallel
-  const [distFiles, tsFiles, nativeFiles, cmakeFiles] = await Promise.all([
+  const [distFiles, tsFiles, nativeFiles, xxhashFiles, cmakeFiles] = await Promise.all([
     hashFiles(DIST_DIR, distPaths),
     hashFiles(SRC_DIR, tsPaths),
     hashFiles(NATIVE_DIR, nativePaths),
-    hashFiles(XXHASH_SRC_DIR, cmakePaths),
+    hashFiles(XXHASH_SRC_DIR, xxhashPaths),
+    hashFiles(ROOT_DIR, cmakePaths),
   ]);
 
   const { deps, dangerousFields } = collectPackageJsonSecurity();
 
   const totalSourceFiles =
-    Object.keys(tsFiles).length + Object.keys(nativeFiles).length + Object.keys(cmakeFiles).length;
+    Object.keys(tsFiles).length +
+    Object.keys(nativeFiles).length +
+    Object.keys(xxhashFiles).length +
+    Object.keys(cmakeFiles).length;
 
   const obj = {
     _description: "SHA-256 hashes of build artifacts and source code. Regenerated on every build.",
@@ -155,6 +160,7 @@ export async function writeBuildHash() {
       files: totalSourceFiles,
       ts: tsFiles,
       native: nativeFiles,
+      xxhash: xxhashFiles,
       cmake: cmakeFiles,
     },
     packageSecurity: {
@@ -195,5 +201,6 @@ export async function writeBuildHash() {
   logFileDiffs("dist artifacts", distFiles, prev?.distArtifacts);
   logFileDiffs("source/ts", tsFiles, prev?.source?.ts);
   logFileDiffs("source/native", nativeFiles, prev?.source?.native);
+  logFileDiffs("source/xxhash", xxhashFiles, prev?.source?.xxhash);
   logFileDiffs("source/cmake", cmakeFiles, prev?.source?.cmake);
 }

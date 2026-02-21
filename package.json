@@ -7,14 +7,15 @@
   "scripts": {
     "build": "node scripts/build.js",
     "build:all": "npm run build && npm run build:native",
-    "build:native": "cmake-js compile -d packages/fast-fs-hash/src/native",
-    "build:native:release": "cmake-js compile -d packages/fast-fs-hash/src/native --release",
+    "build:native": "cmake-js compile",
+    "build:native:release": "cmake-js compile --release",
     "test": "vitest run",
     "bench": "vitest bench",
     "update-benchmarks": "node scripts/update-benchmarks.js",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
+    "update-xxhash": "bash scripts/update-xxhash.sh",
     "docs": "npx typedoc"
   },
   "devDependencies": {

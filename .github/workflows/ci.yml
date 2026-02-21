@@ -34,6 +34,8 @@ jobs:
         node: ["22", "24"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
@@ -93,6 +95,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       # ── Direct builds (macOS, Linux glibc, Windows) ────────────────────
       - uses: actions/setup-node@v4
@@ -107,11 +111,11 @@ jobs:
 
       - name: Build native addon
         if: ${{ !matrix.use-docker && !matrix.target-arch }}
-        run: npx cmake-js compile -d packages/fast-fs-hash/src/native --release
+        run: npx cmake-js compile --release
 
       - name: Build native addon (cross-arch)
         if: ${{ matrix.target-arch }}
-        run: npx cmake-js compile -d packages/fast-fs-hash/src/native --release --arch ${{ matrix.target-arch }}
+        run: npx cmake-js compile --release --arch ${{ matrix.target-arch }}
 
       # ── Test native binding (platforms where we can run) ───────────────
       - name: Build JS bundles
@@ -129,14 +133,14 @@ jobs:
           docker run --rm -v "$PWD:/workspace" -w /workspace node:22-alpine sh -c "
             apk add --no-cache cmake make g++ python3 linux-headers git &&
             npm ci &&
-            npx cmake-js compile -d packages/fast-fs-hash/src/native --release
+            npx cmake-js compile --release
           "
 
       # ── Print binary size ──────────────────────────────────────────────
       - name: Print .node file size
         shell: bash
         run: |
-          file="packages/fast-fs-hash/src/native/build/Release/fast_fs_hash.node"
+          file="build/Release/fast_fs_hash.node"
           if [ -f "$file" ]; then
             size=$(wc -c < "$file" | tr -d ' ')
             kb=$((size / 1024))
@@ -150,7 +154,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: binding-${{ matrix.target }}
-          path: packages/fast-fs-hash/src/native/build/Release/fast_fs_hash.node
+          path: build/Release/fast_fs_hash.node
           if-no-files-found: error
 
   # ── Test musl bindings (run test suite inside Alpine containers) ───────
@@ -168,12 +172,14 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
           name: binding-${{ matrix.target }}
-          path: packages/fast-fs-hash/src/native/build/Release
+          path: build/Release
 
       - name: Test inside Alpine
         run: |
@@ -189,6 +195,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: Build & test in FreeBSD VM
         uses: cross-platform-actions/action@v0.26.0
@@ -202,15 +210,15 @@ jobs:
             sudo pkg install -y cmake node22 npm-node22 git
             npm ci
             npm run build
-            npx cmake-js compile -d packages/fast-fs-hash/src/native --release
-            ls -lh packages/fast-fs-hash/src/native/build/Release/fast_fs_hash.node
+            npx cmake-js compile --release
+            ls -lh build/Release/fast_fs_hash.node
             npx vitest run --pool=threads
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: binding-freebsd-x64
-          path: packages/fast-fs-hash/src/native/build/Release/fast_fs_hash.node
+          path: build/Release/fast_fs_hash.node
           if-no-files-found: error
 
   # ── Publish (ONLY after ALL builds + tests pass) ───────────────────────
@@ -234,6 +242,8 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
       - uses: actions/setup-node@v4
         with:
           node-version: "22"

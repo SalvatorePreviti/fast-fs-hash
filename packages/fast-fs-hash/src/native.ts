@@ -93,7 +93,7 @@ export function loadNativeXXHash128(): NativeXXHash128Constructor | null {
   }
 
   try {
-    return (require("./native/build/Release/fast_fs_hash.node") as NativeBindingExport).XXHash128;
+    return (require("../../../../build/Release/fast_fs_hash.node") as NativeBindingExport).XXHash128;
   } catch {
     // Not built locally
   }

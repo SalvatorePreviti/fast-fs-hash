@@ -88,7 +88,8 @@ FSH_FORCE_INLINE void * aligned_malloc(size_t alignment, size_t size) noexcept {
 #ifdef _MSC_VER
   p = _aligned_malloc(size, alignment);
 #else
-  if (posix_memalign(&p, alignment, size) != 0) [[unlikely]] return nullptr;
+  if (posix_memalign(&p, alignment, size) != 0) [[unlikely]]
+    return nullptr;
 #endif
   return p;
 }
