@@ -4,7 +4,7 @@
  * All core instance methods throw until a subclass `init()` patches
  * the prototypes with a working implementation (WASM or native).
  *
- * Higher-level methods ({@link updateFile}, {@link hashFiles})
+ * Higher-level methods ({@link updateFile}, {@link updateFilesBulk})
  * are implemented here in terms of the core primitives and work automatically
  * once `init()` has been called on any subclass.
  *
@@ -56,7 +56,7 @@ export abstract class XXHash128Base {
   protected _seedHigh = 0;
 
   /**
-   * Maximum number of parallel file reads for {@link hashFiles}.
+   * Maximum number of parallel file reads for {@link updateFilesBulk}.
    * `0` means auto-detect (uses hardware concurrency).
    */
   public concurrency = 0;

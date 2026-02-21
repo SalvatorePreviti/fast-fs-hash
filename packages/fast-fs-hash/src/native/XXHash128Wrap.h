@@ -1,4 +1,5 @@
-#pragma once
+#ifndef _FAST_FS_HASH_XXHASH128_WRAP_H
+#define _FAST_FS_HASH_XXHASH128_WRAP_H
 
 #include "InstanceHashWorker.h"
 #include "UpdateFileWorker.h"
@@ -178,3 +179,5 @@ class XXHash128Wrap final : public Napi::ObjectWrap<XXHash128Wrap> {
  private:
   uint64_t seed_;
 };
+
+#endif

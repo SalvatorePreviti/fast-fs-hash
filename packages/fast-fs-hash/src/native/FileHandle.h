@@ -9,7 +9,8 @@
  * keeping the rest of the codebase platform-agnostic.
  */
 
-#pragma once
+#ifndef _FAST_FS_HASH_FILE_HANDLE_H
+#define _FAST_FS_HASH_FILE_HANDLE_H
 
 #include "includes.h"
 
@@ -142,3 +143,5 @@ namespace fast_fs_hash {
 #endif
 
 }  // namespace fast_fs_hash
+
+#endif

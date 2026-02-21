@@ -1,4 +1,6 @@
 #include "XXHash128Wrap.h"
+#include "InstanceHashWorker_impl.h"
+#include "UpdateFileWorker_impl.h"
 
 // ── Module exports ───────────────────────────────────────────────────────
 

@@ -1,4 +1,5 @@
-#pragma once
+#ifndef _FAST_FS_HASH_OUTPUT_BUFFER_H
+#define _FAST_FS_HASH_OUTPUT_BUFFER_H
 
 #include "includes.h"
 
@@ -57,3 +58,5 @@ struct OutputBuffer : NonCopyable {
  private:
   bool owned_ = false;
 };
+
+#endif

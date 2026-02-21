@@ -54,7 +54,6 @@ include_directories(${xxhash_SOURCE_DIR})
 
 add_library(${PROJECT_NAME} SHARED
     binding.cpp
-    InstanceHashWorker.cpp
     ${CMAKE_JS_SRC}
 )
 

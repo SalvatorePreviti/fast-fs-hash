@@ -1,4 +1,5 @@
-#pragma once
+#ifndef _FAST_FS_HASH_INSTANCE_HASH_WORKER_H
+#define _FAST_FS_HASH_INSTANCE_HASH_WORKER_H
 
 #include "includes.h"
 #include "OutputBuffer.h"
@@ -85,3 +86,5 @@ class InstanceHashWorker final : public Napi::AsyncWorker {
   size_t paths_len_ = 0;
   int concurrency_;
 };
+
+#endif

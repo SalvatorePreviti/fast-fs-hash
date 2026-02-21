@@ -2,13 +2,13 @@
 #define _FAST_FS_HASH_INCLUDES_H
 
 #include <cerrno>
-#include <napi.h>
-#include <cstring>
 #include <cstddef>
 #include <cstdint>
-#include <atomic>
 #include <cstring>
+#include <atomic>
 #include <thread>
+
+#include <napi.h>
 
 #ifndef _WIN32
 #  include <fcntl.h>
@@ -40,7 +40,7 @@
 #  define FSH_PREFETCH_W(ptr) ((void)0)
 #endif
 
-/** Prefetch CPU prediction likely and unlikely hints */
+/** Branch prediction hints — likely / unlikely. */
 #if defined(__GNUC__) || defined(__clang__)
 #  define FSH_LIKELY(x) __builtin_expect(!!(x), 1)
 #  define FSH_UNLIKELY(x) __builtin_expect(!!(x), 0)
@@ -65,10 +65,6 @@
 #  define FSH_FORCE_INLINE __forceinline
 #else
 #  define FSH_FORCE_INLINE inline
-#endif
-
-#ifndef MAX_PATH
-#  define MAX_PATH 4096
 #endif
 
 /** Portable aligned allocation (posix_memalign / _aligned_malloc). */

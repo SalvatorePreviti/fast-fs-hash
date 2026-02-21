@@ -6,9 +6,10 @@
  * this feeds the file bytes directly — equivalent to update(readFile(path)).
  */
 
-#pragma once
+#ifndef _FAST_FS_HASH_UPDATE_FILE_WORKER_H
+#define _FAST_FS_HASH_UPDATE_FILE_WORKER_H
 
-#include "FileHandle.h"
+#include "includes.h"
 
 class XXHash128Wrap;
 
@@ -31,3 +32,5 @@ class UpdateFileWorker final : public Napi::AsyncWorker {
   uint8_t * data_ = nullptr;
   size_t len_ = 0;
 };
+
+#endif
