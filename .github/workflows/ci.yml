@@ -131,7 +131,7 @@ jobs:
       - name: Build native addon (Alpine/musl)
         if: ${{ matrix.use-docker }}
         run: |
-          docker run --rm -v "$PWD:/workspace" -w /workspace node:22-alpine sh -c "
+          docker run --rm -e CI=true -v "$PWD:/workspace" -w /workspace node:22-alpine sh -c "
             apk add --no-cache cmake make g++ python3 linux-headers git &&
             npm ci &&
             npm run build:native
@@ -184,7 +184,7 @@ jobs:
 
       - name: Test inside Alpine
         run: |
-          docker run --rm -v "$PWD:/workspace" -w /workspace node:22-alpine sh -c "
+          docker run --rm -e CI=true -v "$PWD:/workspace" -w /workspace node:22-alpine sh -c "
             apk add --no-cache git &&
             npm ci &&
             npm run build:ts &&
