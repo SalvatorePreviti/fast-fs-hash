@@ -26,12 +26,12 @@ Results from Node.js v22.22.0, Vitest 4.x:
 
 | Scenario                          | Mean    | Throughput | Relative        |
 | --------------------------------- | ------- | ---------- | --------------- |
-| native (hashFilesBulk + per file) | 4.9 ms  | 5.1 GB/s   | **8.6× faster** |
-| native (hashFilesBulk)            | 5.1 ms  | 4.9 GB/s   | **8.3× faster** |
-| WASM (hashFilesBulk)              | 12.9 ms | 1.9 GB/s   | **3.2× faster** |
-| WASM (hashFilesBulk + per file)   | 13.0 ms | 1.9 GB/s   | **3.2× faster** |
-| Node.js crypto (md5, per file)    | 41.8 ms | 0.6 GB/s   | **1.0× faster** |
-| Node.js crypto (md5)              | 41.8 ms | 0.6 GB/s   | baseline        |
+| native (hashFilesBulk + per file) | 4.8 ms  | 5.1 GB/s   | **8.7× faster** |
+| native (hashFilesBulk)            | 4.9 ms  | 5.1 GB/s   | **8.7× faster** |
+| WASM (hashFilesBulk + per file)   | 13.0 ms | 1.9 GB/s   | **3.3× faster** |
+| WASM (hashFilesBulk)              | 13.0 ms | 1.9 GB/s   | **3.2× faster** |
+| Node.js crypto (md5, per file)    | 42.0 ms | 0.6 GB/s   | **1.0× faster** |
+| Node.js crypto (md5)              | 42.3 ms | 0.6 GB/s   | baseline        |
 
 _Results vary by hardware, file sizes, and OS cache state._
 

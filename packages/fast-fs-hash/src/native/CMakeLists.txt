@@ -9,7 +9,7 @@
 #   npx cmake-js compile -d src/native --release
 
 cmake_minimum_required(VERSION 3.15)
-project(fast_fs_hash LANGUAGES CXX)
+project(fast_fs_hash LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -62,11 +62,22 @@ add_library(${PROJECT_NAME} SHARED
     ${CMAKE_JS_SRC}
 )
 
+# ── xxHash implementation (runtime dispatch on x86_64) ───────────────────
+#
+# On x86_64: xxh_x86dispatch.c compiles multiple SIMD variants (SSE2, AVX2,
+# AVX512) using __attribute__((target(...))) and selects at runtime via CPUID.
+# On other platforms: xxhash.c with the platform's native SIMD (e.g. NEON).
+# The dispatch file must be compiled with base flags only (no -mavx2 etc).
+
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+    target_sources(${PROJECT_NAME} PRIVATE ${xxhash_SOURCE_DIR}/xxh_x86dispatch.c)
+else()
+    target_sources(${PROJECT_NAME} PRIVATE ${xxhash_SOURCE_DIR}/xxhash.c)
+endif()
+
 # N-API: don't throw C++ exceptions, use Napi::Error instead.
-# XXH_FORCE_MEMORY_ACCESS=2: use unaligned reads — faster on modern CPUs.
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     NAPI_DISABLE_CPP_EXCEPTIONS
-    XXH_FORCE_MEMORY_ACCESS=2
 )
 
 # Output as .node
@@ -163,32 +174,17 @@ else()
     endif()
 endif()
 
-# ── Architecture-specific SIMD flags ─────────────────────────────────────
+# ── Architecture-specific flags ──────────────────────────────────────────
 #
-# xxHash selects its SIMD path at COMPILE TIME based on predefined macros
-# (__AVX2__, __SSE2__, __ARM_NEON__, etc.). There is NO runtime CPU dispatch
-# in header-only mode. If we compile with -mavx2 the binary will SIGILL on
-# any CPU that lacks AVX2 — with no fallback.
+# xxHash dispatch is handled by xxh_x86dispatch.c on x86_64 (runtime CPUID
+# selects SSE2/AVX2/AVX512). No extra SIMD flags needed for x86_64.
 #
-# Strategy (2026 baseline):
-#   x86_64 — SSE2 is implicit (always available on x86_64) and is the only
-#            SIMD level we rely on. xxHash3-SSE2 runs at ~31 GB/s which is
-#            4-8× faster than NVMe storage — more than sufficient for file
-#            hashing. We intentionally do NOT enable SSE4.2 or AVX2:
-#            - SSE4.2 adds POPCNT/CRC32C which provide marginal benefit but
-#              can SIGILL on QEMU VMs without full instruction emulation.
-#            - AVX2 (~59 GB/s) provides no real-world benefit for file hashing
-#              while risking SIGILL on older Xeons, certain cloud VMs, and
-#              low-power x86 devices.
-#   ARM64 — NEON is always available on AArch64 and xxHash auto-detects it.
-#            We add armv8-a+crypto (AES/SHA) which is supported by virtually
-#            all server-grade ARM64 CPUs (AWS Graviton, Ampere, Apple Silicon).
+# ARM64 — NEON is always available on AArch64 and xxHash auto-detects it.
+#         We add armv8-a+crypto (AES/SHA) which is supported by virtually
+#         all server-grade ARM64 CPUs (AWS Graviton, Ampere, Apple Silicon).
 
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
-    # SSE2 is the implicit baseline for x86_64 — no extra flags needed.
-    # xxHash selects its SIMD path at compile time with no runtime dispatch
-    # in header-only mode, so we must not enable instruction sets that may
-    # be absent at runtime (e.g. SSE4.2 in QEMU VMs, AVX2 on older CPUs).
+    # No extra flags — xxh_x86dispatch.c handles SIMD selection at runtime.
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
     # NEON is always available on AArch64 — xxHash enables it automatically.
     # Crypto extensions (AES/SHA/PMULL) are present on essentially all

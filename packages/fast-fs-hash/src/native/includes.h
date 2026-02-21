@@ -25,8 +25,12 @@
 #  include <windows.h>
 #endif
 
-// xxHash — header-only, inlined into this compilation unit.
-#define XXH_INLINE_ALL
+// xxHash — linked separately (compiled via CMakeLists.txt).
+// On x86_64: xxh_x86dispatch.c provides runtime AVX2/AVX512 dispatch.
+// On other platforms: xxhash.c with platform-native SIMD (e.g. NEON on ARM64).
+// XXH_STATIC_LINKING_ONLY exposes the full XXH3_state_t struct definition
+// (needed for stack-allocated streaming state in XXHash128Wrap).
+#define XXH_STATIC_LINKING_ONLY
 #include "xxhash.h"
 
 #if defined(__GNUC__) || defined(__clang__)
