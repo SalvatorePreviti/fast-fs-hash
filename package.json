@@ -5,6 +5,18 @@
   "workspaces": [
     "packages/fast-fs-hash"
   ],
+  "keywords": [
+    "fast-fs-hash",
+    "hash",
+    "filesystem",
+    "fast",
+    "xxhash",
+    "native",
+    "glob",
+    "cache-invalidation",
+    "file-hash",
+    "napi"
+  ],
   "scripts": {
     "prepare": "lefthook install",
     "build": "node scripts/build-all.js",

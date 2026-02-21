@@ -30,6 +30,7 @@
     "dist/xxhash128.wasm"
   ],
   "keywords": [
+    "fast-fs-hash",
     "hash",
     "filesystem",
     "fast",

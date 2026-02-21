@@ -19,7 +19,6 @@ import {
   DIST_DIR,
   elapsed,
   formatJson,
-  isCI,
   logChanged,
   logError,
   logInfo,
