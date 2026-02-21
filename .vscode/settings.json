@@ -50,5 +50,8 @@
   "typescript.format.semicolons": "insert",
   "typescript.tsdk": "node_modules/typescript/lib",
   "files.eol": "\n",
-  "cmake.configureOnOpen": false
+  "cmake.configureOnOpen": false,
+  "search.exclude": {
+    "**/deps": true
+  }
 }

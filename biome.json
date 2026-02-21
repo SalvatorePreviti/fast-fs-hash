@@ -15,7 +15,8 @@
       "!**/.git",
       "!**/*.tsbuildinfo",
       "!**/build",
-      "!**/npm"
+      "!**/npm",
+      "!**/deps"
     ]
   },
   "assist": { "actions": { "source": { "organizeImports": "on" } } },
