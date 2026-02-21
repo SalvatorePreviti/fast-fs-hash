@@ -42,6 +42,13 @@ async function buildCJSBundle() {
       extensions: [".ts", ".js"],
     },
     platform: "node",
+    optimization: {
+      // Inline imported constants at usage sites — eliminates variable lookups
+      // and enables further dead-code elimination by the runtime/V8.
+      inlineConst: { mode: "all", pass: 3 },
+    },
+    // Tree-shaking is on by default; be explicit for clarity.
+    treeshake: true,
   });
 
   logOk(`CJS bundle (${elapsed(s)})`);

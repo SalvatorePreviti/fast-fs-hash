@@ -18,7 +18,7 @@
     "napi"
   ],
   "scripts": {
-    "prepare": "lefthook install || true",
+    "prepare": "node scripts/prepare.js",
     "build": "node scripts/build-all.js",
     "build:all": "node scripts/build-all.js",
     "build:ts": "node scripts/build-ts.js",

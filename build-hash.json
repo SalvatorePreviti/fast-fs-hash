@@ -1,10 +1,10 @@
 {
   "_description": "SHA-256 hashes of build artifacts and source code. Regenerated on every build.",
-  "generatedAt": "2026-02-21T21:03:11.035Z",
+  "generatedAt": "2026-02-21T21:54:45.074Z",
   "distArtifacts": {
     "index.cjs": {
-      "sha256": "b815f7a9894af3ef62a394524eaa6f1a5c9e842e16cca3d0030b695af122696f",
-      "bytes": 50295,
+      "sha256": "faabe4d6e739d7c0cf37de508e10a13e7c51a254a6d42fb40a18a94f9c6357ad",
+      "bytes": 50061,
       "lines": 1480
     },
     "index.d.cts": {
