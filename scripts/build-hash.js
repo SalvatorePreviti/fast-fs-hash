@@ -43,7 +43,8 @@ const PACKAGE_JSON_DANGEROUS_FIELDS = ["scripts.install", "scripts.preinstall", 
 async function findFiles(baseDir, pattern) {
   const results = [];
   for await (const entry of glob(pattern, { cwd: baseDir })) {
-    results.push(entry);
+    // Normalize backslashes to forward slashes (Windows glob returns backslashes)
+    results.push(entry.replaceAll("\\", "/"));
   }
   return results.sort();
 }
