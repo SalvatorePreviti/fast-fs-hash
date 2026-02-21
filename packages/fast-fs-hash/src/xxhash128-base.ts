@@ -24,6 +24,46 @@ const { isUint8Array } = utilTypes;
 /** Library backend status. */
 export type XXHash128LibraryStatus = "native" | "wasm" | "not-initialized";
 
+/** What to include in the output of {@link XXHash128Base.hashFilesBulk}. */
+export type HashFilesBulkOutputMode = "all" | "digest" | "files";
+
+/** Options for {@link XXHash128Base.hashFilesBulk}.
+ *
+ * @typeParam T  Type of the output buffer — defaults to `Buffer`, or matches
+ *               the type of the pre-allocated {@link outputBuffer} if one is provided.
+ */
+export interface HashFilesBulkOptions<T extends Uint8Array = Buffer> {
+  /** File paths as `string[]` or a `Uint8Array` of null-terminated UTF-8 paths. */
+  files: Iterable<string> | Uint8Array;
+
+  /**
+   * What to include in the output buffer.
+   *
+   * - `"digest"` (default) — 16-byte aggregate digest only
+   * - `"all"` — `[16-byte aggregate digest, N × 16-byte per-file hashes]`
+   * - `"files"` — N × 16-byte per-file hashes only (no aggregate)
+   */
+  outputMode?: HashFilesBulkOutputMode;
+
+  /** Max parallel threads. `0` (default) = auto (hardware concurrency). */
+  concurrency?: number;
+
+  /** Lower 32 bits of the 64-bit seed for the aggregate digest. Default: `0`. */
+  seedLow?: number;
+
+  /** Upper 32 bits of the 64-bit seed for the aggregate digest. Default: `0`. */
+  seedHigh?: number;
+
+  /**
+   * Pre-allocated output buffer. When provided, results are written here
+   * starting at {@link outputOffset} and the same buffer is returned.
+   */
+  outputBuffer?: T;
+
+  /** Byte offset within {@link outputBuffer} to start writing. Default: `0`. */
+  outputOffset?: number;
+}
+
 /** @internal — Constructor signature for XXHash128Base subclasses. */
 export type XXHash128Ctor = new (seedLow: number, seedHigh: number) => XXHash128Base;
 
@@ -80,6 +120,37 @@ export abstract class XXHash128Base {
    * @returns 16-byte Buffer containing the hash in big-endian canonical form.
    */
   public static hash(_input: HashInput, _seedLow = 0, _seedHigh = 0): Buffer {
+    return notInitialized();
+  }
+
+  /**
+   * Hash many files in a single call.
+   *
+   * **This is the fastest way to hash a set of files.** Everything — parallel
+   * file I/O, per-file hashing, and aggregate computation — runs off the
+   * main thread in the native backend, so the JS thread is completely free
+   * while the work executes.
+   *
+   * Output layout depends on {@link HashFilesBulkOptions.outputMode | outputMode}:
+   * - `"digest"` (default): 16-byte aggregate only
+   * - `"all"`: `[16-byte aggregate, N × 16-byte per-file hashes]`
+   * - `"files"`: `N × 16`-byte per-file hashes only
+   *
+   * Use the instance method {@link updateFilesBulk} instead when you need to
+   * combine file hashes with additional data (e.g. configuration strings)
+   * before finalizing the digest.
+   *
+   * @param options  See {@link HashFilesBulkOptions}.
+   * @returns A `Buffer` (or the provided `buffer` when one is given).
+   */
+  public static async hashFilesBulk<T extends Uint8Array>(
+    options: HashFilesBulkOptions<T> & { outputBuffer: T },
+  ): Promise<T>;
+  public static async hashFilesBulk(options: HashFilesBulkOptions): Promise<Buffer>;
+  /** @internal */
+  public static async hashFilesBulk(
+    _options: HashFilesBulkOptions<Uint8Array>,
+  ): Promise<Buffer | Uint8Array> {
     return notInitialized();
   }
 
@@ -295,3 +366,63 @@ export abstract class XXHash128Base {
     }
   }
 }
+
+/**
+ * @internal — Shared fallback implementation for hashFilesBulk.
+ * Creates a temporary instance of the given constructor, hashes files via
+ * the instance method, then assembles the output.
+ */
+export async function _hashFilesBulkImpl(
+  Ctor: XXHash128Ctor,
+  options: HashFilesBulkOptions<Uint8Array>,
+): Promise<Buffer | Uint8Array> {
+  const {
+    files,
+    outputMode: what = "digest",
+    concurrency = 0,
+    seedLow = 0,
+    seedHigh = 0,
+    outputBuffer,
+    outputOffset = 0,
+  } = options;
+
+  const h = new Ctor(seedLow, seedHigh);
+  h.concurrency = concurrency;
+  const fileHashes = await h.updateFilesBulk(files, true);
+  const digest = h.digest();
+
+  const includeDigest = what !== "files";
+  const includeFiles = what !== "digest";
+  const resultSize = (includeDigest ? 16 : 0) + (includeFiles ? fileHashes.length : 0);
+
+  if (outputBuffer) {
+    if (outputOffset + resultSize > outputBuffer.byteLength) {
+      throw new RangeError(
+        `hashFilesBulk: outputBuffer too small (need ${resultSize} bytes at offset ${outputOffset}, have ${outputBuffer.byteLength})`,
+      );
+    }
+    let writeOff = outputOffset;
+    if (includeDigest) {
+      outputBuffer.set(digest, writeOff);
+      writeOff += 16;
+    }
+    if (includeFiles) {
+      outputBuffer.set(fileHashes, writeOff);
+    }
+    return outputBuffer;
+  }
+
+  if (what === "digest") {
+    return digest;
+  }
+  if (what === "files") {
+    return fileHashes;
+  }
+
+  // "all"
+  const result = bufferAlloc(resultSize);
+  result.set(digest, 0);
+  result.set(fileHashes, 16);
+  return result;
+}
+

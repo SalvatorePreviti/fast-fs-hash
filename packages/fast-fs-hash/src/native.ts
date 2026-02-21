@@ -37,6 +37,7 @@ export interface NativeXXHash128Instance {
 export interface NativeXXHash128Constructor {
   new (seedLow: number, seedHigh: number): NativeXXHash128Instance;
   hash(data: Buffer, offset: number, length: number, seedLow: number, seedHigh: number): Buffer;
+  hashFilesBulk(pathsBuf: Uint8Array, concurrency: number, seedLow: number, seedHigh: number, mode: number): Promise<Buffer>;
 }
 
 /** Shape of the native binding export. */

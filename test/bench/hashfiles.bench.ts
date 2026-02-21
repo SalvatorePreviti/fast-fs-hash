@@ -1,5 +1,5 @@
 /**
- * Benchmark: updateFilesBulk — native vs WASM vs Node.js crypto,
+ * Benchmark: hashFilesBulk (static) vs updateFilesBulk (instance) vs Node.js crypto,
  * with and without per-file output.
  *
  * Uses deterministic fixture files in test/bench/raw-data/.
@@ -53,41 +53,37 @@ async function rawNodeCryptoHash(files: string[], perFile: boolean): Promise<str
   return master.digest("hex");
 }
 
-describe("updateFilesBulk", async () => {
+describe("hashFilesBulk", async () => {
   ensureRawData();
   const files = loadFileList();
   await XXHash128.init();
   await XXHash128Wasm.init();
 
-  bench("native", async () => {
-    const h = new XXHash128();
-    await h.updateFilesBulk(files);
-    h.digest();
+  // Pre-warm the OS page cache so the first benchmark doesn't pay cold-read
+  // costs that unfairly penalize it relative to later benchmarks in the group.
+  await Promise.all(files.map((f) => readFile(f)));
+
+  bench("native (hashFilesBulk)", async () => {
+    await XXHash128.hashFilesBulk({ files });
   });
 
-  bench("WASM", async () => {
-    const h = new XXHash128Wasm();
-    await h.updateFilesBulk(files);
-    h.digest();
+  bench("native (hashFilesBulk + per file)", async () => {
+    await XXHash128.hashFilesBulk({ files, outputMode: "all" });
+  });
+
+  bench("WASM (hashFilesBulk)", async () => {
+    await XXHash128Wasm.hashFilesBulk({ files });
+  });
+
+  bench("WASM (hashFilesBulk + per file)", async () => {
+    await XXHash128Wasm.hashFilesBulk({ files, outputMode: "all" });
   });
 
   bench("Node.js crypto (md5)", async () => {
     await rawNodeCryptoHash(files, false);
   });
 
-  bench("native (per file output)", async () => {
-    const h = new XXHash128();
-    await h.updateFilesBulk(files, true);
-    h.digest();
-  });
-
-  bench("WASM (per file output)", async () => {
-    const h = new XXHash128Wasm();
-    await h.updateFilesBulk(files, true);
-    h.digest();
-  });
-
-  bench("Node.js crypto (per file output)", async () => {
+  bench("Node.js crypto (md5, per file)", async () => {
     await rawNodeCryptoHash(files, true);
   });
 });

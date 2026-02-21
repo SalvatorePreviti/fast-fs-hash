@@ -9,15 +9,15 @@
  * @module
  */
 
+import { types as utilTypes } from "node:util";
 import { encodeFilePaths } from "./functions";
 import { bufferAlloc, bufferFrom, isBuffer, toBuffer } from "./helpers";
 import type { NativeXXHash128Constructor, NativeXXHash128Instance } from "./native";
 import { loadNativeXXHash128 } from "./native";
 import type { HashInput } from "./types";
-import { XXHash128Base } from "./xxhash128-base";
+import type { HashFilesBulkOptions } from "./xxhash128-base";
+import { _hashFilesBulkImpl, XXHash128Base } from "./xxhash128-base";
 import { initWasmInstanceState, isWasmReady, XXHash128Wasm } from "./xxhash128-wasm";
-
-import { types as utilTypes } from "node:util";
 
 const { isUint8Array } = utilTypes;
 
@@ -81,11 +81,8 @@ async function nativeUpdateFilesBulk(
   allFilesOrOutput?: boolean | Uint8Array,
   outputOffset?: number
 ): Promise<Buffer | Uint8Array | null> {
-  const pathsBuf = isUint8Array(files)
-    ? isBuffer(files)
-      ? files
-      : bufferFrom(files.buffer, files.byteOffset, files.byteLength)
-    : encodeFilePaths(files);
+  // Accept Uint8Array directly — no Buffer conversion needed (N-API reads Uint8Array).
+  const pathsBuf = isUint8Array(files) ? files : encodeFilePaths(files);
 
   if (!pathsBuf.length) {
     if (!allFilesOrOutput) {
@@ -114,6 +111,41 @@ async function nativeUpdateFile(this: XXHash128 & NativeInstance, path: string):
   await this._native.updateFile(path);
 }
 
+/** Static hashFilesBulk — delegates directly to C++ without creating a JS wrapper instance. */
+async function nativeStaticHashFilesBulk(options: HashFilesBulkOptions<Uint8Array>): Promise<Buffer | Uint8Array> {
+  const ctor = _nativeCtor;
+  if (!ctor) {
+    throw new Error("XXHash128: library not initialized. Call XXHash128.init() first.");
+  }
+  const {
+    files,
+    outputMode: what = "digest",
+    concurrency = 0,
+    seedLow = 0,
+    seedHigh = 0,
+    outputBuffer,
+    outputOffset = 0,
+  } = options;
+
+  // Accept Uint8Array directly — no Buffer conversion needed (N-API reads Uint8Array).
+  const pathsBuf = isUint8Array(files) ? files : encodeFilePaths(files);
+
+  // Pass first charCode of outputMode as the mode identifier.
+  // 'd' (100) = DIGEST_ONLY, 'f' (102) = FILES_ONLY, 'a' (97) = ALL
+  const result = await ctor.hashFilesBulk(pathsBuf, concurrency, seedLow, seedHigh, what.charCodeAt(0));
+
+  if (outputBuffer) {
+    if (outputOffset + result.length > outputBuffer.byteLength) {
+      throw new RangeError(
+        `hashFilesBulk: outputBuffer too small (need ${result.length} bytes at offset ${outputOffset}, have ${outputBuffer.byteLength})`
+      );
+    }
+    outputBuffer.set(result, outputOffset);
+    return outputBuffer;
+  }
+  return result;
+}
+
 // ── Prototype patching ───────────────────────────────────────────────────
 
 /** Patch XXHash128.prototype with native-backed method implementations. */
@@ -133,6 +165,13 @@ function patchWithNative(): void {
     },
     configurable: true,
   });
+
+  // Static methods — delegate to C++ without any JS instance creation.
+  Object.defineProperty(XXHash128, "hashFilesBulk", {
+    value: nativeStaticHashFilesBulk,
+    writable: true,
+    configurable: true,
+  });
 }
 
 // ── XXHash128 class ──────────────────────────────────────────────────────
@@ -149,6 +188,15 @@ export class XXHash128 extends XXHash128Base {
     const h = new XXHash128(seedLow, seedHigh);
     h.update(input);
     return h.digest();
+  }
+
+  /** @inheritdoc */
+  public static override async hashFilesBulk<T extends Uint8Array>(
+    options: HashFilesBulkOptions<T> & { outputBuffer: T }
+  ): Promise<T>;
+  public static override async hashFilesBulk(options: HashFilesBulkOptions): Promise<Buffer>;
+  public static override async hashFilesBulk(options: HashFilesBulkOptions<Uint8Array>): Promise<Buffer | Uint8Array> {
+    return _hashFilesBulkImpl(XXHash128, options);
   }
 
   public constructor(seedLow = 0, seedHigh = 0) {

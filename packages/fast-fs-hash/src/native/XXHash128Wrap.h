@@ -3,6 +3,7 @@
 
 #include "InstanceHashWorker.h"
 #include "UpdateFileWorker.h"
+#include "StaticHashFilesWorker.h"
 
 // ── XXHash128 ObjectWrap ─────────────────────────────────────────────────
 
@@ -21,6 +22,7 @@ class XXHash128Wrap final : public Napi::ObjectWrap<XXHash128Wrap> {
         InstanceMethod<&XXHash128Wrap::HashFilesAggregate>("updateFilesBulkAggregate"),
         InstanceMethod<&XXHash128Wrap::UpdateFile>("updateFile"),
         StaticMethod<&XXHash128Wrap::Hash>("hash"),
+        StaticMethod<&XXHash128Wrap::HashFilesBulk>("hashFilesBulk"),
       });
   }
 
@@ -169,6 +171,30 @@ class XXHash128Wrap final : public Napi::ObjectWrap<XXHash128Wrap> {
     auto deferred = Napi::Promise::Deferred::New(env);
     auto * worker = new UpdateFileWorker(
       env, deferred, Napi::ObjectReference::New(info.This().As<Napi::Object>(), 1), info[0].As<Napi::String>().Utf8Value());
+    worker->Queue();
+    return deferred.Promise();
+  }
+
+  // ── static hashFilesBulk(pathsBuf, concurrency, seedLo, seedHi, mode) → Promise<Buffer>
+  //    Hashes all files + computes aggregate entirely in the worker thread.
+  //    mode: charcode of JS outputMode string — 'd' = DIGEST_ONLY, 'f' = FILES_ONLY, 'a' = ALL
+
+  static Napi::Value HashFilesBulk(const Napi::CallbackInfo & info) {
+    auto env = info.Env();
+    auto paths = info[0].As<Napi::Uint8Array>();
+    int concurrency = info[1].As<Napi::Number>().Int32Value();
+    uint32_t seedLo = info[2].As<Napi::Number>().Uint32Value();
+    uint32_t seedHi = info[3].As<Napi::Number>().Uint32Value();
+    int mode_raw = info[4].As<Napi::Number>().Int32Value();
+
+    uint64_t seed = (static_cast<uint64_t>(seedHi) << 32) | static_cast<uint64_t>(seedLo);
+    auto mode = mode_raw == 'f' ? StaticHashFilesWorker::Mode::FILES_ONLY
+              : mode_raw == 'a' ? StaticHashFilesWorker::Mode::ALL
+              : StaticHashFilesWorker::Mode::DIGEST_ONLY;
+
+    auto deferred = Napi::Promise::Deferred::New(env);
+    auto * worker = new StaticHashFilesWorker(env, deferred, concurrency, seed, mode);
+    worker->set_paths(Napi::ObjectReference::New(paths, 1), paths.Data(), paths.ElementLength());
     worker->Queue();
     return deferred.Promise();
   }

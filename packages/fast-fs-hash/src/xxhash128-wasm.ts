@@ -10,7 +10,8 @@
 import { readFile } from "node:fs/promises";
 import { toBuffer } from "./helpers";
 import type { HashInput } from "./types";
-import { XXHash128Base } from "./xxhash128-base";
+import type { HashFilesBulkOptions } from "./xxhash128-base";
+import { _hashFilesBulkImpl, XXHash128Base } from "./xxhash128-base";
 
 // ── WASM types ───────────────────────────────────────────────────────────
 
@@ -225,6 +226,17 @@ export class XXHash128Wasm extends XXHash128Base {
     const h = new XXHash128Wasm(seedLow, seedHigh);
     h.update(input);
     return h.digest();
+  }
+
+  /** @inheritdoc */
+  public static override async hashFilesBulk<T extends Uint8Array>(
+    options: HashFilesBulkOptions<T> & { outputBuffer: T },
+  ): Promise<T>;
+  public static override async hashFilesBulk(options: HashFilesBulkOptions): Promise<Buffer>;
+  public static override async hashFilesBulk(
+    options: HashFilesBulkOptions<Uint8Array>,
+  ): Promise<Buffer | Uint8Array> {
+    return _hashFilesBulkImpl(XXHash128Wasm, options);
   }
 
   public constructor(seedLow = 0, seedHigh = 0) {
