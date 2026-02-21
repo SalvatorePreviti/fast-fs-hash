@@ -204,7 +204,7 @@ jobs:
             npm run build
             npx cmake-js compile -d packages/fast-fs-hash/src/native --release
             ls -lh packages/fast-fs-hash/src/native/build/Release/fast_fs_hash.node
-            npm test
+            npx vitest run --pool=threads
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

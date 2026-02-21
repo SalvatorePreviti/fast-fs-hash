@@ -32,7 +32,7 @@
 #if defined(__GNUC__) || defined(__clang__)
 #  define FSH_PREFETCH(ptr) __builtin_prefetch(ptr, 0, 3)
 #  define FSH_PREFETCH_W(ptr) __builtin_prefetch(ptr, 1, 1)
-#elif defined(_MSC_VER)
+#elif defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
 #  include <intrin.h>
 #  define FSH_PREFETCH(ptr) _mm_prefetch(reinterpret_cast<const char *>(ptr), _MM_HINT_T0)
 #  define FSH_PREFETCH_W(ptr) _mm_prefetch(reinterpret_cast<const char *>(ptr), _MM_HINT_T0)
