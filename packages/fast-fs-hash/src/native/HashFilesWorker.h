@@ -43,8 +43,8 @@ namespace fast_fs_hash {
     XXH3_128bits_update(&state, rbuf, initial_bytes);
     for (;;) {
       const int64_t n = file.read(rbuf, READ_BUFFER_SIZE);
-      if (FSH_UNLIKELY(n <= 0)) {
-        if (FSH_LIKELY(n == 0)) {
+      if (n <= 0) [[unlikely]] {
+        if (n == 0) [[likely]] {
           XXH128_canonicalFromHash(reinterpret_cast<XXH128_canonical_t *>(dest), XXH3_128bits_digest(&state));
         } else {
           memset(dest, 0, 16);  // rare: read error mid-stream
@@ -78,11 +78,14 @@ namespace fast_fs_hash {
       // - Capped by MAX_STACK_THREADS and by the number of batches that
       //   actually have work.
       int hw = static_cast<int>(std::thread::hardware_concurrency());
-      if (FSH_UNLIKELY(hw < 2)) hw = 2;
+      if (hw < 2) [[unlikely]]
+        hw = 2;
 
       int tc = concurrency > 0 ? concurrency : hw;
-      if (FSH_UNLIKELY(tc > MAX_STACK_THREADS)) tc = MAX_STACK_THREADS;
-      if (FSH_UNLIKELY(tc < 1)) tc = 1;
+      if (tc > MAX_STACK_THREADS) [[unlikely]]
+        tc = MAX_STACK_THREADS;
+      if (tc < 1) [[unlikely]]
+        tc = 1;
 
       // Avoid global over-subscription when multiple bulk hash operations
       // run concurrently (e.g. parallel JS promises each calling hashFiles).
@@ -104,7 +107,8 @@ namespace fast_fs_hash {
       // Cap threads to the number of batches that actually have work.
       int max_useful = static_cast<int>((this->file_count + batch - 1) / batch);
       if (tc > max_useful) tc = max_useful;
-      if (FSH_UNLIKELY(tc < 1)) tc = 1;
+      if (tc < 1) [[unlikely]]
+        tc = 1;
 
       this->work_batch = batch;
       this->next_index.store(0, std::memory_order_relaxed);
@@ -135,7 +139,8 @@ namespace fast_fs_hash {
         // Batch work stealing — claim `wb` files per atomic to reduce
         // cache-line bouncing between cores.
         const size_t base = this->next_index.fetch_add(wb, std::memory_order_relaxed);
-        if (FSH_UNLIKELY(base >= fc)) break;
+        if (base >= fc) [[unlikely]]
+          break;
         const size_t batch_end = base + wb < fc ? base + wb : fc;
 
         for (size_t idx = base; idx < batch_end; ++idx) {
@@ -147,20 +152,20 @@ namespace fast_fs_hash {
           FSH_PREFETCH_W(dest);
 
           // Skip empty paths — rare (consecutive null terminators).
-          if (FSH_UNLIKELY(path[0] == '\0')) {
+          if (path[0] == '\0') [[unlikely]] {
             memset(dest, 0, 16);
             continue;
           }
 
           FileHandle file(path);
           const int64_t n = file.read(rbuf, READ_BUFFER_SIZE);
-          if (FSH_UNLIKELY(n < 0)) {
+          if (n < 0) [[unlikely]] {
             memset(dest, 0, 16);  // rare: unreadable file
             continue;
           }
 
           const size_t bytes = static_cast<size_t>(n);
-          if (FSH_LIKELY(bytes < READ_BUFFER_SIZE)) {
+          if (bytes < READ_BUFFER_SIZE) [[likely]] {
             // Entire file in one read — one-shot hash (common fast path).
             XXH128_canonicalFromHash(reinterpret_cast<XXH128_canonical_t *>(dest), XXH3_128bits(rbuf, bytes));
             continue;

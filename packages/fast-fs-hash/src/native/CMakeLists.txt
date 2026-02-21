@@ -1,7 +1,8 @@
 # fast-fs-hash — Native addon build configuration
 #
 # Uses cmake-js for Node.js addon compilation and CMake FetchContent
-# to pull in xxHash. No vendored third-party source code.
+# to pull in xxHash. The xxHash source files are also committed to git
+# (build/_deps/xxhash-src/) so CI builds work even if GitHub is down.
 #
 # Build:
 #   npx cmake-js compile -d src/native
@@ -15,6 +16,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # ── xxHash via FetchContent ───────────────────────────────────────────────
+
+# Skip re-downloading once xxHash is already populated (the source files
+# are committed to git, so this avoids network dependency on fresh checkouts).
+set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
 
 include(FetchContent)
 FetchContent_Declare(

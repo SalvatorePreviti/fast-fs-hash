@@ -41,18 +41,11 @@
 #  define FSH_PREFETCH_W(ptr) ((void)0)
 #endif
 
-/** Branch prediction hints — likely / unlikely.
- *  GCC/Clang: __builtin_expect works in expressions (usable in if/while conditions).
- *  MSVC: no expression-level equivalent; C++20 [[likely]]/[[unlikely]] are
- *  statement attributes only. We use (x) as a passthrough on MSVC — the
- *  compiler's PGO and branch patterns handle it well enough. */
-#if defined(__GNUC__) || defined(__clang__)
-#  define FSH_LIKELY(x) __builtin_expect(!!(x), 1)
-#  define FSH_UNLIKELY(x) __builtin_expect(!!(x), 0)
-#else
-#  define FSH_LIKELY(x) (x)
-#  define FSH_UNLIKELY(x) (x)
-#endif
+// Note: branch prediction hints use C++20 [[likely]]/[[unlikely]] attributes
+// directly at call sites instead of macros. All target compilers (GCC 9+,
+// Clang 12+, MSVC 19.26+) support them and produce identical codegen
+// to the old __builtin_expect approach, with the benefit of also working
+// on MSVC where __builtin_expect is not available.
 
 /** Force no-inline + cold for rare paths — keeps icache tight. */
 #if defined(__GNUC__) || defined(__clang__)
@@ -91,7 +84,7 @@ FSH_FORCE_INLINE void * aligned_malloc(size_t alignment, size_t size) noexcept {
 #ifdef _MSC_VER
   p = _aligned_malloc(size, alignment);
 #else
-  if (FSH_UNLIKELY(posix_memalign(&p, alignment, size) != 0)) return nullptr;
+  if (posix_memalign(&p, alignment, size) != 0) [[unlikely]] return nullptr;
 #endif
   return p;
 }

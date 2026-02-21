@@ -19,14 +19,14 @@ inline void InstanceHashWorker::Execute() {
   PathIndex paths(this->paths_data_, this->paths_len_);
   const size_t file_count = paths.count;
 
-  if (FSH_LIKELY(file_count > 0)) {
+  if (file_count > 0) [[likely]] {
     const size_t needed = file_count * 16;
     if (!this->output.data) {
-      if (FSH_UNLIKELY(!this->output.allocate(fast_fs_hash::OUTPUT_ALIGNMENT, needed))) {
+      if (!this->output.allocate(fast_fs_hash::OUTPUT_ALIGNMENT, needed)) [[unlikely]] {
         SetError("hash_files: out of memory");
         return;
       }
-    } else if (FSH_UNLIKELY(needed > this->output.len)) {
+    } else if (needed > this->output.len) [[unlikely]] {
       SetError("hash_files: output buffer too small");
       return;
     } else {

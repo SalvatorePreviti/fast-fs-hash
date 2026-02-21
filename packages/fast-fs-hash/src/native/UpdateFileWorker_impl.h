@@ -15,7 +15,7 @@
 
 inline void UpdateFileWorker::Execute() {
   fast_fs_hash::FileHandle fh(this->path_.c_str());
-  if (FSH_UNLIKELY(!fh)) {
+  if (!fh) [[unlikely]] {
     SetError("updateFile: cannot open file");
     return;
   }
@@ -24,7 +24,7 @@ inline void UpdateFileWorker::Execute() {
   static constexpr size_t INITIAL_CAP = 256 * 1024;
   size_t cap = INITIAL_CAP;
   uint8_t * buf = static_cast<uint8_t *>(malloc(cap));
-  if (FSH_UNLIKELY(!buf)) {
+  if (!buf) [[unlikely]] {
     SetError("updateFile: out of memory");
     return;
   }
@@ -34,7 +34,7 @@ inline void UpdateFileWorker::Execute() {
     if (len == cap) {
       cap *= 2;
       uint8_t * p = static_cast<uint8_t *>(realloc(buf, cap));
-      if (FSH_UNLIKELY(!p)) {
+      if (!p) [[unlikely]] {
         free(buf);
         this->data_ = nullptr;
         SetError("updateFile: out of memory");
@@ -43,7 +43,7 @@ inline void UpdateFileWorker::Execute() {
       buf = p;
     }
     const int64_t n = fh.read(buf + len, cap - len);
-    if (FSH_UNLIKELY(n < 0)) {
+    if (n < 0) [[unlikely]] {
       free(buf);
       this->data_ = nullptr;
       SetError("updateFile: read error");

@@ -41,14 +41,14 @@ class StaticHashFilesWorker final : public Napi::AsyncWorker {
     const size_t file_count = paths.count;
     const uint64_t seed = this->seed_;
 
-    if (FSH_LIKELY(file_count > 0)) {
+    if (file_count > 0) [[likely]] {
       const size_t per_file_bytes = file_count * 16;
 
       switch (this->mode_) {
         case Mode::ALL: {
           // Allocate [digest(16) | per-file hashes (N×16)]
           const size_t total = 16 + per_file_bytes;
-          if (FSH_UNLIKELY(!this->output_.allocate(fast_fs_hash::OUTPUT_ALIGNMENT, total))) {
+          if (!this->output_.allocate(fast_fs_hash::OUTPUT_ALIGNMENT, total)) [[unlikely]] {
             SetError("hashFilesBulk: out of memory");
             return;
           }
@@ -63,7 +63,7 @@ class StaticHashFilesWorker final : public Napi::AsyncWorker {
         }
 
         case Mode::FILES_ONLY: {
-          if (FSH_UNLIKELY(!this->output_.allocate(fast_fs_hash::OUTPUT_ALIGNMENT, per_file_bytes))) {
+          if (!this->output_.allocate(fast_fs_hash::OUTPUT_ALIGNMENT, per_file_bytes)) [[unlikely]] {
             SetError("hashFilesBulk: out of memory");
             return;
           }
@@ -75,7 +75,7 @@ class StaticHashFilesWorker final : public Napi::AsyncWorker {
         case Mode::DIGEST_ONLY: {
           // Temporary buffer for per-file hashes — freed after aggregate.
           uint8_t * tmp = static_cast<uint8_t *>(aligned_malloc(fast_fs_hash::OUTPUT_ALIGNMENT, per_file_bytes));
-          if (FSH_UNLIKELY(!tmp)) {
+          if (!tmp) [[unlikely]] {
             SetError("hashFilesBulk: out of memory");
             return;
           }
@@ -101,7 +101,7 @@ class StaticHashFilesWorker final : public Napi::AsyncWorker {
           break;
         case Mode::ALL:
           // Return 16-byte digest only (no per-file hashes follow).
-          if (FSH_UNLIKELY(!this->output_.allocate(fast_fs_hash::OUTPUT_ALIGNMENT, 16))) {
+          if (!this->output_.allocate(fast_fs_hash::OUTPUT_ALIGNMENT, 16)) [[unlikely]] {
             SetError("hashFilesBulk: out of memory");
             return;
           }

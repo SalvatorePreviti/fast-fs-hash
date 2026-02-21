@@ -44,7 +44,7 @@ class XXHash128Wrap final : public Napi::ObjectWrap<XXHash128Wrap> {
     uint32_t offset = info[1].As<Napi::Number>().Uint32Value();
     uint32_t length = info[2].As<Napi::Number>().Uint32Value();
 
-    if (FSH_UNLIKELY(static_cast<size_t>(offset) + length > buf.Length())) {
+    if (static_cast<size_t>(offset) + length > buf.Length()) [[unlikely]] {
       Napi::RangeError::New(env, "update: offset + length exceeds buffer size").ThrowAsJavaScriptException();
       return env.Undefined();
     }
@@ -69,7 +69,7 @@ class XXHash128Wrap final : public Napi::ObjectWrap<XXHash128Wrap> {
     auto buf = info[0].As<Napi::Buffer<uint8_t>>();
     uint32_t offset = info[1].As<Napi::Number>().Uint32Value();
 
-    if (FSH_UNLIKELY(static_cast<size_t>(offset) + 16 > buf.Length())) {
+    if (static_cast<size_t>(offset) + 16 > buf.Length()) [[unlikely]] {
       Napi::RangeError::New(env, "digestTo: output buffer too small (need 16 bytes)").ThrowAsJavaScriptException();
       return env.Undefined();
     }
@@ -95,7 +95,7 @@ class XXHash128Wrap final : public Napi::ObjectWrap<XXHash128Wrap> {
     uint32_t offset = info[1].As<Napi::Number>().Uint32Value();
     uint32_t length = info[2].As<Napi::Number>().Uint32Value();
 
-    if (FSH_UNLIKELY(static_cast<size_t>(offset) + length > buf.Length())) {
+    if (static_cast<size_t>(offset) + length > buf.Length()) [[unlikely]] {
       Napi::RangeError::New(env, "hash: offset + length exceeds buffer size").ThrowAsJavaScriptException();
       return env.Undefined();
     }
@@ -133,7 +133,7 @@ class XXHash128Wrap final : public Napi::ObjectWrap<XXHash128Wrap> {
     if (info.Length() >= 3 && info[2].IsTypedArray()) {
       size_t output_offset = info.Length() >= 4 ? info[3].As<Napi::Number>().Uint32Value() : 0;
       const char * err = worker->set_external_output(info[2].As<Napi::Uint8Array>(), output_offset);
-      if (FSH_UNLIKELY(err)) {
+      if (err) [[unlikely]] {
         delete worker;
         Napi::RangeError::New(env, err).ThrowAsJavaScriptException();
         return env.Undefined();

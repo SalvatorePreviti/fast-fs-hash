@@ -32,13 +32,12 @@ namespace fast_fs_hash {
       // O_NOATIME avoids atime metadata writes — significant I/O saving.
       // Requires ownership of the file or CAP_FOWNER; silently retry without it.
       this->fd_ = ::open(path, O_RDONLY | O_CLOEXEC | O_NOATIME);
-      if (FSH_UNLIKELY(this->fd_ < 0 && errno == EPERM)) {
+      if (this->fd_ < 0 && errno == EPERM) [[unlikely]] {
         this->fd_ = ::open(path, O_RDONLY | O_CLOEXEC);
       }
 #  else
       this->fd_ = ::open(path, O_RDONLY | O_CLOEXEC);
 #  endif
-
     }
 
     /** Advise the OS that we'll read this file sequentially.
@@ -69,10 +68,10 @@ namespace fast_fs_hash {
     FSH_FORCE_INLINE int64_t read(void * buf, size_t len) noexcept {
       for (;;) {
         ssize_t n = ::read(this->fd_, buf, len);
-        if (FSH_LIKELY(n >= 0)) {
+        if (n >= 0) [[likely]] {
           return static_cast<int64_t>(n);
         }
-        if (FSH_LIKELY(errno == EINTR)) {
+        if (errno == EINTR) [[likely]] {
           continue;
         }
         return -1;
@@ -94,13 +93,14 @@ namespace fast_fs_hash {
    public:
     explicit FileHandle(const char * path) noexcept : h_(INVALID_HANDLE_VALUE) {
       int wlen = MultiByteToWideChar(CP_UTF8, 0, path, -1, nullptr, 0);
-      if (FSH_UNLIKELY(wlen <= 0)) return;
+      if (wlen <= 0) [[unlikely]]
+        return;
 
       wchar_t stack_buf[STACK_WPATH_SIZE];
       wchar_t * wpath = stack_buf;
       wchar_t * heap_buf = nullptr;
 
-      if (FSH_UNLIKELY(wlen > STACK_WPATH_SIZE)) {
+      if (wlen > STACK_WPATH_SIZE) [[unlikely]] {
         heap_buf = static_cast<wchar_t *>(malloc(static_cast<size_t>(wlen) * sizeof(wchar_t)));
         if (!heap_buf) {
           return;
@@ -140,7 +140,7 @@ namespace fast_fs_hash {
     FSH_FORCE_INLINE int64_t read(void * buf, size_t len) noexcept {
       DWORD to_read = len > 0x7FFFFFFFu ? 0x7FFFFFFFu : static_cast<DWORD>(len);
       DWORD bytes_read = 0;
-      if (FSH_UNLIKELY(!ReadFile(this->h_, buf, to_read, &bytes_read, nullptr))) {
+      if (!ReadFile(this->h_, buf, to_read, &bytes_read, nullptr)) [[unlikely]] {
         return -1;
       }
       return static_cast<int64_t>(bytes_read);

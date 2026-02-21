@@ -46,7 +46,7 @@ class InstanceHashWorker final : public Napi::AsyncWorker {
     uint8_t * data = output_arr.Data();
     size_t len = output_arr.ElementLength();
 
-    if (FSH_UNLIKELY(offset > len)) {
+    if (offset > len) [[unlikely]] {
       return "updateFilesBulk: outputOffset out of range";
     }
     data += offset;
@@ -57,7 +57,7 @@ class InstanceHashWorker final : public Napi::AsyncWorker {
     for (size_t i = 0; i < this->paths_len_; ++i) {
       if (this->paths_data_[i] == 0) ++file_count;
     }
-    if (FSH_UNLIKELY(file_count * 16 > len)) {
+    if (file_count * 16 > len) [[unlikely]] {
       return "updateFilesBulk: output buffer too small";
     }
 
