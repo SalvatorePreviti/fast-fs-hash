@@ -60,6 +60,7 @@ for (const file of SHARED_FILES) {
   }
 }
 
+sync.logSummary();
 sync.throwIfOutOfDate("Shared files are out of date. Run `npm run build` locally and commit the result.");
 
 logOk(`Shared files synced (${elapsed(t0)})`);

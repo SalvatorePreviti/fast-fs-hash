@@ -43,6 +43,7 @@ for (const platform of platforms) {
   sync.syncJson(pkgPath, pkg);
 }
 
+sync.logSummary();
 sync.throwIfOutOfDate("Package versions are out of date. Run `npm run build` locally and commit the result.");
 
 logOk(`Versions synced (${elapsed(t0)})`);

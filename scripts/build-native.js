@@ -42,6 +42,7 @@ execFileSync(cmakeJs, args, {
   cwd: ROOT_DIR,
   stdio: "inherit",
   env: process.env,
+  shell: process.platform === "win32",
 });
 
 // Print binary size
