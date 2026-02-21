@@ -19,6 +19,7 @@ inline void UpdateFileWorker::Execute() {
     SetError("updateFile: cannot open file");
     return;
   }
+  fh.hint_sequential();  // multi-read streaming path benefits from readahead
 
   static constexpr size_t INITIAL_CAP = 256 * 1024;
   size_t cap = INITIAL_CAP;

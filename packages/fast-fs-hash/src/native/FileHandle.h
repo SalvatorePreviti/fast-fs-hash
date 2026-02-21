@@ -39,14 +39,18 @@ namespace fast_fs_hash {
       this->fd_ = ::open(path, O_RDONLY | O_CLOEXEC);
 #  endif
 
-      if (FSH_LIKELY(this->fd_ >= 0)) {
+    }
+
+    /** Advise the OS that we'll read this file sequentially.
+     *  Only useful for multi-read (large file) paths — the one-shot
+     *  hot path skips this to avoid the extra syscall. */
+    FSH_FORCE_INLINE void hint_sequential() noexcept {
 #  ifdef F_RDAHEAD
-        fcntl(this->fd_, F_RDAHEAD, 1);
+      fcntl(this->fd_, F_RDAHEAD, 1);
 #  endif
 #  ifdef POSIX_FADV_SEQUENTIAL
-        posix_fadvise(this->fd_, 0, 0, POSIX_FADV_SEQUENTIAL);
+      posix_fadvise(this->fd_, 0, 0, POSIX_FADV_SEQUENTIAL);
 #  endif
-      }
     }
 
     ~FileHandle() noexcept {
@@ -128,6 +132,9 @@ namespace fast_fs_hash {
 
     /** Returns true if the file was opened successfully. */
     FSH_FORCE_INLINE explicit operator bool() const noexcept { return this->h_ != INVALID_HANDLE_VALUE; }
+
+    /** No-op on Windows — FILE_FLAG_SEQUENTIAL_SCAN is set at open time. */
+    FSH_FORCE_INLINE void hint_sequential() noexcept {}
 
     /** Read up to len bytes into buf. Returns bytes read (> 0), 0 on EOF, or -1 on error. */
     FSH_FORCE_INLINE int64_t read(void * buf, size_t len) noexcept {

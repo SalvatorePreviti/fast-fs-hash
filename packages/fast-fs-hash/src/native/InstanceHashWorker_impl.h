@@ -32,7 +32,8 @@ inline void InstanceHashWorker::Execute() {
     } else {
       this->output.len = needed;
     }
-    fast_fs_hash::HashFilesWorker::run(paths.segments, file_count, this->output.data, this->concurrency_);
+    fast_fs_hash::HashFilesWorker worker{paths.segments, file_count, this->output.data};
+    worker.run(this->concurrency_);
   } else {
     this->output.len = 0;
   }

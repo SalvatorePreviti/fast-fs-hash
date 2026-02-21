@@ -18,7 +18,7 @@
  * @module
  */
 
-export { decodeFilePaths, encodeFilePaths, hashesToHexArray } from "./functions";
+export { decodeFilePaths, encodeFilePaths, hashesToHexArray, hashToHex } from "./functions";
 export type { HashInput } from "./types";
 export { XXHash128 } from "./xxhash128";
 export type { XXHash128LibraryStatus } from "./xxhash128-base";

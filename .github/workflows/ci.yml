@@ -66,7 +66,7 @@ jobs:
 
           # ── Linux glibc (build + test natively) ────────────────────────
           - target: linux-x64-gnu
-            os: ubuntu-22.04
+            os: ubuntu-24.04
             can-test: true
           - target: linux-arm64-gnu
             os: ubuntu-24.04-arm
@@ -74,7 +74,7 @@ jobs:
 
           # ── Linux musl (build in Docker, test in separate job) ─────────
           - target: linux-x64-musl
-            os: ubuntu-22.04
+            os: ubuntu-24.04
             use-docker: true
           - target: linux-arm64-musl
             os: ubuntu-24.04-arm
@@ -158,7 +158,7 @@ jobs:
       matrix:
         include:
           - target: linux-x64-musl
-            runner: ubuntu-22.04
+            runner: ubuntu-24.04
           - target: linux-arm64-musl
             runner: ubuntu-24.04-arm
     steps:

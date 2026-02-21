@@ -141,7 +141,7 @@ function updateReadme(content) {
 
 const benchData = runBenchmarks();
 
-const benches = findBenchesInGroup(benchData, "hashFiles");
+const benches = findBenchesInGroup(benchData, "updateFilesBulk");
 const totalBytes = getBenchmarkTotalBytes();
 
 const sections = [

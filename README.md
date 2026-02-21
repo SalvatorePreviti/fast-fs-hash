@@ -18,13 +18,20 @@ _Note: Unfortunately this package will not help you naming things, at least, not
 
 ## Benchmarks
 
-Hashing **701 files** (~20 MiB total), with and without per-file output:
+Hashing **705 files** (~24 MiB total), with and without per-file output:
 
 <!-- BENCHMARKS:START -->
 
 Results from Node.js v22.22.0, Vitest 4.x:
 
-_No benchmark data available._
+| Scenario                         | Mean    | Throughput | Relative        |
+| -------------------------------- | ------- | ---------- | --------------- |
+| native                           | 4.8 ms  | 5.1 GB/s   | **8.8× faster** |
+| native (per file output)         | 4.9 ms  | 5.1 GB/s   | **8.6× faster** |
+| WASM                             | 13.2 ms | 1.9 GB/s   | **3.2× faster** |
+| WASM (per file output)           | 13.3 ms | 1.9 GB/s   | **3.2× faster** |
+| Node.js crypto (md5)             | 42.1 ms | 0.6 GB/s   | **1.0× faster** |
+| Node.js crypto (per file output) | 42.3 ms | 0.6 GB/s   | baseline        |
 
 _Results vary by hardware, file sizes, and OS cache state._
 
@@ -43,8 +50,9 @@ If a prebuilt binary isn't available, the bundled WASM module kicks in automatic
 | ------------- | ------------ | :----: | :-----------: |
 | macOS         | arm64, x64   |   ✅   |      ✅       |
 | Linux (glibc) | x64, arm64   |   ✅   |      ✅       |
-| Linux (musl)  | x64          |   ✅   |      ✅       |
-| Windows       | x64          |   ✅   |      ✅       |
+| Linux (musl)  | x64, arm64   |   ✅   |      ✅       |
+| Windows       | x64, arm64   |   ✅   |      ✅       |
+| FreeBSD       | x64          |   ✅   |      ✅       |
 | Any other     | any          |   —    |      ✅       |
 
 ## Quick start
@@ -57,7 +65,7 @@ await XXHash128.init();
 
 // Hash a set of files — paths must be sorted for deterministic results
 const hasher = new XXHash128();
-await hasher.hashFiles(["package.json", "src/index.ts", "src/utils.ts"]);
+await hasher.updateFilesBulk(["package.json", "src/index.ts", "src/utils.ts"]);
 console.log(hasher.digest().toString("hex"));
 // → "a1b2c3d4e5f6...0123456789ab" (32 hex chars = 128 bits)
 ```
@@ -75,7 +83,7 @@ await XXHash128.init();
 const files = globSync("src/**/*.ts").sort();
 
 const h = new XXHash128();
-await h.hashFiles(files);
+await h.updateFilesBulk(files);
 const hash = h.digest().toString("hex");
 
 let cached: string | undefined;
@@ -122,25 +130,25 @@ console.log(h.digest().toString("hex"));
 
 The primary entry point. Uses the native C++ addon when available, WASM otherwise.
 
-| Method / Property                            | Description                                                                                 |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `XXHash128.init()`                           | Initialize the backend. Call **once** before creating instances. No-op on subsequent calls. |
-| `XXHash128.hash(input, seedLow?, seedHigh?)` | One-shot hash → 16-byte `Buffer`.                                                           |
-| `new XXHash128(seedLow?, seedHigh?)`         | Create a streaming hasher. Throws if `init()` hasn't been called.                           |
-| `hasher.update(input, offset?, length?)`     | Feed data (`string \| Buffer \| Uint8Array`).                                               |
-| `hasher.digest()`                            | Return 16-byte hash. Does **not** reset — call again for incremental snapshots.             |
-| `hasher.digestTo(output, offset?)`           | Write 16-byte hash into an existing buffer.                                                 |
-| `hasher.reset()`                             | Reset to initial state (same seed).                                                         |
-| `hasher.hashFiles(files)`                    | Hash files in parallel → feed per-file hashes into streaming state. Returns `null`.         |
-| `hasher.hashFiles(files, true)`              | Same, but returns `Buffer` of all per-file hashes (`N × 16` bytes).                         |
-| `hasher.hashFiles(files, output, offset?)`   | Same, writes per-file hashes into your buffer.                                              |
-| `hasher.updateFile(path)`                    | Read file(s) and feed **raw contents** into hasher. Returns file count.                     |
-| `hasher.concurrency`                         | Max parallel I/O. `0` (default) = auto.                                                     |
-| `hasher.libraryStatus`                       | `"native" \| "wasm" \| "not-initialized"`                                                   |
+| Method / Property                                  | Description                                                                                      |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `XXHash128.init()`                                 | Initialize the backend. Call **once** before creating instances. No-op on subsequent calls.      |
+| `XXHash128.hash(input, seedLow?, seedHigh?)`       | One-shot hash → 16-byte `Buffer`.                                                                |
+| `new XXHash128(seedLow?, seedHigh?)`               | Create a streaming hasher. Throws if `init()` hasn't been called.                                |
+| `hasher.update(input, offset?, length?)`           | Feed data (`string \| Buffer \| Uint8Array`).                                                    |
+| `hasher.digest()`                                  | Return 16-byte hash. Does **not** reset — call again for incremental snapshots.                  |
+| `hasher.digestTo(output, offset?)`                 | Write 16-byte hash into an existing buffer.                                                      |
+| `hasher.reset()`                                   | Reset to initial state (same seed).                                                              |
+| `hasher.updateFilesBulk(files)`                    | Hash files in parallel → feed per-file hashes into streaming state. Returns `null`.              |
+| `hasher.updateFilesBulk(files, true)`              | Same, but returns `Buffer` of all per-file hashes (`N × 16` bytes).                              |
+| `hasher.updateFilesBulk(files, output, offset?)`   | Same, writes per-file hashes into your buffer.                                                   |
+| `hasher.updateFile(path)`                          | Read a single file and feed its **raw content** into the hasher (no per-file hash).              |
+| `hasher.concurrency`                               | Max parallel threads. `0` (default) = auto (hardware concurrency).                               |
+| `hasher.libraryStatus`                             | `"native" \| "wasm" \| "not-initialized"`                                                        |
 
 **`files`** can be `string[]` or a `Uint8Array` of null-separated UTF-8 paths.
 Unreadable files are silently skipped (zero hash). **Sort paths before hashing** for
-deterministic results — `hashFiles` does not sort internally.
+deterministic results — `updateFilesBulk` does not sort internally.
 
 ### `XXHash128Wasm`
 

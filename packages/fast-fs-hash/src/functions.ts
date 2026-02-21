@@ -9,8 +9,6 @@
 
 import { bufferAlloc, bufferAllocUnsafe, bufferByteLength, bufferFrom } from "./helpers";
 
-// ── File path encoding / decoding ────────────────────────────────────────
-
 /**
  * Encode an array of file paths into a null-separated buffer.
  *
@@ -95,19 +93,18 @@ export function decodeFilePaths(buf: Uint8Array): string[] {
   return paths;
 }
 
-// ── Hash buffer utilities ────────────────────────────────────────────────
+/** Nibble (0–15) → ASCII char code for '0'–'9' / 'a'–'f'. Inlined by TurboFan. */
+const _nib = (n: number): number => n + (n < 10 ? 48 : 87);
 
-// Pre-computed hex lookup table (0x00–0xff → "00"–"ff").
-const HEX_TABLE: string[] = new Array<string>(256);
-for (let i = 0; i < 256; i++) {
-  HEX_TABLE[i] = (i < 16 ? "0" : "") + i.toString(16);
-}
+/** Captured once to avoid `String` global + `fromCharCode` property lookups. */
+const _fromCharCode = String.fromCharCode;
 
 /**
  * Split a buffer of concatenated 16-byte hashes into an array of hex strings.
  *
- * Uses a pre-computed lookup table for direct byte→hex conversion,
- * avoiding Buffer.toString("hex") overhead and subarray allocation per hash.
+ * Reads 16 bytes into locals, then passes 32 nibble→char-code expressions to a
+ * single `String.fromCharCode` call — one allocation per string, no rope chains,
+ * no scratch buffers, no lookup tables.
  *
  * @param hashes A `Uint8Array` or `Buffer` whose length is a multiple of 16.
  * @returns Array of lowercase hex strings, one per 16-byte hash.
@@ -116,25 +113,120 @@ export function hashesToHexArray(hashes: Uint8Array): string[] {
   const len = hashes.length;
   const count = len >>> 4; // len / 16
   const result = new Array<string>(count);
-  for (let i = 0; i < count; i++) {
-    const off = i << 4;
-    result[i] =
-      HEX_TABLE[hashes[off]] +
-      HEX_TABLE[hashes[off + 1]] +
-      HEX_TABLE[hashes[off + 2]] +
-      HEX_TABLE[hashes[off + 3]] +
-      HEX_TABLE[hashes[off + 4]] +
-      HEX_TABLE[hashes[off + 5]] +
-      HEX_TABLE[hashes[off + 6]] +
-      HEX_TABLE[hashes[off + 7]] +
-      HEX_TABLE[hashes[off + 8]] +
-      HEX_TABLE[hashes[off + 9]] +
-      HEX_TABLE[hashes[off + 10]] +
-      HEX_TABLE[hashes[off + 11]] +
-      HEX_TABLE[hashes[off + 12]] +
-      HEX_TABLE[hashes[off + 13]] +
-      HEX_TABLE[hashes[off + 14]] +
-      HEX_TABLE[hashes[off + 15]];
+  for (let off = 0, ri = 0; off < len; off += 16) {
+    const b0 = hashes[off];
+    const b1 = hashes[off + 1];
+    const b2 = hashes[off + 2];
+    const b3 = hashes[off + 3];
+    const b4 = hashes[off + 4];
+    const b5 = hashes[off + 5];
+    const b6 = hashes[off + 6];
+    const b7 = hashes[off + 7];
+    const b8 = hashes[off + 8];
+    const b9 = hashes[off + 9];
+    const b10 = hashes[off + 10];
+    const b11 = hashes[off + 11];
+    const b12 = hashes[off + 12];
+    const b13 = hashes[off + 13];
+    const b14 = hashes[off + 14];
+    const b15 = hashes[off + 15];
+    result[ri++] = _fromCharCode(
+      _nib(b0 >>> 4),
+      _nib(b0 & 0xf),
+      _nib(b1 >>> 4),
+      _nib(b1 & 0xf),
+      _nib(b2 >>> 4),
+      _nib(b2 & 0xf),
+      _nib(b3 >>> 4),
+      _nib(b3 & 0xf),
+      _nib(b4 >>> 4),
+      _nib(b4 & 0xf),
+      _nib(b5 >>> 4),
+      _nib(b5 & 0xf),
+      _nib(b6 >>> 4),
+      _nib(b6 & 0xf),
+      _nib(b7 >>> 4),
+      _nib(b7 & 0xf),
+      _nib(b8 >>> 4),
+      _nib(b8 & 0xf),
+      _nib(b9 >>> 4),
+      _nib(b9 & 0xf),
+      _nib(b10 >>> 4),
+      _nib(b10 & 0xf),
+      _nib(b11 >>> 4),
+      _nib(b11 & 0xf),
+      _nib(b12 >>> 4),
+      _nib(b12 & 0xf),
+      _nib(b13 >>> 4),
+      _nib(b13 & 0xf),
+      _nib(b14 >>> 4),
+      _nib(b14 & 0xf),
+      _nib(b15 >>> 4),
+      _nib(b15 & 0xf)
+    );
   }
   return result;
+}
+
+/**
+ * Convert a single 16-byte hash to a 32-character lowercase hex string.
+ *
+ * Same approach as `hashesToHexArray` — reads 16 bytes, passes 32
+ * nibble→char-code expressions to one `String.fromCharCode` call.
+ *
+ * @param hash A `Uint8Array` or `Buffer` of at least `offset + 16` bytes.
+ * @param offset Byte offset to start reading from (default `0`).
+ * @returns 32-character lowercase hex string.
+ */
+export function hashToHex(hash: Uint8Array, offset = 0): string {
+  const b0 = hash[offset];
+  const b1 = hash[offset + 1];
+  const b2 = hash[offset + 2];
+  const b3 = hash[offset + 3];
+  const b4 = hash[offset + 4];
+  const b5 = hash[offset + 5];
+  const b6 = hash[offset + 6];
+  const b7 = hash[offset + 7];
+  const b8 = hash[offset + 8];
+  const b9 = hash[offset + 9];
+  const b10 = hash[offset + 10];
+  const b11 = hash[offset + 11];
+  const b12 = hash[offset + 12];
+  const b13 = hash[offset + 13];
+  const b14 = hash[offset + 14];
+  const b15 = hash[offset + 15];
+  return _fromCharCode(
+    _nib(b0 >>> 4),
+    _nib(b0 & 0xf),
+    _nib(b1 >>> 4),
+    _nib(b1 & 0xf),
+    _nib(b2 >>> 4),
+    _nib(b2 & 0xf),
+    _nib(b3 >>> 4),
+    _nib(b3 & 0xf),
+    _nib(b4 >>> 4),
+    _nib(b4 & 0xf),
+    _nib(b5 >>> 4),
+    _nib(b5 & 0xf),
+    _nib(b6 >>> 4),
+    _nib(b6 & 0xf),
+    _nib(b7 >>> 4),
+    _nib(b7 & 0xf),
+    _nib(b8 >>> 4),
+    _nib(b8 & 0xf),
+    _nib(b9 >>> 4),
+    _nib(b9 & 0xf),
+    _nib(b10 >>> 4),
+    _nib(b10 & 0xf),
+    _nib(b11 >>> 4),
+    _nib(b11 & 0xf),
+    _nib(b12 >>> 4),
+    _nib(b12 & 0xf),
+    _nib(b13 >>> 4),
+    _nib(b13 & 0xf),
+    _nib(b14 >>> 4),
+    _nib(b14 & 0xf),
+    _nib(b15 >>> 4),
+    _nib(b15 & 0xf)
+  );
 }

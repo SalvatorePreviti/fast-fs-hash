@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <atomic>
+#include <memory>
 #include <thread>
 
 #include <napi.h>
@@ -40,7 +41,11 @@
 #  define FSH_PREFETCH_W(ptr) ((void)0)
 #endif
 
-/** Branch prediction hints — likely / unlikely. */
+/** Branch prediction hints — likely / unlikely.
+ *  GCC/Clang: __builtin_expect works in expressions (usable in if/while conditions).
+ *  MSVC: no expression-level equivalent; C++20 [[likely]]/[[unlikely]] are
+ *  statement attributes only. We use (x) as a passthrough on MSVC — the
+ *  compiler's PGO and branch patterns handle it well enough. */
 #if defined(__GNUC__) || defined(__clang__)
 #  define FSH_LIKELY(x) __builtin_expect(!!(x), 1)
 #  define FSH_UNLIKELY(x) __builtin_expect(!!(x), 0)
@@ -66,6 +71,19 @@
 #else
 #  define FSH_FORCE_INLINE inline
 #endif
+
+/** Hint to the compiler that a pointer is aligned to N bytes.
+ *  Enables vectorized loads/stores without alignment checks on the hot path. */
+template <size_t N, typename T>
+FSH_FORCE_INLINE constexpr T * assume_aligned(T * ptr) noexcept {
+#if defined(__cpp_lib_assume_aligned)
+  return std::assume_aligned<N>(ptr);
+#elif defined(__GNUC__) || defined(__clang__)
+  return static_cast<T *>(__builtin_assume_aligned(ptr, N));
+#else
+  return ptr;
+#endif
+}
 
 /** Portable aligned allocation (posix_memalign / _aligned_malloc). */
 FSH_FORCE_INLINE void * aligned_malloc(size_t alignment, size_t size) noexcept {

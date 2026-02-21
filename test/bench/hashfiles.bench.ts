@@ -65,29 +65,29 @@ describe("updateFilesBulk", async () => {
     h.digest();
   });
 
-  // bench("WASM", async () => {
-  //   const h = new XXHash128Wasm();
-  //   await h.updateFilesBulk(files);
-  //   h.digest();
-  // });
+  bench("WASM", async () => {
+    const h = new XXHash128Wasm();
+    await h.updateFilesBulk(files);
+    h.digest();
+  });
 
-  // bench("Node.js crypto (md5)", async () => {
-  //   await rawNodeCryptoHash(files, false);
-  // });
+  bench("Node.js crypto (md5)", async () => {
+    await rawNodeCryptoHash(files, false);
+  });
 
-  // bench("native (per file output)", async () => {
-  //   const h = new XXHash128();
-  //   await h.updateFilesBulk(files, true);
-  //   h.digest();
-  // });
+  bench("native (per file output)", async () => {
+    const h = new XXHash128();
+    await h.updateFilesBulk(files, true);
+    h.digest();
+  });
 
-  // bench("WASM (per file output)", async () => {
-  //   const h = new XXHash128Wasm();
-  //   await h.updateFilesBulk(files, true);
-  //   h.digest();
-  // });
+  bench("WASM (per file output)", async () => {
+    const h = new XXHash128Wasm();
+    await h.updateFilesBulk(files, true);
+    h.digest();
+  });
 
-  // bench("Node.js crypto (per file output)", async () => {
-  //   await rawNodeCryptoHash(files, true);
-  // });
+  bench("Node.js crypto (per file output)", async () => {
+    await rawNodeCryptoHash(files, true);
+  });
 });
