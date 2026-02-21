@@ -169,10 +169,12 @@ function diffHashMaps(label, current, previous) {
     } else if (!prev) {
       diffs.push(`${label}/${relPath}: new file (${cur.bytes} bytes)`);
     } else if (cur.sha256 !== prev.sha256) {
+      const sizeDelta = cur.bytes - prev.bytes;
+      const deltaStr = sizeDelta > 0 ? `+${sizeDelta}` : `${sizeDelta}`;
       diffs.push(
-        `${label}/${relPath}: hash differs — ` +
-          `expected ${prev.sha256.slice(0, 16)}… (${prev.bytes}B), ` +
-          `got ${cur.sha256.slice(0, 16)}… (${cur.bytes}B)`
+        cur.bytes !== prev.bytes
+          ? `${label}/${relPath}: changed (${prev.bytes}B → ${cur.bytes}B, ${deltaStr})`
+          : `${label}/${relPath}: changed (${cur.bytes}B)`
       );
     } else if (cur.bytes !== prev.bytes) {
       diffs.push(`${label}/${relPath}: size differs — expected ${prev.bytes}B, got ${cur.bytes}B`);

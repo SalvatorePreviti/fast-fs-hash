@@ -4,10 +4,15 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <atomic>
 #include <memory>
 #include <thread>
+
+#ifdef _MSC_VER
+#  include <malloc.h>
+#endif
 
 #include <napi.h>
 
@@ -33,6 +38,8 @@
 #define XXH_STATIC_LINKING_ONLY
 #include "xxhash.h"
 
+// ── Prefetch hints ───────────────────────────────────────────────────────
+
 #if defined(__GNUC__) || defined(__clang__)
 #  define FSH_PREFETCH(ptr) __builtin_prefetch(ptr, 0, 3)
 #  define FSH_PREFETCH_W(ptr) __builtin_prefetch(ptr, 1, 1)
@@ -51,6 +58,8 @@
 // to the old __builtin_expect approach, with the benefit of also working
 // on MSVC where __builtin_expect is not available.
 
+// ── Inline control ───────────────────────────────────────────────────────
+
 /** Force no-inline + cold for rare paths — keeps icache tight. */
 #if defined(__GNUC__) || defined(__clang__)
 #  define FSH_NO_INLINE __attribute__((noinline, cold))
@@ -68,6 +77,8 @@
 #else
 #  define FSH_FORCE_INLINE inline
 #endif
+
+// ── Alignment ────────────────────────────────────────────────────────────
 
 /** Hint to the compiler that a pointer is aligned to N bytes.
  *  Enables vectorized loads/stores without alignment checks on the hot path. */
@@ -103,12 +114,6 @@ FSH_FORCE_INLINE void aligned_free(void * ptr) noexcept {
 #endif
 }
 
-/** CRTP-free non-copyable base. Inherit to delete copy ctor/assign. */
-struct NonCopyable {
-  NonCopyable() = default;
-  ~NonCopyable() = default;
-  NonCopyable(const NonCopyable &) = delete;
-  NonCopyable & operator=(const NonCopyable &) = delete;
-};
+#include "NonCopyable.h"
 
 #endif

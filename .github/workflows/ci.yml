@@ -188,8 +188,8 @@ jobs:
             apk add --no-cache git &&
             npm ci &&
             npm run build:ts &&
-            npm test -- --pool=forks &&
-            npm run bench -- --pool=forks
+            npm test &&
+            npm run bench
           "
 
   # ── FreeBSD (build + test inside a FreeBSD VM) ────────────────────────
@@ -214,8 +214,8 @@ jobs:
             npm ci
             npm run build:all
             ls -lh packages/fast-fs-hash/build/Release/fast_fs_hash.node
-            npm test -- --pool=threads
-            npm run bench -- --pool=threads
+            npm test
+            npm run bench
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

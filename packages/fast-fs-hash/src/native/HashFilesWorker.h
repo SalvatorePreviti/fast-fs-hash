@@ -2,17 +2,25 @@
 #define _FAST_FS_HASH_HASH_FILES_WORKER_H
 
 #include "includes.h"
+#include "AlignedPtr.h"
 #include "FileHandle.h"
 
 namespace fast_fs_hash {
 
-  /** 256 KiB read buffer per thread — stack-allocated, cache-line aligned.
-   *  Covers most source files in a single read; fits well within the
-   *  default thread stack (512 KiB on macOS, 8 MiB on Linux). */
+  /**
+   * 256 KiB read buffer per thread.
+   * Covers most source files in a single read.
+   * Allocated as a single contiguous slab in run()
+   * (one READ_BUFFER_SIZE slice per thread, cache-line aligned) so
+   * we avoid per-thread heap calls and — critically — never place
+   * 256 KiB on the thread stack (musl's default is only 128 KiB).
+   */
   static constexpr size_t READ_BUFFER_SIZE = 256 * 1024;
 
-  /** Output buffer alignment — cache-line aligned for optimal prefetch
-   *  and to avoid false sharing between threads writing adjacent slots. */
+  /**
+   * Output buffer alignment — cache-line aligned for optimal prefetch
+   * and to avoid false sharing between threads writing adjacent slots.
+   */
   static constexpr size_t OUTPUT_ALIGNMENT = 64;
 
   /** Maximum thread count (maximum number of threads to use) */
@@ -22,12 +30,14 @@ namespace fast_fs_hash {
   static constexpr size_t MIN_WORK_BATCH = 1;
   static constexpr size_t MAX_WORK_BATCH = 32;
 
-  /** Tracks active worker threads across all concurrent hash operations.
-   *  Prevents over-subscription when multiple async hash calls overlap
-   *  (e.g. several JS promises each calling hashFiles in parallel).
-   *  Read/written with relaxed ordering — best-effort coordination is
-   *  sufficient; momentary over-shoot is harmless, starvation cannot
-   *  happen because every caller is guaranteed at least 1 thread. */
+  /**
+   * Tracks active worker threads across all concurrent hash operations.
+   * Prevents over-subscription when multiple async hash calls overlap
+   * (e.g. several JS promises each calling hashFiles in parallel).
+   * Read/written with relaxed ordering — best-effort coordination is
+   * sufficient; momentary over-shoot is harmless, starvation cannot
+   * happen because every caller is guaranteed at least 1 thread.
+   */
   inline std::atomic<int> g_active_hash_threads{0};
 
   /**
@@ -56,20 +66,20 @@ namespace fast_fs_hash {
   }
 
   struct HashFilesWorker {
+    // ── Cache line 0: read-only config (set once by run(), read by all threads) ──
     const char * const * segments;
     size_t file_count;
     uint8_t * output_data;
-
-    /** Set by run() before spawning threads. */
     size_t work_batch = 0;
 
-    /** Work-stealing counter — mutable because process_files() is const
-     *  (it never mutates the configuration fields; this is a sync primitive). */
-    mutable std::atomic<size_t> next_index{0};
+    // ── Cache line 1: hot contended atomic (bounces between all cores) ──
+    // Separated to prevent false sharing with the read-only fields above.
+    alignas(64) mutable std::atomic<size_t> next_index{0};
 
     /** Hash all files in parallel: spawns N-1 threads + uses calling thread.
-     *  Threads share `this` pointer (no struct copies). */
-    void run(int concurrency) {
+     *  Threads share `this` pointer (no struct copies).
+     *  Returns false on OOM (slab allocation failure). */
+    bool run(int concurrency) {
       // Compute thread count.
       // - User-provided concurrency takes precedence when > 0.
       // - Default: hardware_concurrency (1 thread per core — optimal for
@@ -113,23 +123,35 @@ namespace fast_fs_hash {
       this->work_batch = batch;
       this->next_index.store(0, std::memory_order_relaxed);
 
+      // Pre-allocate a single contiguous slab for all per-thread read
+      // buffers.  One allocation instead of one-per-thread, and the
+      // buffers never touch the thread stack (safe on musl where the
+      // default thread stack is only 128 KiB).  64-byte alignment keeps
+      // each slice cache-line aligned so threads don't false-share.
+      AlignedPtr<unsigned char> slab(64, static_cast<size_t>(tc) * READ_BUFFER_SIZE);
+      if (!slab) [[unlikely]]
+        return false;  // OOM — caller must report to JS
+
       g_active_hash_threads.fetch_add(tc, std::memory_order_relaxed);
 
       const int spawned = tc - 1;
       std::thread threads[MAX_STACK_THREADS];
       for (int i = 0; i < spawned; ++i)
-        threads[i] = std::thread(&HashFilesWorker::process_files, this);
-      this->process_files();  // calling thread does work too
+        threads[i] = std::thread(
+          &HashFilesWorker::process_files, this, slab.ptr + static_cast<size_t>(i + 1) * READ_BUFFER_SIZE);
+      this->process_files(slab.ptr);  // calling thread uses slice 0
       for (int i = 0; i < spawned; ++i)
         threads[i].join();
 
       g_active_hash_threads.fetch_sub(tc, std::memory_order_relaxed);
+      return true;
     }
 
-    /** Per-thread work loop — const because it only reads configuration
-     *  fields; the mutable next_index is the sole shared write target. */
-    void process_files() const {
-      alignas(64) unsigned char rbuf[READ_BUFFER_SIZE];
+    /** Per-thread work loop.  `rbuf_raw` points to this thread's pre-allocated
+     *  READ_BUFFER_SIZE slice within the slab (64-byte aligned). */
+    FSH_FORCE_INLINE void process_files(unsigned char * rbuf_raw) const {
+      // Propagate alignment to the compiler — enables aligned SIMD loads/stores.
+      unsigned char * const rbuf = assume_aligned<64>(rbuf_raw);
       const size_t fc = this->file_count;
       const size_t wb = this->work_batch;
       uint8_t * const out = assume_aligned<OUTPUT_ALIGNMENT>(this->output_data);
@@ -147,8 +169,12 @@ namespace fast_fs_hash {
           const char * const path = segs[idx];
           uint8_t * const dest = out + idx * 16;
 
-          // Prefetch next path string + write-warm the output cache line.
-          FSH_PREFETCH(segs[idx + 1]);
+          // Prefetch next iteration's path string + write-warm both the
+          // current and next output slots.
+          if (idx + 1 < batch_end) [[likely]] {
+            FSH_PREFETCH(segs[idx + 1]);
+            FSH_PREFETCH_W(dest + 16);
+          }
           FSH_PREFETCH_W(dest);
 
           // Skip empty paths — rare (consecutive null terminators).
@@ -158,9 +184,14 @@ namespace fast_fs_hash {
           }
 
           FileHandle file(path);
+          if (!file) [[unlikely]] {
+            memset(dest, 0, 16);  // rare: cannot open file
+            continue;
+          }
+
           const int64_t n = file.read(rbuf, READ_BUFFER_SIZE);
           if (n < 0) [[unlikely]] {
-            memset(dest, 0, 16);  // rare: unreadable file
+            memset(dest, 0, 16);  // rare: read error
             continue;
           }
 

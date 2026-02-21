@@ -17,6 +17,10 @@
 
 inline void InstanceHashWorker::Execute() {
   PathIndex paths(this->paths_data_, this->paths_len_);
+  if (paths.oom()) [[unlikely]] {
+    SetError("hash_files: out of memory");
+    return;
+  }
   const size_t file_count = paths.count;
 
   if (file_count > 0) [[likely]] {
@@ -33,7 +37,10 @@ inline void InstanceHashWorker::Execute() {
       this->output.len = needed;
     }
     fast_fs_hash::HashFilesWorker worker{paths.segments, file_count, this->output.data};
-    worker.run(this->concurrency_);
+    if (!worker.run(this->concurrency_)) [[unlikely]] {
+      SetError("hash_files: out of memory");
+      return;
+    }
   } else {
     this->output.len = 0;
   }

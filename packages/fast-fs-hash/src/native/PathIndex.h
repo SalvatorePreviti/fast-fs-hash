@@ -12,7 +12,11 @@ struct PathIndex : NonCopyable {
   size_t count;
   const char ** segments;
 
-  inline PathIndex(const uint8_t * buf, size_t len) noexcept : count(0), segments(nullptr) {
+  /** True if the constructor failed to allocate the segments array
+   *  despite having non-empty input (i.e. actual OOM, not just 0 paths). */
+  FSH_FORCE_INLINE bool oom() const noexcept { return this->oom_; }
+
+  inline PathIndex(const uint8_t * buf, size_t len) noexcept : count(0), segments(nullptr), oom_(false) {
     if (len == 0 || buf == nullptr) {
       return;
     }
@@ -35,7 +39,8 @@ struct PathIndex : NonCopyable {
 
     // Allocate n + 1 slots: n real pointers + nullptr sentinel for prefetch.
     this->segments = static_cast<const char **>(malloc((n + 1) * sizeof(const char *)));
-    if (!this->segments) {
+    if (!this->segments) [[unlikely]] {
+      this->oom_ = true;
       return;
     }
     this->segments[n] = nullptr;  // sentinel — prefetch of nullptr is harmless
@@ -54,6 +59,9 @@ struct PathIndex : NonCopyable {
   }
 
   inline ~PathIndex() { free(this->segments); }
+
+ private:
+  bool oom_;
 };
 
 #endif

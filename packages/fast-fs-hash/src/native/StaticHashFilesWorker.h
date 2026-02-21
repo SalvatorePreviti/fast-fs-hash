@@ -15,6 +15,7 @@
 #define _FAST_FS_HASH_STATIC_HASH_FILES_WORKER_H
 
 #include "includes.h"
+#include "AlignedPtr.h"
 #include "OutputBuffer.h"
 #include "PathIndex.h"
 #include "HashFilesWorker.h"
@@ -23,8 +24,8 @@ class StaticHashFilesWorker final : public Napi::AsyncWorker {
  public:
   enum class Mode : uint8_t {
     DIGEST_ONLY = 'd',  // 16-byte aggregate digest
-    FILES_ONLY = 'f',   // N × 16-byte per-file hashes
-    ALL = 'a'           // [16-byte aggregate | N × 16-byte per-file hashes]
+    FILES_ONLY = 'f',  // N × 16-byte per-file hashes
+    ALL = 'a'  // [16-byte aggregate | N × 16-byte per-file hashes]
   };
 
   StaticHashFilesWorker(Napi::Env env, Napi::Promise::Deferred deferred, int concurrency, uint64_t seed, Mode mode) :
@@ -38,6 +39,10 @@ class StaticHashFilesWorker final : public Napi::AsyncWorker {
 
   void Execute() override {
     PathIndex paths(this->paths_data_, this->paths_len_);
+    if (paths.oom()) [[unlikely]] {
+      SetError("hashFilesBulk: out of memory");
+      return;
+    }
     const size_t file_count = paths.count;
     const uint64_t seed = this->seed_;
 
@@ -54,7 +59,10 @@ class StaticHashFilesWorker final : public Napi::AsyncWorker {
           }
           uint8_t * file_hashes = this->output_.data + 16;
           fast_fs_hash::HashFilesWorker worker{paths.segments, file_count, file_hashes};
-          worker.run(this->concurrency_);
+          if (!worker.run(this->concurrency_)) [[unlikely]] {
+            SetError("hashFilesBulk: out of memory");
+            return;
+          }
           // Aggregate digest at offset 0
           XXH128_canonicalFromHash(
             reinterpret_cast<XXH128_canonical_t *>(this->output_.data),
@@ -68,23 +76,27 @@ class StaticHashFilesWorker final : public Napi::AsyncWorker {
             return;
           }
           fast_fs_hash::HashFilesWorker worker{paths.segments, file_count, this->output_.data};
-          worker.run(this->concurrency_);
+          if (!worker.run(this->concurrency_)) [[unlikely]] {
+            SetError("hashFilesBulk: out of memory");
+            return;
+          }
           break;
         }
 
         case Mode::DIGEST_ONLY: {
           // Temporary buffer for per-file hashes — freed after aggregate.
-          uint8_t * tmp = static_cast<uint8_t *>(aligned_malloc(fast_fs_hash::OUTPUT_ALIGNMENT, per_file_bytes));
+          AlignedPtr<uint8_t> tmp(fast_fs_hash::OUTPUT_ALIGNMENT, per_file_bytes);
           if (!tmp) [[unlikely]] {
             SetError("hashFilesBulk: out of memory");
             return;
           }
-          fast_fs_hash::HashFilesWorker worker{paths.segments, file_count, tmp};
-          worker.run(this->concurrency_);
+          fast_fs_hash::HashFilesWorker worker{paths.segments, file_count, tmp.ptr};
+          if (!worker.run(this->concurrency_)) [[unlikely]] {
+            SetError("hashFilesBulk: out of memory");
+            return;
+          }
           XXH128_canonicalFromHash(
-            reinterpret_cast<XXH128_canonical_t *>(this->digest_),
-            XXH3_128bits_withSeed(tmp, per_file_bytes, seed));
-          aligned_free(tmp);
+            reinterpret_cast<XXH128_canonical_t *>(this->digest_), XXH3_128bits_withSeed(tmp.ptr, per_file_bytes, seed));
           break;
         }
       }
