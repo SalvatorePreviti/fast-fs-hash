@@ -4,6 +4,14 @@
 # to pull in xxHash. The xxHash source files are also committed to git
 # (build/_deps/xxhash-src/) so CI builds work even if GitHub is down.
 #
+# xxHash SIMD strategy:
+#   x86_64 (GCC/Clang) — xxh_x86dispatch.c provides runtime CPU dispatch
+#     via CPUID, selecting SSE2/AVX2/AVX512 code paths compiled with
+#     __attribute__((target(...))). No -mavx2 flags needed at build time.
+#   x86_64 (MSVC) — dispatch is not supported (no target attributes).
+#     Uses xxhash.c which compiles to SSE2 (always available on x86_64).
+#   ARM64 — xxhash.c with NEON (always available on AArch64, auto-detected).
+#
 # Build:
 #   npx cmake-js compile -d src/native
 #   npx cmake-js compile -d src/native --release
@@ -13,6 +21,8 @@ project(fast_fs_hash LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # ── xxHash via FetchContent ───────────────────────────────────────────────
@@ -62,14 +72,18 @@ add_library(${PROJECT_NAME} SHARED
     ${CMAKE_JS_SRC}
 )
 
-# ── xxHash implementation (runtime dispatch on x86_64) ───────────────────
+# ── xxHash implementation ────────────────────────────────────────────────
 #
-# On x86_64: xxh_x86dispatch.c compiles multiple SIMD variants (SSE2, AVX2,
-# AVX512) using __attribute__((target(...))) and selects at runtime via CPUID.
-# On other platforms: xxhash.c with the platform's native SIMD (e.g. NEON).
-# The dispatch file must be compiled with base flags only (no -mavx2 etc).
+# On x86_64 with GCC/Clang: xxh_x86dispatch.c compiles multiple SIMD
+# variants (SSE2, AVX2, AVX512) using __attribute__((target(...))) and
+# selects the best one at runtime via CPUID. Must be compiled with base
+# flags only (no -mavx2 etc.) — the target attributes handle per-function ISA.
+#
+# On MSVC or non-x86: xxhash.c with the platform's native SIMD.
+# MSVC lacks __attribute__((target(...))), so dispatch would compile all
+# paths to the same SSE2 code — no point in the extra complexity.
 
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64" AND NOT MSVC)
     target_sources(${PROJECT_NAME} PRIVATE ${xxhash_SOURCE_DIR}/xxh_x86dispatch.c)
 else()
     target_sources(${PROJECT_NAME} PRIVATE ${xxhash_SOURCE_DIR}/xxhash.c)
@@ -94,16 +108,21 @@ target_link_libraries(${PROJECT_NAME} ${CMAKE_JS_LIB})
 # We build with maximum optimizations since this is a compute-heavy
 # native addon: LTO, no-exceptions, no-RTTI, loop unrolling, and
 # architecture-specific SIMD flags.
+#
+# Flags are split by language (C vs CXX) using generator expressions
+# because xxh_x86dispatch.c is compiled as C and C++-only flags like
+# -fno-rtti and -fno-exceptions would produce warnings.
 
 include(CheckCXXCompilerFlag)
+include(CheckCCompilerFlag)
 
 if(MSVC)
     # MSVC: maximum speed, whole-program optimization, no buffer checks,
     # no exceptions, no RTTI, favor speed over size, omit frame pointers.
     target_compile_options(${PROJECT_NAME} PRIVATE
         /O2 /Oi /Ot /Oy /GL /GS- /DNDEBUG
-        /EHs-c-  # disable C++ exceptions
-        /GR-     # disable RTTI
+        $<$<COMPILE_LANGUAGE:CXX>:/EHs-c->   # disable C++ exceptions
+        $<$<COMPILE_LANGUAGE:CXX>:/GR->       # disable RTTI
         /Gy      # function-level linking (enable COMDAT folding)
         /Gw      # optimize global data (allow linker to discard unused globals)
     )
@@ -114,17 +133,15 @@ if(MSVC)
     )
 else()
     # GCC / Clang: aggressive optimizations for throughput-critical code.
+    # Common flags for both C and C++:
     target_compile_options(${PROJECT_NAME} PRIVATE
         -O3
         -DNDEBUG
         -g0                           # no debug info
-        -fno-exceptions
-        -fno-rtti
         -fomit-frame-pointer
         -funroll-loops
         -fmerge-all-constants
         -fvisibility=hidden           # hide all symbols by default — biggest size win
-        -fvisibility-inlines-hidden   # hide inline function symbols
         -ffunction-sections           # each function in its own section (enables dead stripping)
         -fdata-sections               # each data object in its own section
         -fno-unwind-tables            # remove .eh_frame unwind tables
@@ -134,7 +151,15 @@ else()
         -fstrict-aliasing             # strict aliasing for better optimization
     )
 
-    # Thin LTO — faster than full LTO, comparable code quality
+    # C++-only flags (would warn on C files):
+    target_compile_options(${PROJECT_NAME} PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>
+        $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>
+        $<$<COMPILE_LANGUAGE:CXX>:-fvisibility-inlines-hidden>
+    )
+
+    # Thin LTO — faster than full LTO, comparable code quality.
+    # Applied to both C and C++ so the linker can optimize across TUs.
     check_cxx_compiler_flag("-flto=thin" HAS_THIN_LTO)
     if(HAS_THIN_LTO)
         target_compile_options(${PROJECT_NAME} PRIVATE -flto=thin)
@@ -147,7 +172,7 @@ else()
         endif()
     endif()
 
-    # Linux-specific: PIC optimizations
+    # Linux/FreeBSD-specific: PIC optimizations
     if(NOT APPLE)
         check_cxx_compiler_flag("-fno-semantic-interposition" HAS_NO_SEMANTIC_INTERPOSITION)
         if(HAS_NO_SEMANTIC_INTERPOSITION)
@@ -167,7 +192,7 @@ else()
         )
     else()
         target_link_options(${PROJECT_NAME} PRIVATE
-            -Wl,--gc-sections            # Linux: garbage-collect unused sections
+            -Wl,--gc-sections            # Linux/FreeBSD: garbage-collect unused sections
             -Wl,-s                       # strip all symbol info
             -Wl,--as-needed              # only link needed shared libs
         )
@@ -176,19 +201,17 @@ endif()
 
 # ── Architecture-specific flags ──────────────────────────────────────────
 #
-# xxHash dispatch is handled by xxh_x86dispatch.c on x86_64 (runtime CPUID
-# selects SSE2/AVX2/AVX512). No extra SIMD flags needed for x86_64.
+# x86_64: No extra SIMD flags — xxh_x86dispatch.c handles runtime selection
+#         via CPUID + __attribute__((target(...))). Adding -mavx2 globally
+#         would break CPUs without AVX2 since our own C++ code would also
+#         be compiled with AVX2 instructions.
 #
-# ARM64 — NEON is always available on AArch64 and xxHash auto-detects it.
-#         We add armv8-a+crypto (AES/SHA) which is supported by virtually
-#         all server-grade ARM64 CPUs (AWS Graviton, Ampere, Apple Silicon).
+# ARM64:  NEON is always available on AArch64 and xxHash auto-detects it.
+#         We add armv8-a+crypto (AES/SHA/PMULL) which is supported by
+#         virtually all server-grade ARM64 CPUs (AWS Graviton, Ampere,
+#         Apple Silicon). Not needed for xxHash, but benefits our C++ code.
 
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
-    # No extra flags — xxh_x86dispatch.c handles SIMD selection at runtime.
-elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
-    # NEON is always available on AArch64 — xxHash enables it automatically.
-    # Crypto extensions (AES/SHA/PMULL) are present on essentially all
-    # server-grade ARM64 CPUs in 2026.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
     if(NOT MSVC)
         check_cxx_compiler_flag("-march=armv8-a+crypto" HAS_ARM_CRYPTO)
         if(HAS_ARM_CRYPTO)
