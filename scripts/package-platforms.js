@@ -1,99 +1,73 @@
 /**
  * Package native bindings into platform-specific npm packages.
- * Run after downloading CI artifacts.
+ * Run in CI after downloading artifacts and before publish.
  *
- * 1. Reads the version from packages/fast-fs-hash/package.json
+ * 1. Discovers platform packages by checking for "os" field in npm/<dir>/package.json
  * 2. Copies each artifact → npm/{target}/fast_fs_hash.node
- * 3. Syncs the version into every npm/{target}/package.json
+ * 3. In CI: throws if any platform is missing its .node binary
  *
- * Expected artifact layout:
+ * Expected artifact layout (from actions/download-artifact):
  *   artifacts/binding-{target}/fast_fs_hash.node
- *
- * Output:
- *   npm/{target}/fast_fs_hash.node  (copied from artifacts)
- *   npm/{target}/package.json       (version synced)
  */
 
-import { cpSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, statSync } from "node:fs";
 import path from "node:path";
+import {
+  elapsed,
+  getPlatforms,
+  isCI,
+  logError,
+  logInfo,
+  logOk,
+  logTitle,
+  NPM_DIR,
+  ROOT_DIR,
+  readJson,
+} from "./lib/utils.js";
 
-const ROOT_DIR = path.resolve(import.meta.dirname, "..");
+const t0 = performance.now();
 const ARTIFACTS_DIR = path.resolve(ROOT_DIR, "artifacts");
-const NPM_DIR = path.resolve(ROOT_DIR, "npm");
-const MAIN_PKG_PATH = path.resolve(ROOT_DIR, "packages/fast-fs-hash/package.json");
-
-// ── Read authoritative version from the main package ─────────────────────
-
-const mainPkg = JSON.parse(readFileSync(MAIN_PKG_PATH, "utf8"));
-const version = mainPkg.version;
-console.log(`Version from packages/fast-fs-hash/package.json: ${version}\n`);
-
-// ── Sync version into ALL platform package.json (regardless of artifacts) ─
-
-const ALL_TARGETS = [
-  "darwin-arm64",
-  "darwin-x64",
-  "freebsd-x64",
-  "linux-arm64-gnu",
-  "linux-arm64-musl",
-  "linux-x64-gnu",
-  "linux-x64-musl",
-  "win32-arm64-msvc",
-  "win32-x64-msvc",
-];
-
-for (const target of ALL_TARGETS) {
-  const pkgPath = path.join(NPM_DIR, target, "package.json");
-  if (!existsSync(pkgPath)) {
-    console.warn(`  WARN no package template at npm/${target}/package.json`);
-    continue;
-  }
-  const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
-  if (pkg.version !== version) {
-    pkg.version = version;
-    writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
-    console.log(`  SYNC ${target} → ${version}`);
-  } else {
-    console.log(`  OK   ${target} already at ${version}`);
-  }
-}
-
-// ── Copy artifacts ───────────────────────────────────────────────────────
 
 if (!existsSync(ARTIFACTS_DIR)) {
-  console.error("\nNo artifacts directory found. Run this after downloading CI artifacts.");
+  logError("No artifacts directory found. Run this after downloading CI artifacts.");
   process.exit(1);
 }
 
-console.log("");
+logTitle("Packaging platform binaries");
 
-const entries = readdirSync(ARTIFACTS_DIR);
-let count = 0;
+const platforms = getPlatforms();
+let copied = 0;
+const missing = [];
 
-for (const entry of entries) {
-  const match = entry.match(/^binding-(.+)$/);
-  if (!match) {
+for (const target of platforms) {
+  const pkgPath = path.resolve(NPM_DIR, target, "package.json");
+  const pkg = readJson(pkgPath);
+
+  // Only process platform-specific packages (those with an "os" field)
+  if (!pkg.os) {
     continue;
   }
 
-  const target = match[1];
-  const src = path.join(ARTIFACTS_DIR, entry, "fast_fs_hash.node");
-  const destDir = path.join(NPM_DIR, target);
-  const dest = path.join(destDir, "fast_fs_hash.node");
+  const src = path.join(ARTIFACTS_DIR, `binding-${target}`, "fast_fs_hash.node");
+  const dest = path.join(NPM_DIR, target, "fast_fs_hash.node");
 
   if (!existsSync(src)) {
-    console.warn(`  SKIP ${target}: no .node file found`);
-    continue;
-  }
-
-  if (!existsSync(destDir)) {
-    console.warn(`  SKIP ${target}: no package template at npm/${target}/`);
+    missing.push(target);
+    logError(`${target}: artifact not found`);
     continue;
   }
 
   cpSync(src, dest);
-  console.log(`  COPY ${target}/fast_fs_hash.node`);
-  count++;
+  const { size } = statSync(dest);
+  const kb = (size / 1024).toFixed(1);
+  logOk(`${target}/fast_fs_hash.node (${kb} KB)`);
+  copied++;
 }
 
-console.log(`\nPackaged ${count} platform bindings (all at version ${version}).`);
+logInfo(`${copied} of ${copied + missing.length} platform binaries packaged`);
+
+if (missing.length > 0 && isCI) {
+  throw new Error(`${missing.length} platform binaries missing — aborting publish!\n  Missing: ${missing.join(", ")}`);
+}
+
+logOk(`Package platforms completed (${elapsed(t0)})`);

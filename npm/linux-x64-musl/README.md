@@ -1,3 +1,15 @@
+> **⚠️ This is a platform-specific binary package.**
+>
+> You should not install `@fast-fs-hash/linux-x64-musl` directly.
+> Instead, install the main package which will automatically select the correct binary for your platform:
+>
+> ```sh
+> npm install fast-fs-hash
+> ```
+>
+> See [fast-fs-hash on npm](https://www.npmjs.com/package/fast-fs-hash) for documentation.
+
+---
 # fast-fs-hash
 
 [![npm](https://img.shields.io/npm/v/fast-fs-hash)](https://www.npmjs.com/package/fast-fs-hash)

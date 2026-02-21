@@ -1,14 +1,15 @@
 {
   "private": true,
+  "version": "0.0.1",
   "type": "module",
   "workspaces": [
-    "packages/*"
+    "packages/fast-fs-hash"
   ],
   "scripts": {
-    "build": "node scripts/build.js",
-    "build:all": "npm run build && npm run build:native",
-    "build:native": "cmake-js compile --out packages/fast-fs-hash/build",
-    "build:native:release": "cmake-js compile --release --out packages/fast-fs-hash/build",
+    "build": "node scripts/build-all.js",
+    "build:all": "node scripts/build-all.js",
+    "build:ts": "node scripts/build-ts.js",
+    "build:native": "node scripts/build-native.js",
     "test": "vitest run",
     "bench": "vitest bench",
     "update-benchmarks": "node scripts/update-benchmarks.js",
@@ -19,10 +20,11 @@
     "docs": "npx typedoc"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.3",
+    "@biomejs/biome": "^2.4.4",
     "@types/node": "^25.3.0",
+    "ansis": "^4.2.0",
     "cmake-js": "^8.0.0",
-    "hash-wasm": "^4.12.0",
+    "hash-wasm": "4.12.0",
     "node-addon-api": "^8.5.0",
     "rolldown": "^1.0.0-rc.5",
     "rollup-plugin-dts": "^6.3.0",

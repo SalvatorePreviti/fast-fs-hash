@@ -7,7 +7,7 @@
  *   - package.json dependency/security info
  *
  * Uses glob to discover files dynamically — no hardcoded file lists.
- * Runs automatically at the end of `npm run build`.
+ * Runs automatically at the end of `npm run build:ts`.
  * The file is committed to the repo for supply-chain verification.
  */
 
@@ -15,11 +15,18 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import { glob } from "node:fs/promises";
 import path from "node:path";
+import {
+  DIST_DIR,
+  elapsed,
+  logChanged,
+  logError,
+  logOk,
+  PKG_DIR,
+  ROOT_DIR,
+  SRC_DIR,
+  SyncTracker,
+} from "./lib/utils.js";
 
-const ROOT_DIR = path.resolve(import.meta.dirname, "..");
-const PKG_DIR = path.resolve(ROOT_DIR, "packages/fast-fs-hash");
-const SRC_DIR = path.resolve(PKG_DIR, "src");
-const DIST_DIR = path.resolve(PKG_DIR, "dist");
 const NATIVE_DIR = path.resolve(SRC_DIR, "native");
 const XXHASH_SRC_DIR = path.resolve(ROOT_DIR, "deps/xxHash");
 const BUILD_HASH_PATH = path.resolve(ROOT_DIR, "build-hash.json");
@@ -119,18 +126,20 @@ function logFileDiffs(label, current, previous) {
     const prev = previous?.[relPath];
     const info = cur ? ` (${cur.bytes} bytes${cur.lines != null ? `, ${cur.lines} lines` : ""})` : "";
     if (!cur) {
-      console.log(`    ${relPath}: missing`);
+      logError(`${relPath}: missing`);
     } else if (!prev) {
-      console.log(`    ${relPath}: new${info}`);
+      logChanged(`${relPath}: new${info}`);
     } else if (cur.sha256 !== prev.sha256) {
-      console.log(`    ${relPath}: modified${info}`);
+      logChanged(`${relPath}: modified${info}`);
     } else {
-      console.log(`    ${relPath}: unchanged${info}`);
+      logOk(`${relPath}${info}`);
     }
   }
 }
 
 export async function writeBuildHash() {
+  const t0 = performance.now();
+
   // Discover files via glob
   const [distPaths, tsPaths, nativePaths, xxhashPaths, cmakePaths] = await Promise.all([
     findFiles(DIST_DIR, "*.{cjs,mjs,d.ts,d.cts,wasm}"),
@@ -197,12 +206,17 @@ export async function writeBuildHash() {
     changed = true;
   }
 
+  const sync = new SyncTracker();
+
   if (changed) {
-    await fs.promises.writeFile(BUILD_HASH_PATH, nextText, "utf8");
-    console.log("  build-hash.json updated");
+    await sync.syncFileAsync(BUILD_HASH_PATH, nextText);
   } else {
-    console.log("  build-hash.json is up to date");
+    logOk("build-hash.json");
   }
 
   logFileDiffs("dist artifacts", distFiles, prev?.distArtifacts);
+
+  sync.throwIfOutOfDate("build-hash.json is out of date. Run `npm run build` locally and commit the result.");
+
+  logOk(`build-hash completed (${elapsed(t0)})`);
 }

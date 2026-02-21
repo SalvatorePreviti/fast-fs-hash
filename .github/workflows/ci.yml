@@ -43,8 +43,7 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
-      - run: npm run build
-      - run: npm run build:native:release
+      - run: npm run build:all
       - run: npm test
       - run: npm run bench
 
@@ -111,18 +110,14 @@ jobs:
         if: ${{ !matrix.use-docker }}
         run: npm ci
 
-      - name: Build native addon
-        if: ${{ !matrix.use-docker && !matrix.target-arch }}
-        run: npm run build:native:release
-
       - name: Build native addon (cross-arch)
         if: ${{ matrix.target-arch }}
-        run: npx cmake-js compile --release --out packages/fast-fs-hash/build --arch ${{ matrix.target-arch }}
+        run: node scripts/build-native.js --arch ${{ matrix.target-arch }}
 
       # ── Test native binding (platforms where we can run) ───────────────
-      - name: Build JS bundles
+      - name: Build all
         if: ${{ matrix.can-test }}
-        run: npm run build
+        run: npm run build:all
 
       - name: Test with native binding
         if: ${{ matrix.can-test }}
@@ -139,7 +134,7 @@ jobs:
           docker run --rm -v "$PWD:/workspace" -w /workspace node:22-alpine sh -c "
             apk add --no-cache cmake make g++ python3 linux-headers git &&
             npm ci &&
-            npm run build:native:release
+            npm run build:native
           "
 
       # ── Print binary size ──────────────────────────────────────────────
@@ -191,9 +186,9 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/workspace" -w /workspace node:22-alpine sh -c "
             npm ci &&
-            npm run build &&
-            npm test &&
-            npm run bench
+            npm run build:ts &&
+            npm test -- --pool=threads &&
+            npm run bench -- --pool=threads
           "
 
   # ── FreeBSD (build + test inside a FreeBSD VM) ────────────────────────
@@ -216,8 +211,7 @@ jobs:
           run: |
             sudo pkg install -y cmake node22 npm-node22 git
             npm ci
-            npm run build
-            npm run build:native:release
+            npm run build:all
             ls -lh packages/fast-fs-hash/build/Release/fast_fs_hash.node
             npm test -- --pool=threads
             npm run bench -- --pool=threads
@@ -260,10 +254,11 @@ jobs:
 
       - run: npm ci
 
-      - name: Build JS bundles & inject optionalDependencies
-        run: npm run build
-        env:
-          INJECT_OPTIONAL_DEPS: "1"
+      - name: Build JS bundles
+        run: npm run build:ts
+
+      - name: Sync versions
+        run: node scripts/update-versions.js
 
       - name: Download all native bindings
         uses: actions/download-artifact@v4
@@ -273,54 +268,14 @@ jobs:
       - name: Package platform binaries
         run: node scripts/package-platforms.js
 
-      - name: Verify all 9 platform binaries are present
-        run: |
-          expected="darwin-arm64 darwin-x64 freebsd-x64 linux-arm64-gnu linux-arm64-musl linux-x64-gnu linux-x64-musl win32-arm64-msvc win32-x64-msvc"
-          missing=0
-          for target in $expected; do
-            if [ ! -f "npm/$target/fast_fs_hash.node" ]; then
-              echo "MISSING: npm/$target/fast_fs_hash.node"
-              missing=$((missing + 1))
-            else
-              size=$(wc -c < "npm/$target/fast_fs_hash.node")
-              echo "OK: npm/$target/fast_fs_hash.node ($size bytes)"
-            fi
-          done
-          if [ "$missing" -gt 0 ]; then
-            echo ""
-            echo "ERROR: $missing of 9 platform binaries missing — aborting publish!"
-            exit 1
-          fi
-          echo ""
-          echo "All 9 platform binaries verified."
-
-      - name: Verify version consistency
-        run: |
-          main_version=$(node -p "require('./packages/fast-fs-hash/package.json').version")
-          echo "Main package version: $main_version"
-          mismatch=0
-          for dir in npm/*/; do
-            target=$(basename "$dir")
-            pkg_version=$(node -p "require('./${dir}package.json').version")
-            if [ "$pkg_version" != "$main_version" ]; then
-              echo "MISMATCH: $target has version $pkg_version (expected $main_version)"
-              mismatch=$((mismatch + 1))
-            fi
-          done
-          if [ "$mismatch" -gt 0 ]; then
-            echo ""
-            echo "ERROR: $mismatch packages have mismatched versions — aborting!"
-            exit 1
-          fi
-          echo "All package versions match: $main_version"
+      - name: Inject optionalDependencies for publish
+        run: node scripts/prepublish.js
 
       - name: Dry-run publish all packages
         run: |
           echo "── Dry-run: platform packages ──"
           for dir in npm/*/; do
-            if [ -f "${dir}fast_fs_hash.node" ]; then
-              npm publish "$dir" --provenance --access public --dry-run
-            fi
+            npm publish "$dir" --provenance --access public --dry-run
           done
           echo ""
           echo "── Dry-run: main package ──"
@@ -334,10 +289,8 @@ jobs:
         run: |
           echo "── Publishing 9 platform packages ──"
           for dir in npm/*/; do
-            if [ -f "${dir}fast_fs_hash.node" ]; then
-              echo "Publishing @fast-fs-hash/$(basename "$dir")..."
-              npm publish "$dir" --provenance --access public
-            fi
+            echo "Publishing @fast-fs-hash/$(basename "$dir")..."
+            npm publish "$dir" --provenance --access public
           done
           echo ""
           echo "── Publishing main package ──"

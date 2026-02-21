@@ -9,12 +9,13 @@
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { elapsed, logChanged, logError, logInfo, logOk, logTitle, ROOT_DIR } from "./lib/utils.js";
 
-const rootDir = resolve(import.meta.dirname, "..");
+const t0 = performance.now();
 
-const BENCH_JSON = resolve(rootDir, "test", "tmp", "bench-output.json");
-const README = resolve(rootDir, "README.md");
-const RAW_DATA_DIR = resolve(rootDir, "test", "bench", "raw-data");
+const BENCH_JSON = resolve(ROOT_DIR, "test", "tmp", "bench-output.json");
+const README = resolve(ROOT_DIR, "README.md");
+const RAW_DATA_DIR = resolve(ROOT_DIR, "test", "bench", "raw-data");
 const LIST_JSON_PATH = resolve(RAW_DATA_DIR, "list.json");
 
 const BENCHMARKS_START = "<!-- BENCHMARKS:START -->";
@@ -64,14 +65,14 @@ function markdownTable(headers, rows) {
 function runBenchmarks() {
   if (process.argv.includes("--skip")) {
     if (!existsSync(BENCH_JSON)) {
-      console.error(`No previous benchmark output found at ${BENCH_JSON}`);
-      console.error("Run without --skip first.");
+      logError(`No previous benchmark output found at ${BENCH_JSON}`);
+      logError("Run without --skip first.");
       process.exit(1);
     }
-    console.log("Reusing previous benchmark output.");
+    logInfo("Reusing previous benchmark output.");
   } else {
-    console.log("Running benchmarks …");
-    execSync(`npx vitest bench --outputJson ${BENCH_JSON}`, { cwd: rootDir, stdio: "inherit" });
+    logInfo("Running benchmarks…");
+    execSync(`npx vitest bench --outputJson ${BENCH_JSON}`, { cwd: ROOT_DIR, stdio: "inherit" });
   }
   return JSON.parse(readFileSync(BENCH_JSON, "utf8"));
 }
@@ -125,19 +126,21 @@ function updateReadme(content) {
   const startIdx = readme.indexOf(BENCHMARKS_START);
   const endIdx = readme.indexOf(BENCHMARKS_END);
   if (startIdx < 0 || endIdx < 0 || endIdx <= startIdx) {
-    console.error(`Could not find ${BENCHMARKS_START} / ${BENCHMARKS_END} markers in ${README}`);
+    logError(`Could not find ${BENCHMARKS_START} / ${BENCHMARKS_END} markers in README.md`);
     process.exit(1);
   }
   const updated = `${readme.slice(0, startIdx + BENCHMARKS_START.length)}\n\n${content}\n\n${readme.slice(endIdx)}`;
   if (updated !== readme) {
     writeFileSync(README, updated, "utf8");
-    console.log(`Updated ${README}`);
+    logChanged("README.md updated with benchmark results");
   } else {
-    console.log(`No changes to ${README}`);
+    logOk("README.md benchmarks already up to date");
   }
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
+
+logTitle("Updating benchmarks");
 
 const benchData = runBenchmarks();
 
@@ -153,3 +156,5 @@ const sections = [
 ];
 
 updateReadme(sections.join("\n"));
+
+logOk(`Benchmarks updated (${elapsed(t0)})`);

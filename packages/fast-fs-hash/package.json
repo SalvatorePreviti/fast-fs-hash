@@ -20,6 +20,7 @@
   },
   "files": [
     "package.json",
+    "README.md",
     "LICENSE",
     "NOTICES.md",
     "dist/index.mjs",
