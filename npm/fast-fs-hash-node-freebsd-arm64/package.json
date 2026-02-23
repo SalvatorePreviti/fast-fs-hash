@@ -1,0 +1,23 @@
+{
+  "name": "@fast-fs-hash/fast-fs-hash-node-freebsd-arm64",
+  "version": "0.0.0-rc0",
+  "description": "fast-fs-hash native binding for FreeBSD arm64",
+  "os": [
+    "freebsd"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "main": "fast_fs_hash.node",
+  "files": [
+    "fast_fs_hash.node",
+    "README.md",
+    "LICENSE",
+    "NOTICES.md"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SalvatorePreviti/fast-fs-hash"
+  }
+}

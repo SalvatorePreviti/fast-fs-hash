@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "declarationMap": false,
+    "emitDeclarationOnly": true,
+    "rootDir": "packages/fast-fs-hash/src",
+    "outDir": "packages/fast-fs-hash/dist-types-tmp"
+  },
+  "include": ["packages/fast-fs-hash/src/**/*.ts"],
+  "exclude": ["node_modules", "**/node_modules", "**/dist", "**/build"]
+}

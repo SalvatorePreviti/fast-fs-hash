@@ -1,0 +1,28 @@
+{
+  "name": "@fast-fs-hash/fast-fs-hash-node-linux-x64-gnu",
+  "version": "0.0.0-rc0",
+  "description": "fast-fs-hash native binding for Linux x64 (glibc)",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "fast_fs_hash.node",
+  "files": [
+    "fast_fs_hash.node",
+    "fast_fs_hash_avx2.node",
+    "fast_fs_hash_avx512.node",
+    "README.md",
+    "LICENSE",
+    "NOTICES.md"
+  ],
+  "license": "MIT",
+  "libc": [
+    "glibc"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SalvatorePreviti/fast-fs-hash"
+  }
+}
