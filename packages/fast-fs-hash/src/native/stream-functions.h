@@ -1,0 +1,378 @@
+#ifndef _FAST_FS_HASH_STREAM_FUNCTIONS_H
+#define _FAST_FS_HASH_STREAM_FUNCTIONS_H
+
+#include "napi-helpers.h"
+#include "InstanceHashWorker.h"
+#include "HashSequentialWorker.h"
+#include "UpdateFileWorker.h"
+
+/**
+ * xxHash128 streaming functions — stateless, take an opaque External
+ * as the first argument instead of using ObjectWrap.
+ *
+ * The state is allocated with 64-byte alignment by streamAllocState() and
+ * wrapped in a Napi::External. JS holds the External, C++ extracts the raw
+ * pointer with napi_get_value_external (much cheaper than napi_get_typedarray_info).
+ *
+ * A magic tag is stored before the XXH3_state_t to validate the pointer on
+ * every call, preventing crashes from wrong/forged External values.
+ */
+namespace stream_functions {
+
+  struct StreamBusyGuard {
+    uint8_t * state_ptr;
+
+    explicit FSH_FORCE_INLINE StreamBusyGuard(uint8_t * p) noexcept : state_ptr(p) {}
+
+    FSH_FORCE_INLINE ~StreamBusyGuard() noexcept {
+      if (this->state_ptr) {
+        fast_fs_hash::clearStreamBusy(this->state_ptr);
+      }
+    }
+
+    FSH_FORCE_INLINE void release() noexcept { this->state_ptr = nullptr; }
+  };
+
+  static constexpr size_t STATE_ALIGNMENT = 64;
+
+  /**
+   * Magic tag placed AFTER XXH3_state_t — doubles as the busy flag.
+   * MAGIC_IDLE  = normal state, safe for sync operations.
+   * MAGIC_BUSY  = async worker owns the state, sync ops must throw.
+   * Any other value = invalid/corrupt pointer.
+   *
+   * Single load, single compare — no separate busy field needed.
+   */
+  static constexpr uint64_t MAGIC_IDLE = 0x5858'4833'7374'6174ULL;  // "XXH3stat"
+  static constexpr uint64_t MAGIC_BUSY = 0x5858'4833'6275'7379ULL;  // "XXH3busy"
+
+  /**
+   * Tagged state layout (64-byte aligned):
+   *   [0..]                        XXH3_state_t (64-byte aligned for SIMD)
+   *   [sizeof(XXH3_state_t)..]     magic tag (MAGIC_IDLE or MAGIC_BUSY)
+   *
+   * Total allocation: sizeof(XXH3_state_t) + 8, 64-byte aligned.
+   * State is at offset 0 — perfect alignment with no wasted padding.
+   */
+  static constexpr size_t TOTAL_STATE_ALLOC = sizeof(XXH3_state_t) + sizeof(uint64_t);
+
+  static FSH_FORCE_INLINE uint64_t * tagOf(void * p) noexcept {
+    return reinterpret_cast<uint64_t *>(static_cast<uint8_t *>(p) + sizeof(XXH3_state_t));
+  }
+
+  static void freeState(Napi::Env, void * p) { aligned_free(p); }
+
+  /**
+   * Extract and validate XXH3_state_t* from a napi_value (expected External).
+   * Throws TypeError on invalid/corrupt state, Error if busy.
+   * Returns nullptr on failure.
+   */
+  static FSH_FORCE_INLINE XXH3_state_t * getState(napi_env env, napi_value val) {
+    void * ptr = nullptr;
+    if (napi_get_value_external(env, val, &ptr) != napi_ok || !ptr) [[unlikely]] {
+      Napi::TypeError::New(env, "Invalid stream state: expected object from streamAllocState()")
+        .ThrowAsJavaScriptException();
+      return nullptr;
+    }
+    const uint64_t tag = *tagOf(ptr);
+    if (tag == MAGIC_IDLE) [[likely]] {
+      return static_cast<XXH3_state_t *>(ptr);
+    }
+    if (tag == MAGIC_BUSY) {
+      Napi::Error::New(env, "XxHash128Stream: cannot use state while an async operation is pending — await it first")
+        .ThrowAsJavaScriptException();
+    } else {
+      Napi::TypeError::New(env, "Invalid stream state: expected object from streamAllocState()")
+        .ThrowAsJavaScriptException();
+    }
+    return nullptr;
+  }
+
+  /**
+   * Extract, validate, and mark the state as busy for an async operation.
+   * Returns raw pointer for async workers. Throws if already busy or invalid.
+   * Caller must restore MAGIC_IDLE via clearStreamBusy() in OnOK/OnError.
+   */
+  static FSH_FORCE_INLINE uint8_t * acquireStateForAsync(napi_env env, napi_value val) {
+    void * ptr = nullptr;
+    if (napi_get_value_external(env, val, &ptr) != napi_ok || !ptr) [[unlikely]] {
+      Napi::TypeError::New(env, "Invalid stream state: expected object from streamAllocState()")
+        .ThrowAsJavaScriptException();
+      return nullptr;
+    }
+    uint64_t * tag = tagOf(ptr);
+    if (*tag == MAGIC_IDLE) [[likely]] {
+      *tag = MAGIC_BUSY;
+      return static_cast<uint8_t *>(ptr);
+    }
+    if (*tag == MAGIC_BUSY) {
+      Napi::Error::New(env, "XxHash128Stream: cannot use state while an async operation is pending — await it first")
+        .ThrowAsJavaScriptException();
+    } else {
+      Napi::TypeError::New(env, "Invalid stream state: expected object from streamAllocState()")
+        .ThrowAsJavaScriptException();
+    }
+    return nullptr;
+  }
+
+  /** streamAllocState(seedLow, seedHigh) → External (tagged, 64-byte aligned) */
+  static Napi::Value streamAllocState(const Napi::CallbackInfo & info) {
+    auto env = info.Env();
+
+    auto * state = static_cast<XXH3_state_t *>(aligned_malloc(STATE_ALIGNMENT, TOTAL_STATE_ALLOC));
+    if (!state) [[unlikely]] {
+      Napi::Error::New(env, "streamAllocState: out of memory").ThrowAsJavaScriptException();
+      return Napi::Value(env, nullptr);
+    }
+
+    *tagOf(state) = MAGIC_IDLE;
+
+    uint32_t lo = 0, hi = 0;
+    napi_get_value_uint32(env, info[0], &lo);
+    napi_get_value_uint32(env, info[1], &hi);
+    uint64_t seed = (static_cast<uint64_t>(hi) << 32) | static_cast<uint64_t>(lo);
+
+    XXH3_128bits_reset_withSeed(state, seed);
+
+    return Napi::External<void>::New(env, state, freeState);
+  }
+
+  /** streamReset(state, seedLow, seedHigh) → void */
+  static Napi::Value streamReset(const Napi::CallbackInfo & info) {
+    napi_env env = info.Env();
+
+    auto * state = getState(env, info[0]);
+    if (!state) [[unlikely]] {
+      return Napi::Value(env, nullptr);
+    }
+
+    uint32_t lo = 0, hi = 0;
+    napi_get_value_uint32(env, info[1], &lo);
+    napi_get_value_uint32(env, info[2], &hi);
+    uint64_t seed = (static_cast<uint64_t>(hi) << 32) | static_cast<uint64_t>(lo);
+
+    XXH3_128bits_reset_withSeed(state, seed);
+    return Napi::Env(env).Undefined();
+  }
+
+  /** streamAddBuffer(state, input, offset?, length?) → void */
+  static Napi::Value streamAddBuffer(const Napi::CallbackInfo & info) {
+    napi_env env = info.Env();
+
+    auto * state = getState(env, info[0]);
+    if (!state) [[unlikely]] {
+      return Napi::Value(env, nullptr);
+    }
+
+    void * buf_ptr = nullptr;
+    size_t buf_len = 0;
+    napi_get_typedarray_info(env, info[1], nullptr, &buf_len, &buf_ptr, nullptr, nullptr);
+
+    // Fast path: no offset/length args — hash entire buffer
+    if (info.Length() <= 2) [[likely]] {
+      XXH3_128bits_update(state, buf_ptr, buf_len);
+      return Napi::Env(env).Undefined();
+    }
+
+    // Slow path: offset and optional length
+    uint32_t offset = 0;
+    napi_get_value_uint32(env, info[2], &offset);
+
+    uint32_t len32 = 0;
+    size_t length;
+    if (info.Length() > 3 && napi_get_value_uint32(env, info[3], &len32) == napi_ok) {
+      length = len32;
+    } else {
+      if (static_cast<size_t>(offset) > buf_len) [[unlikely]] {
+        Napi::RangeError::New(env, "streamAddBuffer: offset exceeds buffer size").ThrowAsJavaScriptException();
+        return Napi::Value(env, nullptr);
+      }
+      length = buf_len - static_cast<size_t>(offset);
+    }
+
+    if (length > buf_len || static_cast<size_t>(offset) > buf_len - length) [[unlikely]] {
+      Napi::RangeError::New(env, "streamAddBuffer: offset + length exceeds buffer size").ThrowAsJavaScriptException();
+      return Napi::Value(env, nullptr);
+    }
+    XXH3_128bits_update(state, static_cast<const uint8_t *>(buf_ptr) + offset, length);
+    return Napi::Env(env).Undefined();
+  }
+
+  /** streamAddString(state, str) → void */
+  static Napi::Value streamAddString(const Napi::CallbackInfo & info) {
+    napi_env env = info.Env();
+    auto * state = getState(env, info[0]);
+    if (!state) [[unlikely]] {
+      return Napi::Value(env, nullptr);
+    }
+
+    // Fast path: try small buffer only (covers vast majority of strings).
+    char small_buf[STRING_SMALL_BUF];
+    size_t written = 0;
+    napi_get_value_string_utf8(env, info[1], small_buf, STRING_SMALL_BUF, &written);
+    if (written < STRING_SMALL_BUF - 5) [[likely]] {
+      if (written > 0) {
+        XXH3_128bits_update(state, reinterpret_cast<const uint8_t *>(small_buf), written);
+      }
+      return Napi::Env(env).Undefined();
+    }
+
+    // Slow path: large string — use fast_encode_string with large_buf on stack.
+    char large_buf[STRING_LARGE_BUF];
+    const char * data;
+    const size_t len = fast_encode_string(env, info[1], small_buf, large_buf, data);
+    if (len > 0) {
+      XXH3_128bits_update(state, reinterpret_cast<const uint8_t *>(data), len);
+    }
+    cleanup_string_buf(data, small_buf, large_buf);
+    return Napi::Env(env).Undefined();
+  }
+
+  /** streamDigestTo(state, out, offset?) → out */
+  static Napi::Value streamDigestTo(const Napi::CallbackInfo & info) {
+    napi_env env = info.Env();
+
+    auto * state = getState(env, info[0]);
+    if (!state) [[unlikely]] {
+      return Napi::Value(env, nullptr);
+    }
+
+    void * out_ptr = nullptr;
+    size_t out_len = 0;
+    napi_get_typedarray_info(env, info[1], nullptr, &out_len, &out_ptr, nullptr, nullptr);
+
+    uint32_t offset = 0;
+    if (info.Length() > 2) {
+      napi_get_value_uint32(env, info[2], &offset);
+    }
+
+    if (static_cast<size_t>(offset) > out_len || out_len - static_cast<size_t>(offset) < 16) [[unlikely]] {
+      Napi::RangeError::New(env, "streamDigestTo: offset + 16 exceeds output buffer size").ThrowAsJavaScriptException();
+      return Napi::Value(env, nullptr);
+    }
+
+    XXH128_canonicalFromHash(
+      reinterpret_cast<XXH128_canonical_t *>(static_cast<uint8_t *>(out_ptr) + offset), XXH3_128bits_digest(state));
+    return info[1];
+  }
+
+  /** streamAddFile(state, path, throwOnError?) → Promise<void> */
+  static Napi::Value streamAddFile(const Napi::CallbackInfo & info) {
+    auto env = info.Env();
+    auto * state_ptr = acquireStateForAsync(env, info[0]);
+    if (!state_ptr) [[unlikely]] {
+      return Napi::Value(env, nullptr);
+    }
+    StreamBusyGuard busy_guard(state_ptr);
+
+    bool throw_on_error = true;
+    if (info.Length() > 2) {
+      napi_get_value_bool(env, info[2], &throw_on_error);
+    }
+
+    auto deferred = Napi::Promise::Deferred::New(env);
+    auto * worker = new UpdateFileWorker(
+      env,
+      deferred,
+      Napi::ObjectReference::New(info[0].As<Napi::Object>(), 1),
+      state_ptr,
+      info[1].As<Napi::String>().Utf8Value(),
+      throw_on_error);
+    worker->Queue();
+    busy_guard.release();
+    return deferred.Promise();
+  }
+
+  /** streamAddFilesParallel(state, pathsBuf, concurrency, throwOnError?) → Promise<null> */
+  static Napi::Value streamAddFilesParallel(const Napi::CallbackInfo & info) {
+    auto env = info.Env();
+    auto * state_ptr = acquireStateForAsync(env, info[0]);
+    if (!state_ptr) [[unlikely]] {
+      return Napi::Value(env, nullptr);
+    }
+    StreamBusyGuard busy_guard(state_ptr);
+
+    bool throw_on_error = true;
+    if (info.Length() > 3) {
+      napi_get_value_bool(env, info[3], &throw_on_error);
+    }
+
+    auto paths = info[1].As<Napi::Uint8Array>();
+    auto deferred = Napi::Promise::Deferred::New(env);
+    auto * worker = new InstanceHashWorker(
+      env,
+      deferred,
+      Napi::ObjectReference::New(info[0].As<Napi::Object>(), 1),
+      state_ptr,
+      info[2].As<Napi::Number>().Int32Value(),
+      throw_on_error);
+    worker->setPaths(Napi::ObjectReference::New(paths, 1), paths.Data(), paths.ElementLength());
+    worker->Queue();
+    busy_guard.release();
+    return deferred.Promise();
+  }
+
+  /** streamAddFilesSequential(state, pathsBuf, throwOnError) → Promise<null> */
+  static Napi::Value streamAddFilesSequential(const Napi::CallbackInfo & info) {
+    auto env = info.Env();
+    auto * state_ptr = acquireStateForAsync(env, info[0]);
+    if (!state_ptr) [[unlikely]] {
+      return Napi::Value(env, nullptr);
+    }
+    StreamBusyGuard busy_guard(state_ptr);
+
+    auto paths = info[1].As<Napi::Uint8Array>();
+
+    bool throw_on_error = true;
+    if (info.Length() > 2) {
+      napi_value val = info[2];
+      napi_get_value_bool(env, val, &throw_on_error);
+    }
+
+    auto deferred = Napi::Promise::Deferred::New(env);
+    auto * worker = new HashSequentialWorker(env, deferred, throw_on_error);
+    worker->setState(Napi::ObjectReference::New(info[0].As<Napi::Object>(), 1), state_ptr);
+    worker->setPaths(Napi::ObjectReference::New(paths, 1), paths.Data(), paths.ElementLength());
+    worker->Queue();
+    busy_guard.release();
+    return deferred.Promise();
+  }
+
+  /** streamIsBusy(state) → boolean — true if an async operation is in flight. */
+  static Napi::Value streamIsBusy(const Napi::CallbackInfo & info) {
+    auto env = info.Env();
+    void * ptr = nullptr;
+    if (napi_get_value_external(env, info[0], &ptr) == napi_ok && ptr) [[likely]] {
+      const uint64_t tag = *tagOf(ptr);
+      if (tag == MAGIC_BUSY) {
+        return Napi::Boolean::New(env, true);
+      }
+      if (tag == MAGIC_IDLE) {
+        return Napi::Boolean::New(env, false);
+      }
+    }
+    Napi::TypeError::New(env, "Invalid stream state: expected object from streamAllocState()").ThrowAsJavaScriptException();
+    return Napi::Value(env, nullptr);
+  }
+
+  /** streamClone(dst, src) → void — copies src hash state into dst (both must be allocated states) */
+  static Napi::Value streamClone(const Napi::CallbackInfo & info) {
+    auto env = info.Env();
+
+    auto * dst_state = getState(env, info[0]);
+    if (!dst_state) [[unlikely]] {
+      return Napi::Value(env, nullptr);
+    }
+
+    auto * src_state = getState(env, info[1]);
+    if (!src_state) [[unlikely]] {
+      return Napi::Value(env, nullptr);
+    }
+
+    XXH3_copyState(dst_state, src_state);
+    return Napi::Env(env).Undefined();
+  }
+
+}  // namespace stream_functions
+
+#endif

@@ -1,0 +1,15 @@
+{
+  "name": "fast-fs-hash-smoke-test",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Smoke test: installs fast-fs-hash from npm and verifies it works",
+  "scripts": {
+    "install-latest": "npm install fast-fs-hash@latest",
+    "install-rc": "npm install fast-fs-hash@rc",
+    "test": "node smoke-test.mjs"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

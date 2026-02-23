@@ -1,0 +1,115 @@
+# Smoke test — install fast-fs-hash from npm and verify it works on all platforms.
+#
+# Triggered manually. Installs the specified version (including rc/pre-release)
+# with optional dependencies and runs a standalone smoke test script that
+# exercises xxHash, LZ4, and FileHashCache through the native binding.
+
+name: Smoke Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Package version to install (e.g. 0.0.1, 0.0.1-rc1, latest)"
+        required: true
+        default: "latest"
+        type: string
+
+jobs:
+  smoke:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows
+          - name: win32-x64
+            os: windows-latest
+
+          # macOS
+          - name: darwin-arm64
+            os: macos-latest
+          - name: darwin-x64
+            os: macos-13
+
+          # Linux glibc
+          - name: linux-x64-gnu
+            os: ubuntu-24.04
+          - name: linux-arm64-gnu
+            os: ubuntu-24.04
+            use-docker: true
+            use-qemu: true
+            docker-platform: linux/arm64
+            docker-image: node:22-bookworm
+
+          # Linux musl
+          - name: linux-x64-musl
+            os: ubuntu-24.04
+            use-docker: true
+            docker-image: node:22-alpine
+          - name: linux-arm64-musl
+            os: ubuntu-24.04
+            use-docker: true
+            use-qemu: true
+            docker-platform: linux/arm64
+            docker-image: node:22-alpine
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: test/smoke-test
+
+      # Direct (non-Docker) platforms
+      - uses: actions/setup-node@v6
+        if: ${{ !matrix.use-docker }}
+        with:
+          node-version: "22"
+
+      - name: Install and test
+        if: ${{ !matrix.use-docker }}
+        shell: bash
+        run: |
+          cd test/smoke-test
+          npm install "fast-fs-hash@${{ inputs.version }}"
+          node smoke-test.mjs
+
+      # QEMU for cross-arch Docker
+      - name: Set up QEMU
+        if: ${{ matrix.use-qemu }}
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      # Docker platforms (musl + arm64 glibc)
+      - name: Install and test (Docker)
+        if: ${{ matrix.use-docker }}
+        run: |
+          docker run --rm ${{ matrix.docker-platform && format('--platform {0}', matrix.docker-platform) || '' }} \
+            -v "$PWD/test/smoke-test:/smoke-test" -w /smoke-test ${{ matrix.docker-image }} sh -c '
+            npm install "fast-fs-hash@${{ inputs.version }}" &&
+            node smoke-test.mjs
+          '
+
+  smoke-freebsd:
+    name: freebsd-x64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: test/smoke-test
+
+      - name: Install and test in FreeBSD VM
+        uses: cross-platform-actions/action@v0.32.0
+        with:
+          operating_system: freebsd
+          version: "14.3"
+          architecture: x86_64
+          memory: 4G
+          cpu_count: 2
+          shell: bash
+          run: |
+            sudo pkg install -y node22 npm-node22
+            cd test/smoke-test
+            npm install "fast-fs-hash@${{ inputs.version }}"
+            node smoke-test.mjs

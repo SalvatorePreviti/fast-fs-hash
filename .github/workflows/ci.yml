@@ -1,0 +1,562 @@
+# fast-fs-hash CI
+#
+# Architecture:
+#   1. lint-and-test   — Lint, typecheck, JS-fallback tests
+#   2. build-native    — Matrix: build + test native .node on each platform
+#   3. build-freebsd   — FreeBSD VM: build + test
+#   4. test-musl       — Download musl artifacts -> test inside Alpine Docker
+#   5. publish         — ONLY after ALL above pass: verify, dry-run, publish + deploy docs
+#
+#   If ANY build or test fails, nothing is published.
+#
+# Quick publish (reuse previous artifacts):
+#   Trigger workflow_dispatch with publish=true and reuse-run-id=<run-id>.
+#   This skips all build/test jobs and downloads artifacts from the specified
+#   CI run, then runs dry-run + publish. Use when the code hasn't changed
+#   since the last successful CI run.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Run publish pipeline (build, dry-run, publish)"
+        type: boolean
+        default: false
+      reuse-run-id:
+        description: "Reuse artifacts from this CI run ID (skip builds). Leave empty to build fresh."
+        type: string
+        default: ""
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  #  - Lint, typecheck & test
+  lint-and-test:
+    if: ${{ !inputs.reuse-run-id }}
+    name: Lint & Test (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build:all
+      - run: npm test -- --reporter=verbose
+        env:
+          FAST_FS_HASH_NO_NATIVE: fatal
+      - run: npm run bench
+        env:
+          FAST_FS_HASH_NO_NATIVE: fatal
+
+  #  - Build + test native addon for every platform
+  #
+  # Every entry builds the .node file. Entries that can execute on the
+  # runner also run the full test suite WITH the native binding loaded.
+  # Cross-compiled targets (win32-arm64) can only verify the build succeeds.
+  #
+  build-native:
+    if: ${{ !inputs.reuse-run-id }}
+    name: Build ${{ matrix.target }}
+    needs: [lint-and-test]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          #  - Windows x64 (build + test natively)
+          - target: win32-x64-msvc
+            os: windows-latest
+            can-test: true
+          #  - Windows arm64 (cross-compile only, no arm64 runner)
+          - target: win32-arm64-msvc
+            os: windows-latest
+            target-arch: arm64
+
+          #  - macOS arm64 (build + test natively)
+          - target: darwin-arm64
+            os: macos-latest
+            can-test: true
+          #  - macOS x64 (cross-compile + test under Rosetta 2)
+          - target: darwin-x64
+            os: macos-latest
+            target-arch: x64
+            can-test-rosetta: true
+
+          #  - Linux glibc (build + test natively)
+          - target: linux-x64-gnu
+            os: ubuntu-24.04
+            can-test: true
+          - target: linux-arm64-gnu
+            os: ubuntu-24.04
+            use-docker: true
+            use-qemu: true
+            docker-platform: linux/arm64
+            docker-image: node:22-bookworm
+            docker-setup: apt-get update && apt-get install -y --no-install-recommends cmake make g++
+
+          #  - Linux musl (build in Docker, test in separate job)
+          - target: linux-x64-musl
+            os: ubuntu-24.04
+            use-docker: true
+            docker-image: node:22-alpine
+            docker-setup: apk add --no-cache cmake make g++
+          - target: linux-arm64-musl
+            os: ubuntu-24.04
+            use-docker: true
+            use-qemu: true
+            docker-platform: linux/arm64
+            docker-image: node:22-alpine
+            docker-setup: apk add --no-cache cmake make g++
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      #  - Direct builds (macOS, Linux glibc, Windows)
+      - uses: actions/setup-node@v6
+        if: ${{ !matrix.use-docker }}
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        if: ${{ !matrix.use-docker }}
+        run: npm ci
+
+      - name: Build native addon (cross-arch)
+        if: ${{ matrix.target-arch }}
+        run: node scripts/build-native.js --arch ${{ matrix.target-arch }}
+
+      #  - Test native binding (platforms where we can run)
+      - name: Build all
+        if: ${{ matrix.can-test }}
+        run: npm run build:all
+
+      - name: Test with native binding
+        if: ${{ matrix.can-test }}
+        run: npm test -- --reporter=verbose
+        env:
+          FAST_FS_HASH_NO_NATIVE: fatal
+
+      - name: Run benchmarks
+        if: ${{ matrix.can-test }}
+        run: npm run bench
+        env:
+          FAST_FS_HASH_NO_NATIVE: fatal
+
+      #  - Rosetta 2 testing: cross-compiled x64 tested on arm64 runner
+      - name: Build JS bundles (for Rosetta test)
+        if: ${{ matrix.can-test-rosetta }}
+        run: npm run build:ts
+
+      - name: Ensure Rosetta 2 is available
+        if: ${{ matrix.can-test-rosetta }}
+        run: softwareupdate --install-rosetta --agree-to-license 2>/dev/null || true
+
+      - name: Set up x64 Node.js (Rosetta 2)
+        if: ${{ matrix.can-test-rosetta }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          architecture: x64
+
+      - name: Verify Rosetta 2 node
+        if: ${{ matrix.can-test-rosetta }}
+        run: |
+          echo "Node arch: $(node -p process.arch)"
+          echo "Node version: $(node -v)"
+          [ "$(node -p process.arch)" = "x64" ] || { echo "Expected x64 node"; exit 1; }
+
+      - name: Test under Rosetta 2
+        if: ${{ matrix.can-test-rosetta }}
+        run: npm test -- --reporter=verbose
+        env:
+          FAST_FS_HASH_NO_NATIVE: fatal
+
+      - name: Run benchmarks (Rosetta 2)
+        if: ${{ matrix.can-test-rosetta }}
+        run: npm run bench
+        env:
+          FAST_FS_HASH_NO_NATIVE: fatal
+
+      #  - Set up QEMU for cross-arch Docker builds
+      - name: Set up QEMU
+        if: ${{ matrix.use-qemu }}
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      #  - Docker builds (Linux musl via Alpine, Linux arm64 glibc)
+      - name: Build native addon (Docker)
+        if: ${{ matrix.use-docker }}
+        run: |
+          docker run --rm ${{ matrix.docker-platform && format('--platform {0}', matrix.docker-platform) || '' }} \
+            -e CI=true -v "$PWD:/workspace" -w /workspace ${{ matrix.docker-image }} sh -c "
+            ${{ matrix.docker-setup }} &&
+            npm ci &&
+            npm run build:native
+          "
+
+      #  - Print binary sizes (baseline + x64 variants)
+      - name: Print .node file sizes
+        shell: bash
+        run: |
+          dir="packages/fast-fs-hash/build/Release"
+          for file in "$dir"/fast_fs_hash*.node; do
+            if [ -f "$file" ]; then
+              name=$(basename "$file")
+              size=$(wc -c < "$file" | tr -d ' ')
+              kb=$((size / 1024))
+              echo "✔ ${{ matrix.target }}: ${name} — ${kb} KB (${size} bytes)"
+            fi
+          done
+
+      #  - Upload (all .node variants)
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binding-${{ matrix.target }}
+          path: packages/fast-fs-hash/build/Release/fast_fs_hash*.node
+          if-no-files-found: error
+
+  #  - Test musl bindings (run test suite inside Alpine containers)
+  test-musl:
+    if: ${{ !inputs.reuse-run-id }}
+    name: Test ${{ matrix.target }}
+    needs: [build-native]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64-musl
+          - target: linux-arm64-musl
+            use-qemu: true
+            docker-platform: linux/arm64
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Set up QEMU
+        if: ${{ matrix.use-qemu }}
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: binding-${{ matrix.target }}
+          path: packages/fast-fs-hash/build/Release
+
+      - name: Test inside Alpine (native via simulated install)
+        run: |
+          docker run --rm ${{ matrix.docker-platform && format('--platform {0}', matrix.docker-platform) || '' }} \
+            -e CI=true \
+            -e FAST_FS_HASH_NO_NATIVE=fatal \
+            -v "$PWD:/workspace" -w /workspace node:22-alpine sh -c '
+            npm ci &&
+            npm run build:ts &&
+
+            # Simulate native install: create the scoped package directory
+            pkg_dir="node_modules/@fast-fs-hash/fast-fs-hash-node-${{ matrix.target }}"
+            mkdir -p "$pkg_dir"
+            cp "npm/fast-fs-hash-node-${{ matrix.target }}/package.json" "$pkg_dir/package.json"
+            for f in packages/fast-fs-hash/build/Release/fast_fs_hash*.node; do
+              cp "$f" "$pkg_dir/"
+            done
+            echo "Simulated native install:" && ls -lh "$pkg_dir/" &&
+
+            npm test -- --reporter=verbose &&
+            npm run bench
+          '
+
+  #  - FreeBSD (build + test inside FreeBSD VMs)
+  build-freebsd:
+    if: ${{ !inputs.reuse-run-id }}
+    name: Build ${{ matrix.can-test && '& Test ' || '' }}freebsd-${{ matrix.arch }}
+    needs: [lint-and-test]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            architecture: x86_64
+            can-test: true
+          - arch: arm64
+            architecture: arm64
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Build & test in FreeBSD VM
+        uses: cross-platform-actions/action@v0.32.0
+        with:
+          operating_system: freebsd
+          version: "14.3"
+          architecture: ${{ matrix.architecture }}
+          memory: 8G
+          cpu_count: 3
+          shell: bash
+          run: |
+            sudo pkg install -y cmake node22 npm-node22 git
+            npm ci
+            ${{ matrix.can-test && 'npm run build:all' || 'npm run build:native' }}
+            ls -lh packages/fast-fs-hash/build/Release/fast_fs_hash.node
+            ${{ matrix.can-test && 'export FAST_FS_HASH_NO_NATIVE=fatal && npm test -- --reporter=verbose && npm run bench' || 'echo "Cross-build only — skipping tests"' }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binding-freebsd-${{ matrix.arch }}
+          path: packages/fast-fs-hash/build/Release/fast_fs_hash*.node
+          if-no-files-found: error
+
+  #  - Verify publish (runs automatically on publish branch)
+  #
+  # Downloads every platform artifact, packages binaries, injects optionalDeps,
+  # and runs npm publish --dry-run on all packages. Uploads the fully prepared
+  # publish-ready tree as an artifact for the real publish job.
+  #
+  publish-dry-run:
+    name: Verify publish (dry-run)
+    if: |
+      always() &&
+      github.event_name == 'workflow_dispatch' && inputs.publish &&
+      (inputs.reuse-run-id || (
+        needs.lint-and-test.result == 'success' &&
+        needs.build-native.result == 'success' &&
+        needs.build-freebsd.result == 'success' &&
+        needs.test-musl.result == 'success'
+      ))
+    needs: [lint-and-test, build-native, build-freebsd, test-musl]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check triggering actor is a repo admin
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const username = context.actor;
+            const { data } = await github.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username });
+            const perm = data.permission;
+            if (perm === 'admin') {
+              core.info(`User ${username} has admin permission`);
+            } else {
+              core.setFailed(`User ${username} has '${perm}' permission — only admins can publish.`);
+            }
+
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          registry-url: "https://registry.npmjs.org"
+
+      - run: npm ci
+
+      - name: Resolve release version
+        id: release
+        run: |
+          version=$(node -p "require('./package.json').version")
+          tag="v${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Release version: ${version}"
+          echo "Release tag: ${tag}"
+
+      - name: Ensure release tag does not already exist
+        run: |
+          tag='${{ steps.release.outputs.tag }}'
+          git fetch --tags --force
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "Tag ${tag} already exists."
+            echo "Bump package.json version before merging into publish."
+            exit 1
+          fi
+
+      - name: Build JS bundles
+        run: npm run build:ts
+
+      - name: Sync versions
+        run: node scripts/update-versions.js
+
+      - name: Download all native bindings (from current run)
+        if: ${{ !inputs.reuse-run-id }}
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Download all native bindings (from previous run)
+        if: ${{ inputs.reuse-run-id }}
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          run-id: ${{ inputs.reuse-run-id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package platform binaries
+        run: node scripts/package-platforms.js
+
+      - name: Inject optionalDependencies for publish
+        run: node scripts/prepublish.js
+
+      - name: Dry-run publish (verify all packages)
+        shell: bash
+        run: |
+          echo "── Dry-run: verifying all packages can be published ──"
+          for dir in npm/*/; do
+            pkg_name=$(node -p "require('./${dir}/package.json').name")
+            pkg_version=$(node -p "require('./${dir}/package.json').version")
+            echo "  📦 ${pkg_name}@${pkg_version} ..."
+            npm publish "$dir" --dry-run --access public 2>&1 | tail -5
+          done
+          pkg_name=$(node -p "require('./packages/fast-fs-hash/package.json').name")
+          pkg_version=$(node -p "require('./packages/fast-fs-hash/package.json').version")
+          echo "  📦 ${pkg_name}@${pkg_version} ..."
+          npm publish packages/fast-fs-hash --dry-run --access public 2>&1 | tail -5
+          echo "── Dry-run passed ──"
+
+      - name: Upload publish-ready packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: publish-ready
+          path: |
+            npm/
+            packages/fast-fs-hash/dist/
+            packages/fast-fs-hash/package.json
+          if-no-files-found: error
+
+  #  - Publish (requires manual approval)
+  #
+  # Uses the "npm-publish" environment which must have "Required reviewers"
+  # enabled in GitHub repo settings (Settings → Environments → npm-publish).
+  # After dry-run passes, a collaborator must approve this job to publish.
+  #
+  publish:
+    name: Publish to npm + Deploy docs
+    needs: [publish-dry-run]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      pages: write
+    environment:
+      name: npm-publish
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          registry-url: "https://registry.npmjs.org"
+
+      - run: npm ci
+
+      - name: Build JS bundles
+        run: npm run build:ts
+
+      - name: Sync versions
+        run: node scripts/update-versions.js
+
+      - name: Download publish-ready packages
+        uses: actions/download-artifact@v4
+        with:
+          name: publish-ready
+          path: .
+
+      - name: Inject optionalDependencies for publish
+        run: node scripts/prepublish.js
+
+      - name: Resolve release version
+        id: release
+        run: |
+          version=$(node -p "require('./package.json').version")
+          tag="v${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish all packages
+        shell: bash
+        run: |
+          publish_pkg() {
+            local dir="$1"
+            local pkg_name pkg_version
+            pkg_name=$(node -p "require('./${dir}/package.json').name")
+            pkg_version=$(node -p "require('./${dir}/package.json').version")
+
+            if npm view "${pkg_name}@${pkg_version}" version --json 2>/dev/null | grep -q "${pkg_version}"; then
+              echo "⏭  ${pkg_name}@${pkg_version} already published — skipping"
+              return 0
+            fi
+
+            echo "📦 Publishing ${pkg_name}@${pkg_version}..."
+            npm publish "$dir" --provenance --access public
+          }
+
+          echo " - Publishing platform packages"
+          for dir in npm/*/; do
+            publish_pkg "$dir"
+          done
+
+          echo ""
+          echo " - Publishing main package"
+          publish_pkg packages/fast-fs-hash
+
+          echo ""
+          echo "✔ All packages published successfully."
+
+      - name: Create and push git tag
+        run: |
+          tag='${{ steps.release.outputs.tag }}'
+
+          git fetch --tags --force
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${tag}" -m "Release ${tag}"
+          git push origin "${tag}"
+
+      #  - Deploy docs to GitHub Pages
+
+      - name: Generate API docs
+        run: npm run docs
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/api
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

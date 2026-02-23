@@ -1,0 +1,33 @@
+{
+  "name": "@fast-fs-hash/fast-fs-hash-node-linux-arm64-musl",
+  "version": "0.0.0-rc1",
+  "description": "fast-fs-hash native binding for Linux arm64 (musl)",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "main": "fast_fs_hash.node",
+  "files": [
+    "fast_fs_hash.node",
+    "README.md",
+    "LICENSE",
+    "NOTICES.md"
+  ],
+  "license": "MIT",
+  "libc": [
+    "musl"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SalvatorePreviti/fast-fs-hash.git"
+  },
+  "homepage": "https://github.com/SalvatorePreviti/fast-fs-hash#readme",
+  "bugs": {
+    "url": "https://github.com/SalvatorePreviti/fast-fs-hash/issues"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

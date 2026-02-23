@@ -1,0 +1,58 @@
+{
+  "private": true,
+  "version": "0.0.0-rc1",
+  "type": "module",
+  "workspaces": [
+    "packages/fast-fs-hash"
+  ],
+  "keywords": [
+    "fast-fs-hash",
+    "hash",
+    "filesystem",
+    "fast",
+    "xxhash",
+    "native",
+    "cache-invalidation",
+    "file-hash",
+    "napi"
+  ],
+  "scripts": {
+    "prepare": "node scripts/prepare.js",
+    "build": "node scripts/build-all.js",
+    "build:all": "node scripts/build-all.js",
+    "build:ts": "node scripts/build-ts.js",
+    "build:native": "node scripts/build-native.js",
+    "test": "node scripts/run-test.js",
+    "bench": "node scripts/run-bench.js",
+    "update-benchmarks": "node scripts/update-benchmarks.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "smoke-test": "cd test/smoke-test && npm test",
+    "smoke-test:install": "cd test/smoke-test && npm install fast-fs-hash@latest",
+    "update-xxhash": "bash scripts/update-xxhash.sh",
+    "docs": "npx typedoc"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.10",
+    "@types/node": "^25.5.2",
+    "ansis": "^4.2.0",
+    "cmake-js": "^8.0.0",
+    "lefthook": "^2.1.4",
+    "node-addon-api": "^8.7.0",
+    "prettier": "^3.8.1",
+    "rolldown": "^1.0.0-rc.13",
+    "rollup-plugin-dts": "^6.4.1",
+    "tsx": "^4.21.0",
+    "typedoc": "^0.28.18",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.2"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "homepage": "https://github.com/SalvatorePreviti/fast-fs-hash#readme",
+  "bugs": {
+    "url": "https://github.com/SalvatorePreviti/fast-fs-hash/issues"
+  }
+}

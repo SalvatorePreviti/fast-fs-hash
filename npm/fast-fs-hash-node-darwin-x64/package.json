@@ -1,0 +1,32 @@
+{
+  "name": "@fast-fs-hash/fast-fs-hash-node-darwin-x64",
+  "version": "0.0.0-rc1",
+  "description": "fast-fs-hash native binding for macOS x64",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "fast_fs_hash.node",
+  "files": [
+    "fast_fs_hash.node",
+    "fast_fs_hash_avx2.node",
+    "fast_fs_hash_avx512.node",
+    "README.md",
+    "LICENSE",
+    "NOTICES.md"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SalvatorePreviti/fast-fs-hash.git"
+  },
+  "homepage": "https://github.com/SalvatorePreviti/fast-fs-hash#readme",
+  "bugs": {
+    "url": "https://github.com/SalvatorePreviti/fast-fs-hash/issues"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

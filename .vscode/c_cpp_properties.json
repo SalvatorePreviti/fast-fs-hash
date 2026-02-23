@@ -1,0 +1,47 @@
+{
+  "configurations": [
+    {
+      "name": "Mac",
+      "includePath": [
+        "${workspaceFolder}/packages/fast-fs-hash/src/native",
+        "${workspaceFolder}/packages/fast-fs-hash/src/native/core",
+        "${workspaceFolder}/packages/fast-fs-hash/src/native/io",
+        "${workspaceFolder}/packages/fast-fs-hash/src/native/workers",
+        "${workspaceFolder}/packages/fast-fs-hash/src/native/file-hash-cache",
+        "${workspaceFolder}/packages/fast-fs-hash/src/native/file-hash-cache/workers",
+        "${workspaceFolder}/node_modules/node-addon-api",
+        "${userHome}/.cmake-js/node-arm64/*/include/node",
+        "${workspaceFolder}/deps/xxHash",
+        "${workspaceFolder}/deps/lz4"
+      ],
+      "defines": ["NAPI_DISABLE_CPP_EXCEPTIONS"],
+      "macFrameworkPath": ["/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks"],
+      "compilerPath": "/usr/bin/clang++",
+      "cStandard": "c17",
+      "cppStandard": "c++20",
+      "intelliSenseMode": "macos-clang-arm64"
+    },
+    {
+      "name": "Linux",
+      "includePath": [
+        "${workspaceFolder}/packages/fast-fs-hash/src/native",
+        "${workspaceFolder}/packages/fast-fs-hash/src/native/core",
+        "${workspaceFolder}/packages/fast-fs-hash/src/native/io",
+        "${workspaceFolder}/packages/fast-fs-hash/src/native/workers",
+        "${workspaceFolder}/packages/fast-fs-hash/src/native/file-hash-cache",
+        "${workspaceFolder}/packages/fast-fs-hash/src/native/file-hash-cache/workers",
+        "${workspaceFolder}/node_modules/node-addon-api",
+        "${userHome}/.cmake-js/node-x64/*/include/node",
+        "/usr/include/node",
+        "${workspaceFolder}/deps/xxHash",
+        "${workspaceFolder}/deps/lz4"
+      ],
+      "defines": ["NAPI_DISABLE_CPP_EXCEPTIONS"],
+      "compilerPath": "/usr/bin/g++",
+      "cStandard": "c17",
+      "cppStandard": "c++20",
+      "intelliSenseMode": "linux-gcc-x64"
+    }
+  ],
+  "version": 4
+}
