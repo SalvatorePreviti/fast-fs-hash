@@ -52,6 +52,7 @@ jobs:
   #
   build-native:
     name: Build ${{ matrix.target }}
+    needs: [lint-and-test]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -192,6 +193,7 @@ jobs:
   #  - FreeBSD (build + test inside a FreeBSD VM)
   build-freebsd:
     name: Build & Test freebsd-x64
+    needs: [lint-and-test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
