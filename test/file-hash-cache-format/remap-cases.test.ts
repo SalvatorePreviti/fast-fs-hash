@@ -142,11 +142,23 @@ async function statAndHash(files: string[]): Promise<{ stats: ReturnType<typeof 
 //  - Tests
 
 const backends = [
-  { name: "native", Ctor: FileHashCache as CacheCtor, wasmBit: 0 },
+  { name: "native", Ctor: FileHashCache as CacheCtor },
   { name: "wasm", Ctor: FileHashCacheWasm as CacheCtor, wasmBit: 1 },
 ] as const;
 
-describe.each(backends)("FileHashCache binary format ($name)", ({ Ctor, wasmBit }) => {
+describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
+  const { Ctor } = backend;
+  let wasmBit = "wasmBit" in backend ? backend.wasmBit : 0;
+
+  beforeAll(async () => {
+    if ("wasmBit" in backend) {
+      wasmBit = backend.wasmBit;
+      return;
+    }
+    await using probe = new Ctor(cachePath("probe"), { version: 1 });
+    wasmBit = probe.libraryStatus === "wasm" ? 1 : 0;
+  });
+
   it("remove file from start: indices shift correctly (old[1]->new[0], old[2]->new[1])", async () => {
     const cp = cachePath("rm-start");
     const files1 = [fixtureFile("a.txt"), fixtureFile("b.txt"), fixtureFile("c.txt")];

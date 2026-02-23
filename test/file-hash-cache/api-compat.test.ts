@@ -172,12 +172,14 @@ describe("FileHashCache", () => {
       expect(u32[H_VERSION]).toBe(99);
     });
 
-    it("writes correct file count with wasm bit = 0 for native", async () => {
+    it("writes correct file count with backend wasm bit", async () => {
       const cp = cachePath("fmtfc");
       const files = [fixtureFile("a.txt"), fixtureFile("b.txt")];
+      let expectedWasmBit = 0;
 
       {
         await using c = new FileHashCache(cp, { version: 1, writable: true });
+        expectedWasmBit = c.libraryStatus === "wasm" ? 1 : 0;
         c.setFiles(files);
         await c.validate();
         await c.serialize();
@@ -187,7 +189,7 @@ describe("FileHashCache", () => {
       const u32 = new Uint32Array(data.buffer, data.byteOffset, 16);
       const rawFC = u32[H_FILE_COUNT];
       expect(rawFC >>> 1).toBe(2);
-      expect(rawFC & 1).toBe(0); // native
+      expect(rawFC & 1).toBe(expectedWasmBit);
     });
 
     it("writes correct file count with wasm bit = 1 for wasm", async () => {

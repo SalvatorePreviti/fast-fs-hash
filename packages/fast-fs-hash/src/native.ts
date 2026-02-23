@@ -124,6 +124,14 @@ let _cachedBinding: NativeBindingExport | null | undefined;
 /** Whether we've already warned on stderr about the missing native addon. */
 let _nativeWarned = false;
 
+/** Lookup targets tried while resolving the native binding. */
+let _nativeLookupTargets: string[] = [];
+
+function warnNativeUnavailable(): void {
+  const lookedIn = _nativeLookupTargets.length > 0 ? `\nlooked in:\n  - ${_nativeLookupTargets.join("\n  - ")}` : "";
+  console.warn(`fast-fs-hash: native binding unavailable, using WASM fallback (slower).${lookedIn}`);
+}
+
 /**
  * Load (or return cached) native binding.
  *
@@ -135,12 +143,15 @@ export function getNativeBinding(warn = false): NativeBindingExport | null {
   if (_cachedBinding !== undefined) {
     if (warn && _cachedBinding === null && !_nativeWarned) {
       _nativeWarned = true;
-      console.warn("fast-fs-hash: native binding unavailable, using WASM fallback (slower).");
+      warnNativeUnavailable();
     }
     return _cachedBinding;
   }
 
+  _nativeLookupTargets = [];
+
   for (const pkg of getPlatformPackages()) {
+    _nativeLookupTargets.push(`package ${pkg}`);
     try {
       _cachedBinding = require(pkg) as NativeBindingExport;
       return _cachedBinding;
@@ -150,9 +161,11 @@ export function getNativeBinding(warn = false): NativeBindingExport | null {
   }
 
   // Dev mode: load from the local cmake-js build output.
+  const thisDir = dirname(fileURLToPath(import.meta.url));
+  const localBuildPath = resolve(thisDir, "..", "build", "Release", "fast_fs_hash.node");
+  _nativeLookupTargets.push(`file ${localBuildPath}`);
   try {
-    const thisDir = dirname(fileURLToPath(import.meta.url));
-    _cachedBinding = require(resolve(thisDir, "..", "build", "Release", "fast_fs_hash.node")) as NativeBindingExport;
+    _cachedBinding = require(localBuildPath) as NativeBindingExport;
     return _cachedBinding;
   } catch {
     // Build not available
@@ -161,7 +174,7 @@ export function getNativeBinding(warn = false): NativeBindingExport | null {
   _cachedBinding = null;
   if (warn && !_nativeWarned) {
     _nativeWarned = true;
-    console.warn("fast-fs-hash: native binding unavailable, using WASM fallback (slower).");
+    warnNativeUnavailable();
   }
   return null;
 }

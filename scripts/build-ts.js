@@ -130,7 +130,7 @@ async function generateTypeDeclarations() {
     const bundle = await rollup({
       input: resolve(tmpDir, "index.d.ts"),
       plugins: [dts({ respectExternal: true })],
-      external: [],
+      external: [/^node:/],
     });
     await bundle.write({ file: resolve(DIST_DIR, "index.d.ts"), format: "es" });
     await bundle.close();
