@@ -1,6 +1,6 @@
 {
   "_description": "SHA-256 hashes of build artifacts and source code. Regenerated on every build.",
-  "generatedAt": "2026-02-23T18:12:01.323Z",
+  "generatedAt": "2026-02-23T18:17:25.636Z",
   "distArtifacts": {
     "index.cjs": {
       "sha256": "65e5e927fcd2192a1e949fc1482fb39ae429bbf8d20870eed9c5ac697975ece7",
@@ -183,9 +183,9 @@
         "lines": 72
       },
       "XXHash128Wrap.h": {
-        "sha256": "2f469b352e5b81cee37fc542ca8f84b7c5affa90959e5bb05a2626dd1379bfe3",
-        "bytes": 13731,
-        "lines": 333
+        "sha256": "03656302e5a67140b4dfc5ef1de1d30f5fd007a824f0bd78eef46ece3cdaf4f6",
+        "bytes": 13769,
+        "lines": 337
       },
       "binding.cpp": {
         "sha256": "c8ce6fdd544c32ed18f2f0b633e28ccba8f08ade5c87e5571541d0799f2d1085",
