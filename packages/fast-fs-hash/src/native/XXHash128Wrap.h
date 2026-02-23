@@ -7,6 +7,10 @@
 #include "HashFileHandleWorker.h"
 #include "StaticHashFilesWorker.h"
 
+#ifdef _WIN32
+#include <io.h>
+#endif
+
 class XXHash128Wrap final : public Napi::ObjectWrap<XXHash128Wrap> {
  public:
   static Napi::Function Init(Napi::Env env) {

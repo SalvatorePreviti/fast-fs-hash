@@ -58,6 +58,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          #  - Windows x64 (build + test natively)
+          - target: win32-x64-msvc
+            os: windows-latest
+            can-test: true
+
           #  - macOS (build + test natively)
           - target: darwin-arm64
             os: macos-latest
@@ -81,11 +86,6 @@ jobs:
           - target: linux-arm64-musl
             os: ubuntu-24.04-arm
             use-docker: true
-
-          #  - Windows x64 (build + test natively)
-          - target: win32-x64-msvc
-            os: windows-latest
-            can-test: true
 
           #  - Windows arm64 (cross-compile only, no arm64 runner)
           - target: win32-arm64-msvc
