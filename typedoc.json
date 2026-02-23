@@ -1,0 +1,16 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": ["packages/fast-fs-hash/src/index.ts"],
+  "out": "docs/api",
+  "name": "fast-fs-hash",
+  "readme": "README.md",
+  "tsconfig": "tsconfig.build.json",
+  "excludePrivate": true,
+  "excludeInternal": true,
+  "includeVersion": true,
+  "githubPages": true,
+  "navigationLinks": {
+    "GitHub": "https://github.com/SalvatorePreviti/fast-fs-hash",
+    "npm": "https://www.npmjs.com/package/fast-fs-hash"
+  }
+}

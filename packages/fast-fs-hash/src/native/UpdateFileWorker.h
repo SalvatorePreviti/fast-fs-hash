@@ -1,0 +1,28 @@
+#ifndef _FAST_FS_HASH_UPDATE_FILE_WORKER_H
+#define _FAST_FS_HASH_UPDATE_FILE_WORKER_H
+
+#include "includes.h"
+
+class XXHash128Wrap;
+
+class UpdateFileWorker final : public Napi::AsyncWorker {
+ public:
+  UpdateFileWorker(Napi::Env env, Napi::Promise::Deferred deferred, Napi::ObjectReference instance_ref, std::string path) :
+    Napi::AsyncWorker(env), deferred_(deferred), instance_ref_(std::move(instance_ref)), path_(std::move(path)) {}
+
+  ~UpdateFileWorker() { free(this->data_); }
+
+  void Execute() override;
+  void OnOK() override;
+  void OnError(const Napi::Error & error) override { this->deferred_.Reject(error.Value()); }
+
+ private:
+  Napi::Promise::Deferred deferred_;
+  Napi::ObjectReference instance_ref_;
+  std::string path_;
+
+  uint8_t * data_ = nullptr;
+  size_t len_ = 0;
+};
+
+#endif
