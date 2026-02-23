@@ -126,10 +126,12 @@ let _nativeWarned = false;
 
 /** Lookup targets tried while resolving the native binding. */
 let _nativeLookupTargets: string[] = [];
+let _nativeLookupErrors: string[] = [];
 
 function warnNativeUnavailable(): void {
   const lookedIn = _nativeLookupTargets.length > 0 ? `\nlooked in:\n  - ${_nativeLookupTargets.join("\n  - ")}` : "";
-  console.warn(`fast-fs-hash: native binding unavailable, using WASM fallback (slower).${lookedIn}`);
+  const reasons = _nativeLookupErrors.length > 0 ? `\nerrors:\n  - ${_nativeLookupErrors.join("\n  - ")}` : "";
+  console.warn(`fast-fs-hash: native binding unavailable, using WASM fallback (slower).${lookedIn}${reasons}`);
 }
 
 /**
@@ -149,13 +151,16 @@ export function getNativeBinding(warn = false): NativeBindingExport | null {
   }
 
   _nativeLookupTargets = [];
+  _nativeLookupErrors = [];
 
   for (const pkg of getPlatformPackages()) {
     _nativeLookupTargets.push(`package ${pkg}`);
     try {
       _cachedBinding = require(pkg) as NativeBindingExport;
       return _cachedBinding;
-    } catch {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      _nativeLookupErrors.push(`package ${pkg}: ${message}`);
       // Not installed — try next
     }
   }
@@ -167,7 +172,9 @@ export function getNativeBinding(warn = false): NativeBindingExport | null {
   try {
     _cachedBinding = require(localBuildPath) as NativeBindingExport;
     return _cachedBinding;
-  } catch {
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    _nativeLookupErrors.push(`file ${localBuildPath}: ${message}`);
     // Build not available
   }
 
