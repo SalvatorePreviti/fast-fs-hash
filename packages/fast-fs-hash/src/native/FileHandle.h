@@ -68,47 +68,80 @@ namespace fast_fs_hash {
 
 #else  // _WIN32, there is always a #ifndef _WIN32. Why? Why Microsoft? Why do you do this, why?
 
+  /**
+   * WPath — Windows-only RAII UTF-8 → UTF-16 path converter.
+   *
+   * Converts once, then the resulting wchar_t pointer can be passed to
+   * both FileHandle and file_stat_to without repeating the conversion.
+   * Uses a caller-provided scratch buffer when large enough; otherwise
+   * heap-allocates (freed on destruction).
+   */
+  struct WPath : NonCopyable {
+    const wchar_t * data = nullptr;
+
+    /**
+     * @param utf8_path   NUL-terminated UTF-8 path.
+     * @param scratch     Optional pre-allocated wchar_t buffer.
+     * @param scratch_cap Capacity of scratch in wchar_t units.
+     */
+    explicit WPath(const char * utf8_path, wchar_t * scratch = nullptr, int scratch_cap = 0) noexcept {
+      int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8_path, -1, nullptr, 0);
+      if (wlen <= 0) [[unlikely]]
+        return;
+      if (scratch && scratch_cap >= wlen) {
+        MultiByteToWideChar(CP_UTF8, 0, utf8_path, -1, scratch, wlen);
+        this->data = scratch;
+      } else {
+        this->heap_ = static_cast<wchar_t *>(malloc(static_cast<size_t>(wlen) * sizeof(wchar_t)));
+        if (!this->heap_) [[unlikely]]
+          return;
+        MultiByteToWideChar(CP_UTF8, 0, utf8_path, -1, this->heap_, wlen);
+        this->data = this->heap_;
+      }
+    }
+
+    ~WPath() noexcept { free(this->heap_); }
+
+    explicit operator bool() const noexcept { return this->data != nullptr; }
+
+   private:
+    wchar_t * heap_ = nullptr;
+  };
+
   /** RAII file handle using Win32 CreateFileW for maximum throughput on Windows.
-   *  Uses UTF-8 -> wchar_t path conversion with stack buffer for short paths. */
+   *  Accepts either a pre-converted UTF-16 path (via WPath) or a raw UTF-8
+   *  path (convenience constructor that converts internally). */
   class FileHandle : NonCopyable {
     HANDLE h_;
 
-    // Stack buffer covers MAX_PATH (260) plus generous extra for long paths.
-    // Only heap-allocates for paths > 512 wide chars (extremely rare).
-    static constexpr int STACK_WPATH_SIZE = 512;
-
    public:
-    explicit FileHandle(const char * path) noexcept : h_(INVALID_HANDLE_VALUE) {
-      int wlen = MultiByteToWideChar(CP_UTF8, 0, path, -1, nullptr, 0);
-      if (wlen <= 0) [[unlikely]]
+    /** Open from a pre-converted UTF-16 path (zero-allocation fast path). */
+    explicit FileHandle(const wchar_t * wpath) noexcept : h_(INVALID_HANDLE_VALUE) {
+      if (!wpath) [[unlikely]]
         return;
-
-      wchar_t stack_buf[STACK_WPATH_SIZE];
-      wchar_t * wpath = stack_buf;
-      wchar_t * heap_buf = nullptr;
-
-      if (wlen > STACK_WPATH_SIZE) [[unlikely]] {
-        heap_buf = static_cast<wchar_t *>(malloc(static_cast<size_t>(wlen) * sizeof(wchar_t)));
-        if (!heap_buf) {
-          return;
-        }
-        wpath = heap_buf;
-      }
-
-      MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, wlen);
-
       this->h_ = CreateFileW(
         wpath,
         GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_DELETE,  // allow concurrent reads + deletion
+        FILE_SHARE_READ | FILE_SHARE_DELETE,
         nullptr,
         OPEN_EXISTING,
-        FILE_FLAG_SEQUENTIAL_SCAN,  // hint for OS read-ahead (like posix_fadvise)
+        FILE_FLAG_SEQUENTIAL_SCAN,
         nullptr);
+    }
 
-      if (heap_buf) {
-        free(heap_buf);
-      }
+    /** Open from a UTF-8 path (convenience — converts internally via WPath). */
+    explicit FileHandle(const char * path) noexcept : h_(INVALID_HANDLE_VALUE) {
+      WPath wp(path);
+      if (!wp) [[unlikely]]
+        return;
+      this->h_ = CreateFileW(
+        wp.data,
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_FLAG_SEQUENTIAL_SCAN,
+        nullptr);
     }
 
     ~FileHandle() noexcept {

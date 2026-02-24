@@ -60,6 +60,7 @@ namespace fast_fs_hash {
     const char * const * segments;
     size_t file_count;
     uint8_t * output_data;
+    size_t max_path_len;  // longest path in segments (bytes, excl. NUL)
     size_t work_batch = 0;
 
     //  - Cache line 1: hot contended atomic (bounces between all cores)
@@ -118,7 +119,17 @@ namespace fast_fs_hash {
       // buffers never touch the thread stack (safe on musl where the
       // default thread stack is only 128 KiB).  64-byte alignment keeps
       // each slice cache-line aligned so threads don't false-share.
-      AlignedPtr<unsigned char> slab(64, static_cast<size_t>(tc) * READ_BUFFER_SIZE);
+      //
+      // On Windows, each thread also gets a wchar_t scratch for the
+      // UTF-8 → UTF-16 path conversion done by WPath.
+#ifdef _WIN32
+      const size_t wpath_stride = ((static_cast<size_t>(this->max_path_len + 1) * sizeof(wchar_t)) + 63) & ~size_t(63);
+      const size_t per_thread = READ_BUFFER_SIZE + wpath_stride;
+#else
+      const size_t per_thread = READ_BUFFER_SIZE;
+#endif
+
+      AlignedPtr<unsigned char> slab(64, static_cast<size_t>(tc) * per_thread);
       if (!slab) [[unlikely]]
         return false;  // OOM — caller must report to JS
 
@@ -126,10 +137,24 @@ namespace fast_fs_hash {
 
       const int spawned = tc - 1;
       std::thread threads[MAX_STACK_THREADS];
-      for (int i = 0; i < spawned; ++i)
-        threads[i] =
-          std::thread(&HashFilesWorker::process_files, this, slab.ptr + static_cast<size_t>(i + 1) * READ_BUFFER_SIZE);
-      this->process_files(slab.ptr);  // calling thread uses slice 0
+      for (int i = 0; i < spawned; ++i) {
+        unsigned char * base = slab.ptr + static_cast<size_t>(i + 1) * per_thread;
+        threads[i] = std::thread(&HashFilesWorker::process_files, this, base
+#ifdef _WIN32
+          , reinterpret_cast<wchar_t *>(base + READ_BUFFER_SIZE)
+          , static_cast<int>(this->max_path_len + 1)
+#endif
+        );
+      }
+      {
+        unsigned char * base0 = slab.ptr;
+        this->process_files(base0
+#ifdef _WIN32
+          , reinterpret_cast<wchar_t *>(base0 + READ_BUFFER_SIZE)
+          , static_cast<int>(this->max_path_len + 1)
+#endif
+        );
+      }
       for (int i = 0; i < spawned; ++i)
         threads[i].join();
 
@@ -139,7 +164,11 @@ namespace fast_fs_hash {
 
     /** Per-thread work loop.  `rbuf_raw` points to this thread's pre-allocated
      *  READ_BUFFER_SIZE slice within the slab (64-byte aligned). */
-    FSH_FORCE_INLINE void process_files(unsigned char * rbuf_raw) const {
+    FSH_FORCE_INLINE void process_files(unsigned char * rbuf_raw
+#ifdef _WIN32
+      , wchar_t * wpath_scratch, int wpath_cap
+#endif
+    ) const {
       // Propagate alignment to the compiler — enables aligned SIMD loads/stores.
       unsigned char * const rbuf = assume_aligned<64>(rbuf_raw);
       const size_t fc = this->file_count;
@@ -173,7 +202,13 @@ namespace fast_fs_hash {
             continue;
           }
 
+          // On Windows, convert path once via WPath (uses per-thread scratch).
+#ifdef _WIN32
+          WPath wp(path, wpath_scratch, wpath_cap);
+          FileHandle file(wp.data);
+#else
           FileHandle file(path);
+#endif
           if (!file) [[unlikely]] {
             memset(dest, 0, 16);  // rare: cannot open file
             continue;

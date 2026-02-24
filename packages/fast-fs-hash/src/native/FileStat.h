@@ -57,30 +57,19 @@ namespace fast_fs_hash {
 
 #else  // _WIN32
 
-  FSH_FORCE_INLINE bool file_stat_to(const char * path, uint8_t * dest) noexcept {
-    // Convert UTF-8 path to UTF-16.
-    int wlen = MultiByteToWideChar(CP_UTF8, 0, path, -1, nullptr, 0);
-    if (wlen <= 0) [[unlikely]] {
+  /**
+   * Windows stat using a pre-converted UTF-16 path.
+   *
+   * Opens with FILE_READ_ATTRIBUTES only — needs no content access.
+   * Combines BY_HANDLE_FILE_INFORMATION (ino, size) with FileBasicInfo
+   * (ChangeTime, LastWriteTime) for accurate ctime/mtime matching libuv.
+   */
+  FSH_FORCE_INLINE bool file_stat_to(const wchar_t * wpath, uint8_t * dest) noexcept {
+    if (!wpath) [[unlikely]] {
       memset(dest, 0, 32);
       return false;
     }
 
-    static constexpr int STACK_BUF = 512;
-    wchar_t stack_buf[STACK_BUF];
-    wchar_t * wpath = stack_buf;
-    wchar_t * heap_buf = nullptr;
-
-    if (wlen > STACK_BUF) [[unlikely]] {
-      heap_buf = static_cast<wchar_t *>(malloc(static_cast<size_t>(wlen) * sizeof(wchar_t)));
-      if (!heap_buf) {
-        memset(dest, 0, 32);
-        return false;
-      }
-      wpath = heap_buf;
-    }
-    MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, wlen);
-
-    // Open with minimum permissions — only need attributes, not content.
     HANDLE h = CreateFileW(
       wpath,
       FILE_READ_ATTRIBUTES,
@@ -89,7 +78,6 @@ namespace fast_fs_hash {
       OPEN_EXISTING,
       FILE_ATTRIBUTE_NORMAL,
       nullptr);
-    if (heap_buf) free(heap_buf);
 
     if (h == INVALID_HANDLE_VALUE) [[unlikely]] {
       memset(dest, 0, 32);
@@ -136,6 +124,28 @@ namespace fast_fs_hash {
     memcpy(dest + 16, &ctimeNs, 8);
     memcpy(dest + 24, &sz, 8);
     return true;
+  }
+
+  /**
+   * Convenience: converts UTF-8 path to UTF-16, then stats.
+   * For the hot path in cache workers, use WPath + the wchar_t overload
+   * to convert once and reuse for both stat and hash.
+   */
+  FSH_FORCE_INLINE bool file_stat_to(const char * path, uint8_t * dest) noexcept {
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, path, -1, nullptr, 0);
+    if (wlen <= 0) [[unlikely]] {
+      memset(dest, 0, 32);
+      return false;
+    }
+    wchar_t * wbuf = static_cast<wchar_t *>(malloc(static_cast<size_t>(wlen) * sizeof(wchar_t)));
+    if (!wbuf) [[unlikely]] {
+      memset(dest, 0, 32);
+      return false;
+    }
+    MultiByteToWideChar(CP_UTF8, 0, path, -1, wbuf, wlen);
+    bool ok = file_stat_to(wbuf, dest);
+    free(wbuf);
+    return ok;
   }
 
 #endif

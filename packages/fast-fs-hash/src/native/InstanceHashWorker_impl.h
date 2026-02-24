@@ -26,7 +26,7 @@ inline void InstanceHashWorker::Execute() {
     } else {
       this->output.len = needed;
     }
-    fast_fs_hash::HashFilesWorker worker{paths.segments, file_count, this->output.data};
+    fast_fs_hash::HashFilesWorker worker{paths.segments, file_count, this->output.data, paths.max_seg_len};
     if (!worker.run(this->concurrency_)) [[unlikely]] {
       SetError("hash_files: out of memory");
       return;

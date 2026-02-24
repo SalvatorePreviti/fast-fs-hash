@@ -75,7 +75,7 @@ class StaticHashFilesWorker final : public Napi::AsyncWorker {
             return;
           }
           uint8_t * file_hashes = this->output_.data + 16;
-          fast_fs_hash::HashFilesWorker worker{paths.segments, file_count, file_hashes};
+          fast_fs_hash::HashFilesWorker worker{paths.segments, file_count, file_hashes, paths.max_seg_len};
           if (!worker.run(this->concurrency_)) [[unlikely]] {
             SetError("hashFilesBulk: out of memory");
             return;
@@ -98,7 +98,7 @@ class StaticHashFilesWorker final : public Napi::AsyncWorker {
             SetError("hashFilesBulk: out of memory");
             return;
           }
-          fast_fs_hash::HashFilesWorker worker{paths.segments, file_count, this->output_.data};
+          fast_fs_hash::HashFilesWorker worker{paths.segments, file_count, this->output_.data, paths.max_seg_len};
           if (!worker.run(this->concurrency_)) [[unlikely]] {
             SetError("hashFilesBulk: out of memory");
             return;
@@ -113,7 +113,7 @@ class StaticHashFilesWorker final : public Napi::AsyncWorker {
             SetError("hashFilesBulk: out of memory");
             return;
           }
-          fast_fs_hash::HashFilesWorker worker{paths.segments, file_count, tmp.ptr};
+          fast_fs_hash::HashFilesWorker worker{paths.segments, file_count, tmp.ptr, paths.max_seg_len};
           if (!worker.run(this->concurrency_)) [[unlikely]] {
             SetError("hashFilesBulk: out of memory");
             return;
