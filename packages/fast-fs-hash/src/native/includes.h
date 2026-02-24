@@ -30,12 +30,20 @@
 #endif
 
 // xxHash — linked separately (compiled via CMakeLists.txt).
-// On x86_64: xxh_x86dispatch.c provides runtime AVX2/AVX512 dispatch.
+// On x86_64: xxhash.c provides base functions (reset, createState, digest, etc.)
+// and xxh_x86dispatch.c provides runtime AVX2/AVX512 dispatch for the hot-path
+// functions (hash, hashWithSeed, hashWithSecret, update).
 // On other platforms: xxhash.c with platform-native SIMD (e.g. NEON on ARM64).
 // XXH_STATIC_LINKING_ONLY exposes the full XXH3_state_t struct definition
 // (needed for stack-allocated streaming state in XXHash128Wrap).
 #define XXH_STATIC_LINKING_ONLY
 #include "xxhash.h"
+
+// On x86_64 (non-MSVC): include the dispatch header to remap hot-path
+// XXH3 calls to the CPU-dispatched versions (SSE2/AVX2/AVX512).
+#if (defined(__x86_64__) || defined(__i386__) || defined(_M_IX86) || defined(_M_X64)) && !defined(_MSC_VER)
+#  include "xxh_x86dispatch.h"
+#endif
 
 #if defined(__GNUC__) || defined(__clang__)
 #  define FSH_PREFETCH(ptr) __builtin_prefetch(ptr, 0, 3)

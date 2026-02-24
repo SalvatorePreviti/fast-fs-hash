@@ -42,7 +42,11 @@ jobs:
       - run: npm run typecheck
       - run: npm run build:all
       - run: npm test
+        env:
+          FAST_FS_HASH_NO_NATIVE: fatal
       - run: npm run bench
+        env:
+          FAST_FS_HASH_NO_NATIVE: fatal
 
   #  - Build + test native addon for every platform
   #
@@ -122,10 +126,14 @@ jobs:
       - name: Test with native binding
         if: ${{ matrix.can-test }}
         run: npm test
+        env:
+          FAST_FS_HASH_NO_NATIVE: fatal
 
       - name: Run benchmarks
         if: ${{ matrix.can-test }}
         run: npm run bench
+        env:
+          FAST_FS_HASH_NO_NATIVE: fatal
 
       #  - Set up QEMU for cross-arch Docker builds
       - name: Set up QEMU
@@ -233,6 +241,7 @@ jobs:
             npm ci
             npm run build:all
             ls -lh packages/fast-fs-hash/build/Release/fast_fs_hash.node
+            export FAST_FS_HASH_NO_NATIVE=fatal
             npm test
             npm run bench
 

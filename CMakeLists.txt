@@ -72,13 +72,19 @@ add_library(${PROJECT_NAME} SHARED
 # variants (SSE2, AVX2, AVX512) using __attribute__((target(...))) and
 # selects the best one at runtime via CPUID. Must be compiled with base
 # flags only (no -mavx2 etc.) — the target attributes handle per-function ISA.
+# xxhash.c is ALSO needed: the dispatch file only overrides the hot-path
+# functions (hash, hashWithSeed, hashWithSecret, update). All other
+# functions (reset, createState, digest, ...) come from xxhash.c.
 #
 # On MSVC or non-x86: xxhash.c with the platform's native SIMD.
 # MSVC lacks __attribute__((target(...))), so dispatch would compile all
 # paths to the same SSE2 code — no point in the extra complexity.
 
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64" AND NOT MSVC)
-    target_sources(${PROJECT_NAME} PRIVATE ${XXHASH_DIR}/xxh_x86dispatch.c)
+    target_sources(${PROJECT_NAME} PRIVATE
+        ${XXHASH_DIR}/xxhash.c
+        ${XXHASH_DIR}/xxh_x86dispatch.c
+    )
 else()
     target_sources(${PROJECT_NAME} PRIVATE ${XXHASH_DIR}/xxhash.c)
 endif()
