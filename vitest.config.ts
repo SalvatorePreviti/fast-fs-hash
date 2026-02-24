@@ -18,5 +18,6 @@ export default defineConfig({
     isolate: false,
     // Ensure only one worker is used
     maxWorkers: 1,
+    reporters: ["verbose"],
   },
 });
