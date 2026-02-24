@@ -187,7 +187,7 @@ namespace fast_fs_hash {
      * After completion, changed.load() tells whether any file differs.
      */
     bool run(int concurrency) {
-      int hw = static_cast<int>(std::thread::hardware_concurrency());
+      int hw = static_cast<int>(Thread::hardware_concurrency());
       if (hw < 2) [[unlikely]]
         hw = 2;
 
@@ -228,11 +228,13 @@ namespace fast_fs_hash {
       g_active_hash_threads.fetch_add(tc, std::memory_order_relaxed);
 
       const int spawned = tc - 1;
-      std::thread threads[MAX_STACK_THREADS];
-      for (int i = 0; i < spawned; ++i)
-        threads[i] =
-          std::thread(&CacheStatMatchRunner::process_files, this,
-            slab.ptr + static_cast<size_t>(i + 1) * per_thread, prefix_len, path_stride);
+      Thread threads[MAX_STACK_THREADS];
+      for (int i = 0; i < spawned; ++i) {
+        auto * base = slab.ptr + static_cast<size_t>(i + 1) * per_thread;
+        threads[i] = Thread::create([this, base, prefix_len, path_stride]() {
+          this->process_files(base, prefix_len, path_stride);
+        });
+      }
       this->process_files(slab.ptr, prefix_len, path_stride);
       for (int i = 0; i < spawned; ++i)
         threads[i].join();
@@ -360,7 +362,7 @@ namespace fast_fs_hash {
 
     /** Run parallel stat+hash.  Returns false on OOM only. */
     bool run(int concurrency) {
-      int hw = static_cast<int>(std::thread::hardware_concurrency());
+      int hw = static_cast<int>(Thread::hardware_concurrency());
       if (hw < 2) [[unlikely]]
         hw = 2;
 
@@ -399,11 +401,13 @@ namespace fast_fs_hash {
       g_active_hash_threads.fetch_add(tc, std::memory_order_relaxed);
 
       const int spawned = tc - 1;
-      std::thread threads[MAX_STACK_THREADS];
-      for (int i = 0; i < spawned; ++i)
-        threads[i] =
-          std::thread(&CacheCompleteRunner::process_files, this,
-            slab.ptr + static_cast<size_t>(i + 1) * per_thread, prefix_len, path_stride);
+      Thread threads[MAX_STACK_THREADS];
+      for (int i = 0; i < spawned; ++i) {
+        auto * base = slab.ptr + static_cast<size_t>(i + 1) * per_thread;
+        threads[i] = Thread::create([this, base, prefix_len, path_stride]() {
+          this->process_files(base, prefix_len, path_stride);
+        });
+      }
       this->process_files(slab.ptr, prefix_len, path_stride);
       for (int i = 0; i < spawned; ++i)
         threads[i].join();

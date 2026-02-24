@@ -8,7 +8,6 @@
 #include <cstring>
 #include <atomic>
 #include <memory>
-#include <thread>
 
 #ifdef _MSC_VER
 #  include <malloc.h>

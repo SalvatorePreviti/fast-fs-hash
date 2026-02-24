@@ -118,7 +118,7 @@ jobs:
 
       - name: Test with native binding
         if: ${{ matrix.can-test }}
-        run: npm test ${{ runner.os == 'Windows' && '-- --pool=none' || '' }}
+        run: npm test
 
       - name: Run benchmarks
         if: ${{ matrix.can-test }}

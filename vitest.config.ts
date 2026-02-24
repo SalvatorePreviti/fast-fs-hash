@@ -11,5 +11,12 @@ export default defineConfig({
     include: ["test/**/*.test.ts"],
     exclude: ["test/**/*.bench.ts"],
     watch: false,
+
+    // Run test files one after another
+    fileParallelism: false,
+    // Reuse the same process/environment for all files
+    isolate: false,
+    // Ensure only one worker is used
+    maxWorkers: 1,
   },
 });

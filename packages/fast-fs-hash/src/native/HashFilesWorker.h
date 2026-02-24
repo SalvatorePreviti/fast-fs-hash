@@ -4,6 +4,7 @@
 #include "includes.h"
 #include "AlignedPtr.h"
 #include "FileHandle.h"
+#include "Thread.h"
 
 namespace fast_fs_hash {
 
@@ -78,7 +79,7 @@ namespace fast_fs_hash {
       // - Floor of 2 ensures parallelism even on single-core machines.
       // - Capped by MAX_STACK_THREADS and by the number of batches that
       //   actually have work.
-      int hw = static_cast<int>(std::thread::hardware_concurrency());
+      int hw = static_cast<int>(Thread::hardware_concurrency());
       if (hw < 2) [[unlikely]]
         hw = 2;
 
@@ -136,15 +137,17 @@ namespace fast_fs_hash {
       g_active_hash_threads.fetch_add(tc, std::memory_order_relaxed);
 
       const int spawned = tc - 1;
-      std::thread threads[MAX_STACK_THREADS];
+      Thread threads[MAX_STACK_THREADS];
       for (int i = 0; i < spawned; ++i) {
         unsigned char * base = slab.ptr + static_cast<size_t>(i + 1) * per_thread;
-        threads[i] = std::thread(&HashFilesWorker::process_files, this, base
+        threads[i] = Thread::create([this, base]() {
+          this->process_files(base
 #ifdef _WIN32
-          , reinterpret_cast<wchar_t *>(base + READ_BUFFER_SIZE)
-          , static_cast<int>(this->max_path_len + 1)
+            , reinterpret_cast<wchar_t *>(base + READ_BUFFER_SIZE)
+            , static_cast<int>(this->max_path_len + 1)
 #endif
-        );
+          );
+        });
       }
       {
         unsigned char * base0 = slab.ptr;
