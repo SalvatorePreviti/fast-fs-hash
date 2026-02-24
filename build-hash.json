@@ -1,6 +1,6 @@
 {
   "_description": "SHA-256 hashes of build artifacts and source code. Regenerated on every build.",
-  "generatedAt": "2026-02-24T01:57:34.145Z",
+  "generatedAt": "2026-02-24T02:15:14.611Z",
   "distArtifacts": {
     "index.cjs": {
       "sha256": "a2ce714d0c5fe89287130022222ab510e9a9ccad35c32eaa6fa1413c6a0b729d",
@@ -128,9 +128,9 @@
         "lines": 142
       },
       "FileStat.h": {
-        "sha256": "2def567ecc59f53d6a434698011fe1f982200b2546fde41bfc127106af5ec5dc",
-        "bytes": 4387,
-        "lines": 135
+        "sha256": "5fb866d705abe04cb50fedafc64ce0757bd86d293fcedbfbf33d19d1aab3e35b",
+        "bytes": 4845,
+        "lines": 146
       },
       "HashFileHandleWorker.h": {
         "sha256": "fc1aa8a3324c84f23258bb70ee5c782878d00eabc686d12d28f04a2c5f072e6c",
