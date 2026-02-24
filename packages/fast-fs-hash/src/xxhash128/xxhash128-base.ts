@@ -85,6 +85,22 @@ export abstract class XXHash128Base {
   }
 
   /**
+   * Hash data and write the 16-byte digest into a pre-allocated output buffer.
+   *
+   * Faster than {@link hash} when you can reuse a buffer, because it avoids
+   * allocating a new Buffer for the result on every call.
+   *
+   * @param input         Data to hash (string, Buffer, or Uint8Array).
+   * @param output        Destination buffer (at least 16 bytes from offset).
+   * @param outputOffset  Byte offset in `output` to write the digest (default `0`).
+   * @param seedLow       Lower 32 bits of the 64-bit seed (default `0`).
+   * @param seedHigh      Upper 32 bits of the 64-bit seed (default `0`).
+   */
+  public static hashTo(_input: HashInput, _output: Uint8Array, _outputOffset = 0, _seedLow = 0, _seedHigh = 0): void {
+    notInitialized();
+  }
+
+  /**
    * Hash many files in a single call.
    *
    * **This is the fastest way to hash a set of files.** Everything — parallel

@@ -164,6 +164,7 @@ function patchWithNative(nativeCtor: NativeXXHash128Constructor): void {
   const staticHashFilesBulk = nativeCtor.staticHashFilesBulk;
   const staticHashFilesBulkTo = nativeCtor.staticHashFilesBulkTo;
   const staticHash = nativeCtor.staticHash;
+  const staticHashTo = nativeCtor.staticHashTo;
   const staticHashFile = nativeCtor.staticHashFile;
 
   /** Static hashFilesBulk — delegates to C++ StaticHashFilesWorker. */
@@ -239,7 +240,13 @@ function patchWithNative(nativeCtor: NativeXXHash128Constructor): void {
     return staticHash(buf, 0, buf.length, seedLow, seedHigh);
   }
 
+  function nativeStaticHashTo(input: HashInput, output: Uint8Array, outputOffset = 0, seedLow = 0, seedHigh = 0): void {
+    const buf = toBuffer(input);
+    staticHashTo(buf, buf.length, output, outputOffset, seedLow, seedHigh);
+  }
+
   Object.defineProperty(XXHash128, "hash", { value: nativeStaticHash, writable: true, configurable: true });
+  Object.defineProperty(XXHash128, "hashTo", { value: nativeStaticHashTo, writable: true, configurable: true });
   Object.defineProperty(XXHash128, "hashFilesBulk", {
     value: nativeStaticHashFilesBulk,
     writable: true,

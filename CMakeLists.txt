@@ -36,13 +36,31 @@ set(NATIVE_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/packages/fast-fs-hash/src/native)
 # IMPORTANT: We deliberately do NOT set xxHash's DISPATCH variable.
 # xxHash's cmake_unofficial uses CMAKE_HOST_SYSTEM_INFORMATION to detect
 # the platform — this returns the HOST arch, not the TARGET arch, which
-# is wrong when cross-compiling (e.g. building x86_64 on an ARM64 host,
-# or building ARM64 on an x86_64 host). Instead, we add xxh_x86dispatch.c
-# to the xxhash target ourselves, gated on CMAKE_SYSTEM_PROCESSOR (the
-# actual target architecture).
+# is wrong when cross-compiling (e.g. building ARM64 on an x86_64 host).
+# Similarly, CMAKE_SYSTEM_PROCESSOR reports the HOST arch on Windows with
+# Visual Studio generators.  We derive the true target architecture from
+# CMAKE_GENERATOR_PLATFORM (set by -A on MSVC) when available, falling
+# back to CMAKE_SYSTEM_PROCESSOR for Makefile/Ninja generators. We then
+# add xxh_x86dispatch.c to the xxhash target ourselves, gated on this
+# resolved FSH_TARGET_ARCH variable.
 
 set(XXHASH_BUILD_XXHSUM OFF CACHE BOOL "" FORCE)  # don't build the CLI tool
 add_subdirectory(deps/xxHash/cmake_unofficial xxhash_build)
+
+# ─── Determine actual TARGET architecture ───────────────────────────────
+#
+# CMAKE_SYSTEM_PROCESSOR reports the HOST architecture on Windows when
+# cross-compiling with Visual Studio generators (e.g. building ARM64 on an
+# x86_64 host: CMAKE_SYSTEM_PROCESSOR="AMD64" but -A ARM64).
+# CMAKE_GENERATOR_PLATFORM is set to the -A value and IS the correct
+# target architecture for MSVC.  On Makefile/Ninja generators (Linux/Mac)
+# it is empty and CMAKE_SYSTEM_PROCESSOR is correct.
+if(CMAKE_GENERATOR_PLATFORM)
+    set(FSH_TARGET_ARCH "${CMAKE_GENERATOR_PLATFORM}")
+else()
+    set(FSH_TARGET_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+message(STATUS "Target architecture: ${FSH_TARGET_ARCH}")
 
 # x86_64 DISPATCH: Runtime CPUID-based SSE2/AVX2/AVX512 selection.
 # xxh_x86dispatch.c provides _dispatch variants of all XXH3 functions.
@@ -52,7 +70,7 @@ add_subdirectory(deps/xxHash/cmake_unofficial xxhash_build)
 # MUST be compiled with default flags (no -mavx2 etc.) — the dispatch
 # source uses __attribute__((target(...))) / MSVC intrinsics to generate
 # per-ISA code paths without requiring global ISA flags.
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+if(FSH_TARGET_ARCH MATCHES "x86_64|AMD64|amd64|x64")
     target_sources(xxhash PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/deps/xxHash/xxh_x86dispatch.c")
 endif()
 
@@ -216,7 +234,7 @@ endif()
 #         virtually all server-grade ARM64 CPUs (AWS Graviton, Ampere,
 #         Apple Silicon). Not needed for xxHash, but benefits our C++ code.
 
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+if(FSH_TARGET_ARCH MATCHES "aarch64|arm64|ARM64")
     if(NOT MSVC)
         check_cxx_compiler_flag("-march=armv8-a+crypto" HAS_ARM_CRYPTO)
         if(HAS_ARM_CRYPTO)

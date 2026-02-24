@@ -212,6 +212,27 @@ function wasmHash(input: HashInput, seedLow = 0, seedHigh = 0): Buffer {
   return result;
 }
 
+/** Like wasmHash, but writes the 16-byte digest into a caller-provided buffer. */
+function wasmHashTo(input: HashInput, output: Uint8Array, outputOffset = 0, seedLow = 0, seedHigh = 0): void {
+  if (outputOffset + 16 > output.byteLength) {
+    throw new RangeError("hashTo: output buffer too small (need 16 bytes)");
+  }
+  const buf = toBuffer(input);
+  const ws = getSharedWasm();
+  const { ex, seedView, digestView } = ws;
+
+  seedView[0] = seedLow;
+  seedView[1] = seedHigh;
+  ex.Hash_Init();
+
+  if (buf.length > 0) {
+    ws.feed(buf, 0, buf.length);
+  }
+
+  ex.Hash_Final();
+  output.set(digestView, outputOffset);
+}
+
 function patchBaseWithWasm(): void {
   const proto = XXHash128Base.prototype;
   const defineProperty = Object.defineProperty;
@@ -227,6 +248,7 @@ function patchBaseWithWasm(): void {
   // Static methods on XXHash128Wasm — assign optimized functions directly.
   const wasm = XXHash128Wasm;
   defineProperty(wasm, "hash", { value: wasmHash, writable: true, configurable: true });
+  defineProperty(wasm, "hashTo", { value: wasmHashTo, writable: true, configurable: true });
   defineProperty(wasm, "hashFile", { value: wasmHashFile, writable: true, configurable: true });
   defineProperty(wasm, "hashFileTo", { value: wasmHashFileTo, writable: true, configurable: true });
   defineProperty(wasm, "hashFilesBulk", { value: wasmHashFilesBulk, writable: true, configurable: true });
@@ -235,6 +257,7 @@ function patchBaseWithWasm(): void {
   // Also patch XXHash128Base statics so subclasses (like XXHash128) inherit them.
   const base = XXHash128Base;
   defineProperty(base, "hash", { value: wasmHash, writable: true, configurable: true });
+  defineProperty(base, "hashTo", { value: wasmHashTo, writable: true, configurable: true });
   defineProperty(base, "hashFile", { value: wasmHashFile, writable: true, configurable: true });
   defineProperty(base, "hashFileTo", { value: wasmHashFileTo, writable: true, configurable: true });
   defineProperty(base, "hashFilesBulk", { value: wasmHashFilesBulk, writable: true, configurable: true });

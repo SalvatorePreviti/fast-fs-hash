@@ -45,6 +45,14 @@ export interface NativeXXHash128Instance {
 export interface NativeXXHash128Constructor {
   new (seedLow: number, seedHigh: number): NativeXXHash128Instance;
   staticHash(data: Buffer, offset: number, length: number, seedLow: number, seedHigh: number): Buffer;
+  staticHashTo(
+    data: Buffer,
+    length: number,
+    output: Uint8Array,
+    outputOffset: number,
+    seedLow: number,
+    seedHigh: number
+  ): void;
   staticHashFilesBulk(
     pathsBuf: Uint8Array,
     concurrency: number,
