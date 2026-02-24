@@ -2,7 +2,7 @@
  * Tests for static hashFilesBulk and unbound static methods.
  */
 
-import { encodeFilePaths, hashesToHexArray, XXHash128 } from "fast-fs-hash";
+import { encodeFilePaths, hashesToHexArray } from "fast-fs-hash";
 import { describe, expect, it } from "vitest";
 
 import {
