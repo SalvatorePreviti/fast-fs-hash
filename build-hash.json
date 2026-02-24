@@ -1,6 +1,6 @@
 {
   "_description": "SHA-256 hashes of build artifacts and source code. Regenerated on every build.",
-  "generatedAt": "2026-02-24T02:51:18.431Z",
+  "generatedAt": "2026-02-24T03:16:14.588Z",
   "distArtifacts": {
     "index.cjs": {
       "sha256": "a2ce714d0c5fe89287130022222ab510e9a9ccad35c32eaa6fa1413c6a0b729d",
@@ -29,7 +29,7 @@
   },
   "source": {
     "_description": "Source files by category. Discovered via glob, sorted alphabetically.",
-    "files": 40,
+    "files": 41,
     "ts": {
       "file-cache/file-hash-cache-base.ts": {
         "sha256": "e5265aa21aa28ab3ba4a7e1afcaf8fa5446bfdcce6fb478aa65e49a8f4d60fd3",
@@ -118,9 +118,9 @@
         "lines": 352
       },
       "CacheWorkers.h": {
-        "sha256": "38ec7a420bbf479b108309a7688fd90222102e49920634fe19a5bdc025f42a23",
-        "bytes": 19157,
-        "lines": 512
+        "sha256": "c061aa5dedb33b83d97a866b1aa71428bb93442c14dc9bcd248a87bb6a4060f6",
+        "bytes": 19256,
+        "lines": 516
       },
       "FileHandle.h": {
         "sha256": "53b57870e88c1fc902033e339e509a998b4456e1a97bbfd1ad89621c2b643c40",
@@ -143,9 +143,9 @@
         "lines": 142
       },
       "HashFilesWorker.h": {
-        "sha256": "b22b8dd6cba6a5c1697a1ecae65e434afbdf85d989acab2810e6757232d1d668",
-        "bytes": 9216,
-        "lines": 239
+        "sha256": "441aa4a4a413c5344c5589b298053bd3ab23ded7e18ad99d4011f5f1f084a4f4",
+        "bytes": 9255,
+        "lines": 242
       },
       "InstanceHashWorker.h": {
         "sha256": "ca2603cf63669296959e3664544a51b34b142dfadbf8c2aa7c5e15f763cf217e",
@@ -177,6 +177,11 @@
         "bytes": 8506,
         "lines": 225
       },
+      "Thread.h": {
+        "sha256": "9248e4ae2f35359f5e8b4478133bbadf9a37f773339328752dd4ced92874a9f5",
+        "bytes": 4490,
+        "lines": 175
+      },
       "UpdateFileWorker.h": {
         "sha256": "145dbc1929af949138b42392fe74315ae27d7f4c54a5372b98b20f6fde1b1498",
         "bytes": 798,
@@ -198,9 +203,9 @@
         "lines": 24
       },
       "includes.h": {
-        "sha256": "04b10ee197746e6e30bb119ecb54a786f04f1e4aa7b653ea5f7e38b4273302e6",
-        "bytes": 3634,
-        "lines": 121
+        "sha256": "bd10d942de5c4de6995c0cd5bb72cba0fe9f58f94a9874f07947887a72ee6c4c",
+        "bytes": 3616,
+        "lines": 120
       }
     },
     "xxhash": {
