@@ -1,5 +1,5 @@
+import { hashesToHexArray, hashToHex } from "fast-fs-hash";
 import { describe, expect, it } from "vitest";
-import { hashesToHexArray, hashToHex } from "../../packages/fast-fs-hash/src/index";
 
 describe("hashToHex", () => {
   it("converts 16 zero bytes to 32 hex zeros", () => {

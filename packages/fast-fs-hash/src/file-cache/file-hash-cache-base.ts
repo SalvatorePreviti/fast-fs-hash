@@ -1,7 +1,6 @@
 import { constants } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import { mkdir, open, unlink } from "node:fs/promises";
-import process from "node:process";
 import { decodeFilePaths, encodeFilePaths } from "../functions";
 import { arraysEqual, bufferAlloc, bufferAllocUnsafe, finalizeWrite, noop, safeClose } from "../helpers";
 import { findCommonRootPath, normalizeFilePaths, pathDirname, pathResolve, toRelativePath } from "../path-utils";
@@ -19,7 +18,7 @@ import {
   MAGIC,
 } from "./file-hash-cache-format";
 import type { FileHashCacheImpl } from "./file-hash-cache-impl";
-import type { FileHashCacheOptions, FileHashCacheSerializeResult } from "./types";
+import type { FileHashCacheOpenResult, FileHashCacheOptions, FileHashCacheSerializeResult } from "./types";
 
 // Re-export constants so existing consumers (tests, format.ts) keep working.
 export {
@@ -42,12 +41,17 @@ const EMPTY_FILES: readonly string[] = Object.freeze([]);
 
 const O_RD = constants.O_RDONLY;
 
+/** Cached process.pid — avoids repeated property lookup. */
+const _pid = process.pid;
+
 // ── Bit flags for FileHashCacheBase._flags ──────────────────────────
 const FL_DISPOSED = 1;
 const FL_COMPLETED = 2;
 const FL_REMAPPED = 4;
 const FL_AUTO_ROOT = 8;
 const FL_NATIVE = 16;
+const FL_OPENED = 32;
+const FL_VALIDATED = 64;
 
 /**
  * Abstract base class for cache-file readers, validators, and writers.
@@ -173,12 +177,15 @@ export abstract class FileHashCacheBase {
   // ── Completion / result state ─────────────────────────────────────
 
   /**
-   * Packed boolean state flags — avoids four separate boolean fields.
+   * Packed boolean state flags — avoids separate boolean fields.
    *
    * - `FL_DISPOSED`   — instance has been disposed
    * - `FL_COMPLETED`  — stat/hash pass is finished
    * - `FL_REMAPPED`   — post-validate remap was already performed
    * - `FL_AUTO_ROOT`  — auto-compute rootPath from file list
+   * - `FL_NATIVE`     — using native C++ backend
+   * - `FL_OPENED`     — {@link open} has been called
+   * - `FL_VALIDATED`  — {@link validate} has been called
    */
   private _flags = 0;
 
@@ -189,7 +196,7 @@ export abstract class FileHashCacheBase {
    */
   private _changedFiles: readonly string[] | null = null;
 
-  // ── Old cache state (set during validate, read lazily) ────────────
+  // ── Old cache state (set during open, read lazily) ────────────────
 
   /**
    * Decoded file list from the previous cache file, or `null` if not yet
@@ -201,10 +208,22 @@ export abstract class FileHashCacheBase {
 
   /**
    * Raw NUL-separated UTF-8 paths buffer read from the old cache file.
-   * Kept until {@link oldFiles} is first accessed (lazy decode), then
-   * retained for the lifetime of the instance.
+   * Set by {@link open}, consumed by {@link validate} and {@link oldFiles}.
    */
   private _oldPathsBuf: Buffer | null = null;
+
+  /**
+   * Per-entry binary buffer from the old cache file.
+   * Set by {@link open} (entries section read), consumed by {@link validate}
+   * for stat-and-match or remap, then cleared.
+   */
+  private _oldEntriesBuf: Buffer | null = null;
+
+  /**
+   * File count read from the old cache header by {@link open}.
+   * Used by {@link validate} when no prior {@link setFiles} was called.
+   */
+  private _oldFileCount = 0;
 
   // ── I/O handles and lifecycle (cold path) ─────────────────────────
 
@@ -711,10 +730,9 @@ export abstract class FileHashCacheBase {
   /**
    * Validate the cache file against the configured file list.
    *
-   * Opens the cache file, reads the header, and validates:
-   * 1. Magic, version, fingerprint
-   * 2. File count and sorted paths
-   * 3. Per-file stat comparison (exits early on first change)
+   * Calls {@link open} internally if it has not been called yet.
+   * Then stat-checks each file to determine whether the cache is
+   * still valid.
    *
    * If {@link setFiles} was not called before validate, the file list
    * is read from the existing cache file itself.  If no valid cache
@@ -729,57 +747,67 @@ export abstract class FileHashCacheBase {
    * @throws If already validated/disposed.
    */
   public async validate(): Promise<boolean> {
-    if (this._flags & FL_DISPOSED) {
+    const flags = this._flags;
+    if (flags & FL_DISPOSED) {
       throw new Error("FileHashCache: already disposed");
     }
-    if (this._fh || this._writeFh) {
+    if (flags & FL_VALIDATED || this._writeFh) {
       throw new Error("FileHashCache: validate() cannot be called again — instance is single-use");
+    }
+    this._flags = flags | FL_VALIDATED;
+
+    // Call open() if not already called.
+    const wasOpened = !!(this._flags & FL_OPENED);
+    let openResult: FileHashCacheOpenResult;
+    if (!wasOpened) {
+      openResult = await this.open();
+    } else {
+      // Already opened — determine the effective status from stored state.
+      openResult = this._oldEntriesBuf ? "valid" : this._oldFileCount === 0 ? "empty" : "not-found";
     }
 
     // Reset completion state — validate rebuilds _entriesBuf and _fileStates from scratch.
     this._flags &= ~(FL_COMPLETED | FL_REMAPPED);
     this._changedFiles = null;
     this._oldFiles = null;
-    this._oldPathsBuf = null;
 
-    // Try to open and read old cache header + body.
-    const old = await this._openAndReadOldCache();
-
-    // Store the old cache's file list for oldFiles.
-    if (old) {
-      this._oldPathsBuf = old.pathsBuf;
-    }
+    const hasOldCache = openResult === "valid";
+    const oldEntriesBuf = this._oldEntriesBuf;
+    const oldPathsBuf = this._oldPathsBuf;
+    const oldFileCount = this._oldFileCount;
 
     let pathsBuf = this._pathsBuf;
     let n = this._fileCount;
 
     if (!this._files) {
       // No setFiles() — use the file list from the cache file itself.
-      if (!old) {
+      if (!hasOldCache || !oldPathsBuf) {
         return false; // No cache, no file list — nothing to validate.
       }
-      pathsBuf = old.pathsBuf;
-      n = old.fileCount;
+      pathsBuf = oldPathsBuf;
+      n = oldFileCount;
       this._pathsBuf = pathsBuf;
       this._fileCount = n;
     }
 
     if (n === 0) {
-      if (old?.fh) {
-        await safeClose(old.fh);
-      }
       this._flags |= FL_COMPLETED;
       this._changedFiles = [];
+      if (!wasOpened) {
+        await this._closeReadHandle();
+      }
       return true;
     }
 
     // Allocate entries + file states.
-    const entriesBuf = bufferAlloc(n * ENTRY_STRIDE);
+    // bufferAllocUnsafe: statAndMatch (exact-match path) or
+    // remapOldEntries+completeEntries (remap path) will write every slot.
+    const entriesBuf = bufferAllocUnsafe(n * ENTRY_STRIDE);
     const fileStates = new Uint8Array(n);
     this._entriesBuf = entriesBuf;
     this._fileStates = fileStates;
 
-    if (!old) {
+    if (!hasOldCache || !oldEntriesBuf || !oldPathsBuf) {
       // No valid old cache — return false (buffers allocated for serialize).
       return false;
     }
@@ -789,17 +817,14 @@ export abstract class FileHashCacheBase {
     pathsBuf = this.getPathsBuf();
 
     // Check if paths match exactly.
-    if (old.fileCount === n && old.pathsBuf.length === pathsBuf.length && old.pathsBuf.equals(pathsBuf)) {
-      // Exact match — populate user values, set up file handle.
-      this.userValue0 = old.userValue0;
-      this.userValue1 = old.userValue1;
-      this.userValue2 = old.userValue2;
-      this.userValue3 = old.userValue3;
-      this._fh = old.fh;
-      old.fh = null; // Transfer ownership — prevent cleanup below.
+    if (oldFileCount === n && oldPathsBuf.length === pathsBuf.length && oldPathsBuf.equals(pathsBuf)) {
+      // Exact match — set up position for user data reads.
       this.position = HEADER_SIZE + n * ENTRY_STRIDE + pathsBuf.length;
 
-      return this._impl.statAndMatch(this, entriesBuf, old.entriesBuf, fileStates).then((unchanged) => {
+      // Clear old entries — consumed; no longer needed.
+      this._oldEntriesBuf = null;
+
+      return this._impl.statAndMatch(this, entriesBuf, oldEntriesBuf, fileStates).then((unchanged) => {
         if (unchanged) {
           // All files matched — mark as fully complete so getChangedFiles()
           // and complete() skip the redundant stat pass.
@@ -811,14 +836,128 @@ export abstract class FileHashCacheBase {
     }
 
     // File list changed — remap old entries to speed up complete/serialize.
-    this._impl.remapOldEntries(this, old.entriesBuf, old.pathsBuf, old.fileCount, entriesBuf, fileStates);
+    this._impl.remapOldEntries(this, oldEntriesBuf, oldPathsBuf, oldFileCount, entriesBuf, fileStates);
 
-    // Close old handle (not reusable — different paths).
-    if (old.fh) {
-      await safeClose(old.fh);
+    // Clear old entries — consumed.
+    this._oldEntriesBuf = null;
+
+    // Close read handle (not reusable — different paths) only if we opened it.
+    if (!wasOpened) {
+      await this._closeReadHandle();
     }
 
     return false;
+  }
+
+  /**
+   * Open the cache file and read its contents.
+   *
+   * Reads the 64-byte header and validates magic, version, and fingerprint.
+   * If the header is valid and the file count is non-zero, reads the entries
+   * and paths sections in a single I/O call.
+   *
+   * On success (`"valid"`), populates {@link userValue0}–{@link userValue3},
+   * {@link fileCount}, and sets {@link position} to the start of user data.
+   * {@link read} / {@link readv} can then access user data.
+   *
+   * May be called before {@link validate} to inspect header metadata
+   * without stat-checking files.  If not called explicitly, {@link validate}
+   * calls it internally.
+   *
+   * @returns A status string describing the result:
+   *   - `"valid"`     — header+body read successfully, entries and paths loaded.
+   *   - `"empty"`     — header is valid but file count is zero.
+   *   - `"not-found"` — cache file does not exist or could not be opened.
+   *   - `"stale"`     — magic, version, or fingerprint mismatch.
+   *   - `"corrupt"`   — header valid but body is truncated or unreadable.
+   * @throws If already disposed or if a file handle is already open.
+   */
+  public async open(): Promise<FileHashCacheOpenResult> {
+    if (this._flags & FL_DISPOSED) {
+      throw new Error("FileHashCache: already disposed");
+    }
+    if (this._flags & FL_OPENED) {
+      throw new Error("FileHashCache: open() cannot be called again — file already open");
+    }
+
+    this._flags |= FL_OPENED;
+
+    let fh: FileHandle | undefined;
+    try {
+      fh = await open(this.filePath, O_RD);
+
+      // Read the 64-byte header — bufferAllocUnsafe is safe because we
+      // validate every field before exposing any data.
+      const hdr = bufferAllocUnsafe(HEADER_SIZE);
+      const { bytesRead: hdrRead } = await fh.read(hdr, 0, HEADER_SIZE, 0);
+      if (hdrRead < HEADER_SIZE) {
+        return "corrupt";
+      }
+
+      const u32 = new Uint32Array(hdr.buffer, hdr.byteOffset, HEADER_SIZE >>> 2);
+
+      if (u32[H_MAGIC] !== MAGIC || u32[H_VERSION] !== this.version) {
+        return "stale";
+      }
+
+      // Fingerprint check: null → fast 4×u32 compare (avoids JS→C boundary
+      // for the common case). Non-null → native memcmp via Buffer.compare.
+      const fp = this._fingerprint;
+      if (fp === null) {
+        if (u32[7] !== 0 || u32[8] !== 0 || u32[9] !== 0 || u32[10] !== 0) {
+          return "stale";
+        }
+      } else if (hdr.compare(fp, 0, 16, H_FINGERPRINT_BYTE, H_FINGERPRINT_BYTE + 16) !== 0) {
+        return "stale";
+      }
+
+      const fileCount = u32[H_FILE_COUNT];
+      const pathsLen = u32[H_PATHS_LEN];
+
+      // Populate user values and file count from header.
+      this.userValue0 = u32[H_USER];
+      this.userValue1 = u32[H_USER + 1];
+      this.userValue2 = u32[H_USER + 2];
+      this.userValue3 = u32[H_USER + 3];
+      this._oldFileCount = fileCount;
+      // Expose fileCount immediately so callers can inspect it after open()
+      // without needing validate() — only when setFiles() was not called.
+      if (!this._files) {
+        this._fileCount = fileCount;
+      }
+      this.position = HEADER_SIZE + fileCount * ENTRY_STRIDE + pathsLen;
+
+      if (fileCount === 0) {
+        // Valid header but no files — no body to read.
+        // Keep fh open for potential user-data reads.
+        this._fh = fh;
+        fh = undefined;
+        return "empty";
+      }
+
+      // Read entries + paths in a single read — exactly the bytes we need.
+      const entriesLen = fileCount * ENTRY_STRIDE;
+      const bodyLen = entriesLen + pathsLen;
+      const body = bufferAllocUnsafe(bodyLen);
+      const { bytesRead: bodyRead } = await fh.read(body, 0, bodyLen, HEADER_SIZE);
+      if (bodyRead < bodyLen) {
+        return "corrupt";
+      }
+
+      this._oldEntriesBuf = body.subarray(0, entriesLen) as Buffer;
+      this._oldPathsBuf = body.subarray(entriesLen) as Buffer;
+      this._oldFileCount = fileCount;
+      this._fh = fh;
+      fh = undefined; // Transfer ownership — prevent finally from closing.
+
+      return "valid";
+    } catch {
+      return "not-found";
+    } finally {
+      if (fh) {
+        await safeClose(fh);
+      }
+    }
   }
 
   /**
@@ -1049,7 +1188,7 @@ export abstract class FileHashCacheBase {
     pathsBuf: Buffer
   ): Promise<FileHashCacheSerializeResult> {
     const outPath = this.filePath;
-    const tmp = `${outPath}.${process.pid}.tmp`;
+    const tmp = `${outPath}.${_pid}.tmp`;
     try {
       await mkdir(pathDirname(outPath), { recursive: true });
       const wfh = await open(tmp, "w");
@@ -1068,92 +1207,6 @@ export abstract class FileHashCacheBase {
       return "written";
     } catch {
       return "error";
-    }
-  }
-
-  /**
-   * Open the existing cache file, read the header + entries + paths,
-   * and validate magic/version/fingerprint.
-   *
-   * On success, returns the old cache data (file handle, entries, paths,
-   * user values).  The caller is responsible for closing `fh` if it
-   * does not transfer ownership (set `result.fh = null` to prevent
-   * auto-close in the finally block).
-   *
-   * @returns Parsed old cache data, or `null` if the cache file is
-   *          missing, corrupt, or has incompatible magic/version/fingerprint.
-   */
-  private async _openAndReadOldCache(): Promise<{
-    fh: FileHandle | null;
-    fileCount: number;
-    entriesBuf: Buffer;
-    pathsBuf: Buffer;
-    userValue0: number;
-    userValue1: number;
-    userValue2: number;
-    userValue3: number;
-  } | null> {
-    let fh: FileHandle | undefined;
-    try {
-      fh = await open(this.filePath, O_RD);
-      const hdr = bufferAllocUnsafe(HEADER_SIZE);
-      const { bytesRead } = await fh.read(hdr, 0, HEADER_SIZE, 0);
-      if (bytesRead < HEADER_SIZE) {
-        return null;
-      }
-
-      // Overlay a Uint32Array view for all header field reads.
-      // Safe: pool allocations are 8-byte aligned (byteOffset % 4 === 0), all targets are LE.
-      const u32 = new Uint32Array(hdr.buffer, hdr.byteOffset, HEADER_SIZE >>> 2);
-
-      if (u32[H_MAGIC] !== MAGIC || u32[H_VERSION] !== this.version) {
-        return null;
-      }
-
-      // Fingerprint check: null → fast 4×u32 compare (avoids JS→C boundary for the common case).
-      // Non-null → native memcmp via Buffer.compare. H_FINGERPRINT_BYTE=28 → u32 slots 7-10.
-      const fp = this._fingerprint;
-      if (fp === null) {
-        if (u32[7] !== 0 || u32[8] !== 0 || u32[9] !== 0 || u32[10] !== 0) {
-          return null;
-        }
-      } else if (hdr.compare(fp, 0, 16, H_FINGERPRINT_BYTE, H_FINGERPRINT_BYTE + 16) !== 0) {
-        return null;
-      }
-
-      const fileCount = u32[H_FILE_COUNT];
-      if (fileCount === 0) {
-        return null;
-      }
-
-      // Read old entries + paths section.
-      const pathsLen = u32[H_PATHS_LEN];
-      const entriesLen = fileCount * ENTRY_STRIDE;
-      const bodyLen = entriesLen + pathsLen;
-      const bodyBuf = bufferAllocUnsafe(bodyLen);
-      const { bytesRead: bodyRead } = await fh.read(bodyBuf, 0, bodyLen, HEADER_SIZE);
-      if (bodyRead < bodyLen) {
-        return null;
-      }
-
-      const result = {
-        fh: fh as FileHandle,
-        fileCount,
-        entriesBuf: bodyBuf.subarray(0, entriesLen) as Buffer,
-        pathsBuf: bodyBuf.subarray(entriesLen, bodyLen) as Buffer,
-        userValue0: u32[H_USER],
-        userValue1: u32[H_USER + 1],
-        userValue2: u32[H_USER + 2],
-        userValue3: u32[H_USER + 3],
-      };
-      fh = undefined; // Transfer ownership — prevent finally from closing.
-      return result;
-    } catch {
-      return null;
-    } finally {
-      if (fh) {
-        await safeClose(fh);
-      }
     }
   }
 }

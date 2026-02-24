@@ -14,8 +14,8 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { open } from "node:fs/promises";
 import path from "node:path";
+import { encodeFilePaths, hashesToHexArray, XXHash128, XXHash128Wasm } from "fast-fs-hash";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { encodeFilePaths, hashesToHexArray, XXHash128, XXHash128Wasm } from "../packages/fast-fs-hash/src/index";
 
 //  - Known xxHash3-128 values (seed 0 unless noted)
 

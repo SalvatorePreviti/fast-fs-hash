@@ -1,5 +1,5 @@
+import { findCommonRootPath } from "fast-fs-hash";
 import { describe, expect, it } from "vitest";
-import { findCommonRootPath } from "../../packages/fast-fs-hash/src/path-utils";
 
 describe("findCommonRootPath", () => {
   // ── Basic cases ───────────────────────────────────────────────────

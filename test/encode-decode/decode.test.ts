@@ -1,5 +1,5 @@
+import { decodeFilePaths } from "fast-fs-hash";
 import { describe, expect, it } from "vitest";
-import { decodeFilePaths } from "../../packages/fast-fs-hash/src/index";
 
 describe("decodeFilePaths", () => {
   it("returns empty array for empty buffer", () => {

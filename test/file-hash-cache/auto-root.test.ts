@@ -1,9 +1,7 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { FileHashCache, FileHashCacheWasm, XXHash128 } from "fast-fs-hash";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { FileHashCache } from "../../packages/fast-fs-hash/src/file-cache/file-hash-cache";
-import { FileHashCacheWasm } from "../../packages/fast-fs-hash/src/file-cache/file-hash-cache-wasm";
-import { XXHash128 } from "../../packages/fast-fs-hash/src/xxhash128/xxhash128";
 
 //  - Fixture setup
 

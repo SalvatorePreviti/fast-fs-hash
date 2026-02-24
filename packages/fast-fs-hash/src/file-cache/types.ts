@@ -27,6 +27,20 @@ export interface FileHashCacheOptions {
 }
 
 /**
+ * Result of {@link FileHashCacheBase.open}.
+ *
+ * - `"valid"`     — cache file exists and the header is valid (magic, version,
+ *                    fingerprint all match). Entries and paths have been read.
+ * - `"not-found"` — cache file does not exist or could not be opened.
+ * - `"stale"`     — cache file exists but magic, version, or fingerprint
+ *                    do not match the current configuration.
+ * - `"corrupt"`   — header is present but the body (entries + paths) is
+ *                    truncated or unreadable.
+ * - `"empty"`     — header is valid but the file count is zero.
+ */
+export type FileHashCacheOpenResult = "valid" | "not-found" | "stale" | "corrupt" | "empty";
+
+/**
  * Result of {@link FileHashCacheBase.serialize}.
  *
  * - `"written"` — cache file was successfully written to disk.

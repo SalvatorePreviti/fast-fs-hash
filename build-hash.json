@@ -1,11 +1,11 @@
 {
   "_description": "SHA-256 hashes of build artifacts and source code. Regenerated on every build.",
-  "generatedAt": "2026-02-24T01:14:09.952Z",
+  "generatedAt": "2026-02-24T01:49:38.695Z",
   "distArtifacts": {
     "index.cjs": {
-      "sha256": "a59dbc9e57b3b75eec33a256139b1b427dbba0c2a3b331ca5efdc64f25189f88",
-      "bytes": 101110,
-      "lines": 2803
+      "sha256": "a2ce714d0c5fe89287130022222ab510e9a9ccad35c32eaa6fa1413c6a0b729d",
+      "bytes": 102957,
+      "lines": 2839
     },
     "index.d.cts": {
       "sha256": "97e1818573679b5d3d697406abd3e5f1e9cd00da1f2783ab236912180462f5be",
@@ -13,9 +13,9 @@
       "lines": 2
     },
     "index.d.ts": {
-      "sha256": "f24e28bf9caaa8391f5af550366d07f08073372ab9093f2dc9ca0f4822a99a28",
-      "bytes": 49028,
-      "lines": 1133
+      "sha256": "8fecda1e915c1d4fee0d5c5e43163a297baeca8b6f57b6fa470fa06d94301198",
+      "bytes": 50918,
+      "lines": 1169
     },
     "index.mjs": {
       "sha256": "35a75f8ca2a25a1aa5bf2ffbca0ad4b852da65352d2e0d07e5c23a952352d744",
@@ -32,9 +32,9 @@
     "files": 40,
     "ts": {
       "file-cache/file-hash-cache-base.ts": {
-        "sha256": "65c580215b16800d967284cf6e20c1bf98cc01081347a8e38ba4c198467498db",
-        "bytes": 41667,
-        "lines": 1160
+        "sha256": "3fc853f750f592f3fdb279af1de9d472abadbfff50a729d6a271cfbefadc7cd4",
+        "bytes": 44097,
+        "lines": 1214
       },
       "file-cache/file-hash-cache-format.ts": {
         "sha256": "374d512dc47c130c91c8b6461d44fcc3bdcf0064d70e6b69958bc67eef53130b",
@@ -57,9 +57,9 @@
         "lines": 79
       },
       "file-cache/types.ts": {
-        "sha256": "796b355ad032e689b36cbfde98b90844a4b7ac88c9e899c5e91f01220569ebe4",
-        "bytes": 1144,
-        "lines": 37
+        "sha256": "6ee33315bb9412557d368533ace36667ad4ed709956ed438cb0e6f5b8f950cd5",
+        "bytes": 1856,
+        "lines": 51
       },
       "functions.ts": {
         "sha256": "55ea767cb5f86bc9f01d740f35e1b24553f84703e3ca3e776de89d11dc3b5038",
@@ -72,14 +72,14 @@
         "lines": 89
       },
       "index.ts": {
-        "sha256": "1ac5f0f84833f254bd637d0c0d7d4ab40fc287a55564cbfca42a8482051075b5",
-        "bytes": 1547,
+        "sha256": "523deb78e0ad308e42b4543c92a314db602bf0eda82375ac60c4b6fe88cb5271",
+        "bytes": 1572,
         "lines": 46
       },
       "native.ts": {
-        "sha256": "9134b28f1f37feb255312e99fd133c3a23914fba39f2d81bee50e06f57e25233",
-        "bytes": 6186,
-        "lines": 194
+        "sha256": "8abd250a6725ae7d61c245080800b0d86a5eb4c46519043b5c47dc1e30b5c94f",
+        "bytes": 6204,
+        "lines": 199
       },
       "path-utils.ts": {
         "sha256": "f73a577c0d4fd7cfdf1b05c49da5e725ffad83280842e3ada5dcbaa0790e9a81",

@@ -12,8 +12,8 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Worker } from "node:worker_threads";
+import { XXHash128 } from "fast-fs-hash";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { XXHash128 } from "../packages/fast-fs-hash/src/index";
 
 //  - Known values (same as xxhash128.test.ts)
 

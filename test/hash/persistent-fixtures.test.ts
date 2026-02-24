@@ -1,6 +1,6 @@
 import path from "node:path";
+import { hashesToHexArray, XXHash128, XXHash128Wasm } from "fast-fs-hash";
 import { beforeAll, describe, expect, it } from "vitest";
-import { hashesToHexArray, XXHash128, XXHash128Wasm } from "../../packages/fast-fs-hash/src/index";
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "../fixtures/hash-fixture");
 

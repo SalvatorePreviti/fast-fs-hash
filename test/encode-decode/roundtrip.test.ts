@@ -1,5 +1,5 @@
+import { decodeFilePaths, encodeFilePaths } from "fast-fs-hash";
 import { describe, expect, it } from "vitest";
-import { decodeFilePaths, encodeFilePaths } from "../../packages/fast-fs-hash/src/index";
 
 describe("encodeFilePaths / decodeFilePaths round-trip", () => {
   const testCases: [string, string[]][] = [

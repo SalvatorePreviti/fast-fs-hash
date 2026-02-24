@@ -1,5 +1,5 @@
+import { decodeFilePaths, encodeFilePaths, iterateFilePaths } from "fast-fs-hash";
 import { describe, expect, it } from "vitest";
-import { decodeFilePaths, encodeFilePaths, iterateFilePaths } from "../../packages/fast-fs-hash/src/index";
 
 describe("iterateFilePaths", () => {
   it("yields nothing for empty buffer", () => {

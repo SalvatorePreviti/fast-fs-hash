@@ -25,7 +25,7 @@ import type { XXHash128Wasm } from "./xxhash128/xxhash128-wasm";
 export { FileHashCache } from "./file-cache/file-hash-cache";
 export { FileHashCacheBase } from "./file-cache/file-hash-cache-base";
 export { FileHashCacheWasm } from "./file-cache/file-hash-cache-wasm";
-export type { FileHashCacheOptions, FileHashCacheSerializeResult } from "./file-cache/types";
+export type { FileHashCacheOpenResult, FileHashCacheOptions, FileHashCacheSerializeResult } from "./file-cache/types";
 export {
   decodeFilePaths,
   encodeFilePaths,
