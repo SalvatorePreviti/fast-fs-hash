@@ -117,8 +117,26 @@ jobs:
         run: npm run build:all
 
       - name: Test with native binding
-        if: ${{ matrix.can-test }}
+        if: ${{ matrix.can-test && runner.os != 'Windows' }}
         run: npm test
+
+      - name: Test with native binding (Windows — one file at a time)
+        if: ${{ matrix.can-test && runner.os == 'Windows' }}
+        shell: bash
+        run: |
+          shopt -s globstar
+          failed=0
+          for f in test/**/*.test.ts; do
+            echo "::group::$f"
+            if npx vitest run "$f" --reporter=verbose --pool=threads; then
+              echo "✅ $f"
+            else
+              echo "❌ $f"
+              failed=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $failed
 
       - name: Run benchmarks
         if: ${{ matrix.can-test }}
