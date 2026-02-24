@@ -102,23 +102,34 @@ namespace fast_fs_hash {
       memset(dest, 0, 32);
       return false;
     }
+
+    // GetFileInformationByHandleEx(FileBasicInfo) exposes ChangeTime,
+    // which libuv maps to ctime. The legacy BY_HANDLE_FILE_INFORMATION
+    // only has CreationTime — which is birthtime, NOT ctime.
+    FILE_BASIC_INFO basicInfo;
+    if (!GetFileInformationByHandleEx(h, FileBasicInfo, &basicInfo, sizeof(basicInfo))) [[unlikely]] {
+      CloseHandle(h);
+      memset(dest, 0, 32);
+      return false;
+    }
     CloseHandle(h);
 
     uint64_t ino = (static_cast<uint64_t>(info.nFileIndexHigh) << 32) | info.nFileIndexLow;
     uint64_t sz = (static_cast<uint64_t>(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
 
-    // Convert FILETIME (100-ns intervals since 1601-01-01) to Unix nanoseconds.
-    // Matches libuv: mtimeNs = (filetime - EPOCH_DIFF) * 100.
+    // Convert 100-ns intervals since 1601-01-01 (Windows FILETIME epoch)
+    // to nanoseconds since 1970-01-01 (Unix epoch).
+    // Matches libuv: ns = (filetime - EPOCH_DIFF) * 100.
     static constexpr uint64_t EPOCH_DIFF = 116444736000000000ULL;
 
-    auto ft_to_ns = [](FILETIME ft) -> uint64_t {
-      uint64_t v = (static_cast<uint64_t>(ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
+    auto li_to_ns = [](LARGE_INTEGER li) -> uint64_t {
+      uint64_t v = static_cast<uint64_t>(li.QuadPart);
       return v >= EPOCH_DIFF ? (v - EPOCH_DIFF) * 100ULL : 0ULL;
     };
 
-    // Note: libuv maps ctime to ftCreationTime on Windows.
-    uint64_t mtimeNs = ft_to_ns(info.ftLastWriteTime);
-    uint64_t ctimeNs = ft_to_ns(info.ftCreationTime);
+    // libuv maps mtime → LastWriteTime, ctime → ChangeTime (NOT CreationTime).
+    uint64_t mtimeNs = li_to_ns(basicInfo.LastWriteTime);
+    uint64_t ctimeNs = li_to_ns(basicInfo.ChangeTime);
 
     memcpy(dest, &ino, 8);
     memcpy(dest + 8, &mtimeNs, 8);
