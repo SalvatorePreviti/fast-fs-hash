@@ -9,7 +9,6 @@
  * @module
  */
 
-import type { FileHandle } from "node:fs/promises";
 import { types as utilTypes } from "node:util";
 import { encodeFilePaths } from "../functions";
 import type { HashInput } from "../helpers";
@@ -133,19 +132,6 @@ async function nativeInstanceHashFileTo(
   await this._native.hashFile(filePath, output, outputOffset ?? 0);
 }
 
-async function nativeInstanceHashFileHandle(this: NativeInstance, fh: FileHandle): Promise<Buffer> {
-  return this._native.hashFileHandle(fh.fd, undefined, 0, fh) as Promise<Buffer>;
-}
-
-async function nativeInstanceHashFileHandleTo(
-  this: NativeInstance,
-  fh: FileHandle,
-  output: Uint8Array,
-  outputOffset?: number
-): Promise<void> {
-  await this._native.hashFileHandle(fh.fd, output, outputOffset ?? 0, fh);
-}
-
 //  - Static hashFilesBulk
 
 //  - Prototype patching
@@ -167,16 +153,6 @@ function patchWithNative(nativeCtor: NativeXXHash128Constructor): void {
   Object.defineProperty(proto, "updateFile", { value: nativeUpdateFile, writable: true, configurable: true });
   Object.defineProperty(proto, "hashFile", { value: nativeInstanceHashFile, writable: true, configurable: true });
   Object.defineProperty(proto, "hashFileTo", { value: nativeInstanceHashFileTo, writable: true, configurable: true });
-  Object.defineProperty(proto, "hashFileHandle", {
-    value: nativeInstanceHashFileHandle,
-    writable: true,
-    configurable: true,
-  });
-  Object.defineProperty(proto, "hashFileHandleTo", {
-    value: nativeInstanceHashFileHandleTo,
-    writable: true,
-    configurable: true,
-  });
 
   Object.defineProperty(proto, "libraryStatus", {
     get() {
@@ -189,7 +165,6 @@ function patchWithNative(nativeCtor: NativeXXHash128Constructor): void {
   const staticHashFilesBulkTo = nativeCtor.staticHashFilesBulkTo;
   const staticHash = nativeCtor.staticHash;
   const staticHashFile = nativeCtor.staticHashFile;
-  const staticHashFileHandle = nativeCtor.staticHashFileHandle;
 
   /** Static hashFilesBulk — delegates to C++ StaticHashFilesWorker. */
   async function nativeStaticHashFilesBulk(options: HashFilesBulkOptions): Promise<Buffer> {
@@ -258,20 +233,6 @@ function patchWithNative(nativeCtor: NativeXXHash128Constructor): void {
     await staticHashFile(filePath, output, outputOffset ?? 0, seedLow ?? 0, seedHigh ?? 0, salt);
   }
 
-  async function nativeStaticHashFileHandle(fh: FileHandle, seedLow?: number, seedHigh?: number): Promise<Buffer> {
-    return staticHashFileHandle(fh.fd, undefined, 0, seedLow ?? 0, seedHigh ?? 0, fh) as Promise<Buffer>;
-  }
-
-  async function nativeStaticHashFileHandleTo(
-    fh: FileHandle,
-    output: Uint8Array,
-    outputOffset?: number,
-    seedLow?: number,
-    seedHigh?: number
-  ): Promise<void> {
-    await staticHashFileHandle(fh.fd, output, outputOffset ?? 0, seedLow ?? 0, seedHigh ?? 0, fh);
-  }
-
   // Static methods — delegate to C++ without any JS instance creation.
   function nativeStaticHash(input: HashInput, seedLow = 0, seedHigh = 0): Buffer {
     const buf = toBuffer(input);
@@ -295,16 +256,6 @@ function patchWithNative(nativeCtor: NativeXXHash128Constructor): void {
     configurable: true,
   });
   Object.defineProperty(XXHash128, "hashFileTo", { value: nativeStaticHashFileTo, writable: true, configurable: true });
-  Object.defineProperty(XXHash128, "hashFileHandle", {
-    value: nativeStaticHashFileHandle,
-    writable: true,
-    configurable: true,
-  });
-  Object.defineProperty(XXHash128, "hashFileHandleTo", {
-    value: nativeStaticHashFileHandleTo,
-    writable: true,
-    configurable: true,
-  });
 }
 
 /**

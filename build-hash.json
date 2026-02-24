@@ -1,11 +1,11 @@
 {
   "_description": "SHA-256 hashes of build artifacts and source code. Regenerated on every build.",
-  "generatedAt": "2026-02-24T07:52:08.098Z",
+  "generatedAt": "2026-02-24T10:54:57.578Z",
   "distArtifacts": {
     "index.cjs": {
-      "sha256": "fc698d4eaae3d7120d64faaa213028bba349a9b036979ede83ac4eb25bbdc39d",
-      "bytes": 102973,
-      "lines": 2839
+      "sha256": "27e6d1004d91c89472c97eaca19782f75687aa3f647b003a46f5e86679f87ccb",
+      "bytes": 97112,
+      "lines": 2663
     },
     "index.d.cts": {
       "sha256": "97e1818573679b5d3d697406abd3e5f1e9cd00da1f2783ab236912180462f5be",
@@ -13,9 +13,9 @@
       "lines": 2
     },
     "index.d.ts": {
-      "sha256": "8fecda1e915c1d4fee0d5c5e43163a297baeca8b6f57b6fa470fa06d94301198",
-      "bytes": 50918,
-      "lines": 1169
+      "sha256": "a2334b35bbc110d4072ed60db02f3ad12918606bf08e01d5cec62ed74451e561",
+      "bytes": 49193,
+      "lines": 1129
     },
     "index.mjs": {
       "sha256": "35a75f8ca2a25a1aa5bf2ffbca0ad4b852da65352d2e0d07e5c23a952352d744",
@@ -29,7 +29,7 @@
   },
   "source": {
     "_description": "Source files by category. Discovered via glob, sorted alphabetically.",
-    "files": 41,
+    "files": 40,
     "ts": {
       "file-cache/file-hash-cache-base.ts": {
         "sha256": "e5265aa21aa28ab3ba4a7e1afcaf8fa5446bfdcce6fb478aa65e49a8f4d60fd3",
@@ -42,8 +42,8 @@
         "lines": 106
       },
       "file-cache/file-hash-cache-impl.ts": {
-        "sha256": "f3d90bccb8e37b4a47502a64af4104bda6d3c07786918f7d545fddfd0645e988",
-        "bytes": 14818,
+        "sha256": "17f68a2a21c41fccdf570c246436a54394bbd16eaac8281f81e66d09475368b4",
+        "bytes": 14793,
         "lines": 427
       },
       "file-cache/file-hash-cache-wasm.ts": {
@@ -77,9 +77,9 @@
         "lines": 46
       },
       "native.ts": {
-        "sha256": "f08fb90ceb46f534ce9c3c61fde423ba862bb31ca0d79af93f8c8daee33e4074",
-        "bytes": 6232,
-        "lines": 200
+        "sha256": "aa29de6e69d39534c621cfcb09310ffd0222380d6f3707923cb99e8923399e65",
+        "bytes": 5923,
+        "lines": 191
       },
       "path-utils.ts": {
         "sha256": "f73a577c0d4fd7cfdf1b05c49da5e725ffad83280842e3ada5dcbaa0790e9a81",
@@ -91,19 +91,19 @@
         "bytes": 10302
       },
       "xxhash128/xxhash128-base.ts": {
-        "sha256": "4f1d562f93a5f13318587a907b63cf5e82485c0222581c36c5c42f6d21261973",
-        "bytes": 13037,
-        "lines": 369
+        "sha256": "916c51d060a713e692f055616af3e63010bca82f626aaeb5032a200d364f358a",
+        "bytes": 11182,
+        "lines": 312
       },
       "xxhash128/xxhash128-wasm.ts": {
-        "sha256": "7b2baaffbbce8544a4c73679816c988f357fa515a931d3a11aa456b459b388b5",
-        "bytes": 30461,
-        "lines": 927
+        "sha256": "38c40aafbbad72a53e86a6dd20a09cf10f7372c4920673cb8b012cdebe26939a",
+        "bytes": 26457,
+        "lines": 801
       },
       "xxhash128/xxhash128.ts": {
-        "sha256": "0d69c7a408bb31706925a2203af8b4afa66056fc56b5f39799edc1296a075f2a",
-        "bytes": 11951,
-        "lines": 346
+        "sha256": "616d890e59ee4d777c2c258f7d465d4bac3f28d2362d8c253c400ec85765b7b7",
+        "bytes": 10323,
+        "lines": 297
       }
     },
     "native": {
@@ -131,11 +131,6 @@
         "sha256": "9c127c1705cc4aaab510ff4760aed4d2799cb118a12b6360453a0d5b11a215b0",
         "bytes": 5221,
         "lines": 156
-      },
-      "HashFileHandleWorker.h": {
-        "sha256": "5c625977df6b8d049e280f6b5c345b91a7e340d46880116e7c35801cc86cdce5",
-        "bytes": 5081,
-        "lines": 153
       },
       "HashFileWorker.h": {
         "sha256": "bfb423eeb3216ba97d1f7b72b80349ce5c0477b3fe1b261517494075d48a3fed",
@@ -193,9 +188,9 @@
         "lines": 72
       },
       "XXHash128Wrap.h": {
-        "sha256": "091ed677f0babde3bb257160f7db9602836933e16fce49e982b87c9fe76f1ae3",
-        "bytes": 14199,
-        "lines": 347
+        "sha256": "060a907b75ea218c38fea46a97d56e652da45b5aab2c9f10215b30fb2aaabe6d",
+        "bytes": 11036,
+        "lines": 269
       },
       "binding.cpp": {
         "sha256": "c8ce6fdd544c32ed18f2f0b633e28ccba8f08ade5c87e5571541d0799f2d1085",

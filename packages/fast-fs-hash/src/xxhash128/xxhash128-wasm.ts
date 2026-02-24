@@ -223,20 +223,12 @@ function patchBaseWithWasm(): void {
   defineProperty(proto, "updateFilesBulkTo", { value: wasmUpdateFilesBulkTo, writable: true, configurable: true });
   defineProperty(proto, "hashFile", { value: wasmInstanceHashFile, writable: true, configurable: true });
   defineProperty(proto, "hashFileTo", { value: wasmInstanceHashFileTo, writable: true, configurable: true });
-  defineProperty(proto, "hashFileHandle", { value: wasmInstanceHashFileHandle, writable: true, configurable: true });
-  defineProperty(proto, "hashFileHandleTo", {
-    value: wasmInstanceHashFileHandleTo,
-    writable: true,
-    configurable: true,
-  });
 
   // Static methods on XXHash128Wasm — assign optimized functions directly.
   const wasm = XXHash128Wasm;
   defineProperty(wasm, "hash", { value: wasmHash, writable: true, configurable: true });
   defineProperty(wasm, "hashFile", { value: wasmHashFile, writable: true, configurable: true });
   defineProperty(wasm, "hashFileTo", { value: wasmHashFileTo, writable: true, configurable: true });
-  defineProperty(wasm, "hashFileHandle", { value: wasmHashFileHandle, writable: true, configurable: true });
-  defineProperty(wasm, "hashFileHandleTo", { value: wasmHashFileHandleTo, writable: true, configurable: true });
   defineProperty(wasm, "hashFilesBulk", { value: wasmHashFilesBulk, writable: true, configurable: true });
   defineProperty(wasm, "hashFilesBulkTo", { value: wasmHashFilesBulkTo, writable: true, configurable: true });
 
@@ -245,8 +237,6 @@ function patchBaseWithWasm(): void {
   defineProperty(base, "hash", { value: wasmHash, writable: true, configurable: true });
   defineProperty(base, "hashFile", { value: wasmHashFile, writable: true, configurable: true });
   defineProperty(base, "hashFileTo", { value: wasmHashFileTo, writable: true, configurable: true });
-  defineProperty(base, "hashFileHandle", { value: wasmHashFileHandle, writable: true, configurable: true });
-  defineProperty(base, "hashFileHandleTo", { value: wasmHashFileHandleTo, writable: true, configurable: true });
   defineProperty(base, "hashFilesBulk", { value: wasmHashFilesBulk, writable: true, configurable: true });
   defineProperty(base, "hashFilesBulkTo", { value: wasmHashFilesBulkTo, writable: true, configurable: true });
 
@@ -320,71 +310,6 @@ function patchBaseWithWasm(): void {
       }
     } finally {
       await safeClose(fh);
-    }
-
-    ws.stateView.set(state);
-    ws.ex.Hash_Final();
-    output.set(ws.digestView, outputOffset ?? 0);
-  }
-
-  /** Instance-level chunked hashFileHandle — patches XXHash128Base.prototype.hashFileHandle. */
-  async function wasmInstanceHashFileHandle(this: XXHash128WasmInternal, fh: FileHandle): Promise<Buffer> {
-    const ws = getSharedWasm();
-    const state = this._state;
-    ws.initSeed(this.seedLow, this.seedHigh);
-    const stateView = ws.stateView;
-    state.set(stateView);
-
-    const readBuf = bufferAllocUnsafe(WASM_READ_BUF_SIZE);
-    let pos = 0;
-    for (;;) {
-      const { bytesRead } = await fh.read(readBuf, 0, WASM_READ_BUF_SIZE, pos);
-      if (bytesRead === 0) {
-        break;
-      }
-      ws.stateView.set(this._state);
-      ws.feed(readBuf, 0, bytesRead);
-      this._state.set(stateView);
-      pos += bytesRead;
-      if (bytesRead < WASM_READ_BUF_SIZE) {
-        break;
-      }
-    }
-
-    ws.stateView.set(state);
-    ws.ex.Hash_Final();
-    const result = bufferAlloc(16);
-    result.set(ws.digestView);
-    return result;
-  }
-
-  /** Instance-level hashFileHandleTo — writes digest into caller-provided buffer. */
-  async function wasmInstanceHashFileHandleTo(
-    this: XXHash128WasmInternal,
-    fh: FileHandle,
-    output: Uint8Array,
-    outputOffset?: number
-  ): Promise<void> {
-    const ws = getSharedWasm();
-    const state = this._state;
-    ws.initSeed(this.seedLow, this.seedHigh);
-    const stateView = ws.stateView;
-    state.set(stateView);
-
-    const readBuf = bufferAllocUnsafe(WASM_READ_BUF_SIZE);
-    let pos = 0;
-    for (;;) {
-      const { bytesRead } = await fh.read(readBuf, 0, WASM_READ_BUF_SIZE, pos);
-      if (bytesRead === 0) {
-        break;
-      }
-      ws.stateView.set(this._state);
-      ws.feed(readBuf, 0, bytesRead);
-      this._state.set(stateView);
-      pos += bytesRead;
-      if (bytesRead < WASM_READ_BUF_SIZE) {
-        break;
-      }
     }
 
     ws.stateView.set(state);
@@ -674,57 +599,6 @@ export async function wasmHashFileTo(
   } finally {
     await safeClose(fh);
   }
-
-  stateView.set(savedState);
-  ex.Hash_Final();
-
-  output.set(ws.digestView, outputOffset ?? 0);
-}
-
-/**
- * Chunked one-shot WASM file-handle hasher.
- *
- * Reads in WASM_READ_BUF_SIZE chunks from a caller-provided FileHandle,
- * hashing via the shared WASM instance with save/restore.
- * The caller retains ownership of the handle (no close).
- */
-async function wasmHashFileHandle(fh: FileHandle, seedLow?: number, seedHigh?: number): Promise<Buffer> {
-  const ws = getSharedWasm();
-  const { ex, stateView, stateSize } = ws;
-
-  ws.initSeed(seedLow ?? 0, seedHigh ?? 0);
-
-  const savedState = new Uint8Array(stateSize);
-  savedState.set(stateView);
-  const readBuf = bufferAllocUnsafe(WASM_READ_BUF_SIZE);
-
-  await wasmHashChunks(ws, savedState, stateView, fh, readBuf);
-
-  stateView.set(savedState);
-  ex.Hash_Final();
-
-  const result = bufferAlloc(16);
-  result.set(ws.digestView);
-  return result;
-}
-
-async function wasmHashFileHandleTo(
-  fh: FileHandle,
-  output: Uint8Array,
-  outputOffset?: number,
-  seedLow?: number,
-  seedHigh?: number
-): Promise<void> {
-  const ws = getSharedWasm();
-  const { ex, stateView, stateSize } = ws;
-
-  ws.initSeed(seedLow ?? 0, seedHigh ?? 0);
-
-  const savedState = new Uint8Array(stateSize);
-  savedState.set(stateView);
-  const readBuf = bufferAllocUnsafe(WASM_READ_BUF_SIZE);
-
-  await wasmHashChunks(ws, savedState, stateView, fh, readBuf);
 
   stateView.set(savedState);
   ex.Hash_Final();

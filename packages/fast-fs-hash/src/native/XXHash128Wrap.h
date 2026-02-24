@@ -4,12 +4,7 @@
 #include "InstanceHashWorker.h"
 #include "UpdateFileWorker.h"
 #include "HashFileWorker.h"
-#include "HashFileHandleWorker.h"
 #include "StaticHashFilesWorker.h"
-
-#ifdef _WIN32
-#include <io.h>
-#endif
 
 class XXHash128Wrap final : public Napi::ObjectWrap<XXHash128Wrap> {
  public:
@@ -26,12 +21,10 @@ class XXHash128Wrap final : public Napi::ObjectWrap<XXHash128Wrap> {
         InstanceMethod<&XXHash128Wrap::HashFilesAggregate>("updateFilesBulkAggregate"),
         InstanceMethod<&XXHash128Wrap::UpdateFile>("updateFile"),
         InstanceMethod<&XXHash128Wrap::InstanceHashFile>("hashFile"),
-        InstanceMethod<&XXHash128Wrap::InstanceHashFileHandle>("hashFileHandle"),
         StaticMethod<&XXHash128Wrap::Hash>("staticHash"),
         StaticMethod<&XXHash128Wrap::HashFilesBulk>("staticHashFilesBulk"),
         StaticMethod<&XXHash128Wrap::HashFilesBulkTo>("staticHashFilesBulkTo"),
         StaticMethod<&XXHash128Wrap::StaticHashFile>("staticHashFile"),
-        StaticMethod<&XXHash128Wrap::StaticHashFileHandle>("staticHashFileHandle"),
       });
   }
 
@@ -259,77 +252,6 @@ class XXHash128Wrap final : public Napi::ObjectWrap<XXHash128Wrap> {
       if (salt.ElementLength() > 0) {
         worker->set_salt(salt.Data(), salt.ElementLength(), Napi::ObjectReference::New(salt, 1));
       }
-    }
-
-    worker->Queue();
-    return deferred.Promise();
-  }
-
-  Napi::Value InstanceHashFileHandle(const Napi::CallbackInfo & info) {
-    auto env = info.Env();
-    int fd_int = info[0].As<Napi::Number>().Int32Value();
-
-#ifndef _WIN32
-    auto fd = static_cast<HashFileHandleWorker::NativeFd>(fd_int);
-#else
-    // On Windows, Node.js exposes CRT file descriptors.  Convert to Win32 HANDLE.
-    auto fd = reinterpret_cast<HANDLE>(_get_osfhandle(fd_int));
-#endif
-
-    auto deferred = Napi::Promise::Deferred::New(env);
-    auto * worker = new HashFileHandleWorker(env, deferred, fd, this->seed_);
-
-    // Hold the JS FileHandle alive to prevent GC from closing the fd.
-    if (info.Length() >= 4 && info[3].IsObject()) {
-      worker->set_fh_ref(Napi::ObjectReference::New(info[3].As<Napi::Object>(), 1));
-    }
-
-    if (info.Length() >= 2 && info[1].IsTypedArray()) {
-      auto out = info[1].As<Napi::Uint8Array>();
-      uint32_t offset = info.Length() >= 3 ? info[2].As<Napi::Number>().Uint32Value() : 0;
-      if (static_cast<size_t>(offset) + 16 > out.ElementLength()) [[unlikely]] {
-        delete worker;
-        Napi::RangeError::New(env, "hashFileHandle: output buffer too small (need 16 bytes)").ThrowAsJavaScriptException();
-        return env.Undefined();
-      }
-      worker->set_external_output(out.Data() + offset, Napi::ObjectReference::New(out, 1));
-    }
-
-    worker->Queue();
-    return deferred.Promise();
-  }
-
-  static Napi::Value StaticHashFileHandle(const Napi::CallbackInfo & info) {
-    auto env = info.Env();
-    int fd_int = info[0].As<Napi::Number>().Int32Value();
-
-#ifndef _WIN32
-    auto fd = static_cast<HashFileHandleWorker::NativeFd>(fd_int);
-#else
-    auto fd = reinterpret_cast<HANDLE>(_get_osfhandle(fd_int));
-#endif
-
-    uint32_t seedLo = info.Length() >= 4 ? info[3].As<Napi::Number>().Uint32Value() : 0;
-    uint32_t seedHi = info.Length() >= 5 ? info[4].As<Napi::Number>().Uint32Value() : 0;
-    uint64_t seed = (static_cast<uint64_t>(seedHi) << 32) | static_cast<uint64_t>(seedLo);
-
-    auto deferred = Napi::Promise::Deferred::New(env);
-    auto * worker = new HashFileHandleWorker(env, deferred, fd, seed);
-
-    // Hold the JS FileHandle alive to prevent GC from closing the fd.
-    if (info.Length() >= 6 && info[5].IsObject()) {
-      worker->set_fh_ref(Napi::ObjectReference::New(info[5].As<Napi::Object>(), 1));
-    }
-
-    if (info.Length() >= 2 && info[1].IsTypedArray()) {
-      auto out = info[1].As<Napi::Uint8Array>();
-      uint32_t offset = info.Length() >= 3 ? info[2].As<Napi::Number>().Uint32Value() : 0;
-      if (static_cast<size_t>(offset) + 16 > out.ElementLength()) [[unlikely]] {
-        delete worker;
-        Napi::RangeError::New(env, "hashFileHandle: output buffer too small (need 16 bytes)").ThrowAsJavaScriptException();
-        return env.Undefined();
-      }
-      worker->set_external_output(out.Data() + offset, Napi::ObjectReference::New(out, 1));
     }
 
     worker->Queue();

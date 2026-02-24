@@ -36,7 +36,6 @@ export interface NativeXXHash128Instance {
   updateFilesBulkAggregate(pathsBuf: Uint8Array, concurrency: number): Promise<null>;
   updateFile(path: string): Promise<void>;
   hashFile(path: string, output: Uint8Array | undefined, offset: number): Promise<Buffer | Uint8Array>;
-  hashFileHandle(fd: number, output: Uint8Array | undefined, offset: number, fh: object): Promise<Buffer | Uint8Array>;
 }
 
 /**
@@ -69,14 +68,6 @@ export interface NativeXXHash128Constructor {
     seedLow: number,
     seedHigh: number,
     salt: Uint8Array | undefined
-  ): Promise<Buffer | Uint8Array>;
-  staticHashFileHandle(
-    fd: number,
-    output: Uint8Array | undefined,
-    offset: number,
-    seedLow: number,
-    seedHigh: number,
-    fh: object
   ): Promise<Buffer | Uint8Array>;
 }
 

@@ -1,4 +1,3 @@
-import type { FileHandle } from "node:fs/promises";
 import { readFile as fsReadFile } from "node:fs/promises";
 import type { HashInput } from "../helpers";
 import { notInitialized } from "../helpers";
@@ -232,62 +231,6 @@ export abstract class XXHash128Base {
    * @param outputOffset  Byte offset within `output` (default `0`).
    */
   public async hashFileTo(_filePath: string, _output: Uint8Array, _outputOffset?: number): Promise<void> {
-    notInitialized();
-  }
-
-  /**
-   * Hash an already-open file (instance seed) and return its 16-byte digest.
-   *
-   * Uses the instance’s seed.
-   *
-   * @param fh            Open FileHandle.
-   * @returns A new 16-byte `Buffer`.
-   */
-  public async hashFileHandle(_fh: FileHandle): Promise<Buffer> {
-    return notInitialized();
-  }
-
-  /**
-   * Hash an already-open file and return a 16-byte xxHash3-128 digest.
-   *
-   * @param fh            Open FileHandle.
-   * @param seedLow       Lower 32 bits of the 64-bit seed (default `0`).
-   * @param seedHigh      Upper 32 bits of the 64-bit seed (default `0`).
-   * @returns A new 16-byte `Buffer`.
-   */
-  public static async hashFileHandle(_fh: FileHandle, _seedLow?: number, _seedHigh?: number): Promise<Buffer> {
-    return notInitialized();
-  }
-
-  /**
-   * Hash an already-open file and write the 16-byte digest into `output`.
-   *
-   * @param fh            Open FileHandle.
-   * @param output        Destination buffer for the 16-byte digest.
-   * @param outputOffset  Byte offset within `output` to write at (default `0`).
-   * @param seedLow       Lower 32 bits of the 64-bit seed (default `0`).
-   * @param seedHigh      Upper 32 bits of the 64-bit seed (default `0`).
-   */
-  public static async hashFileHandleTo(
-    _fh: FileHandle,
-    _output: Uint8Array,
-    _outputOffset?: number,
-    _seedLow?: number,
-    _seedHigh?: number
-  ): Promise<void> {
-    notInitialized();
-  }
-
-  /**
-   * Hash an already-open file and write digest into `output`.
-   *
-   * Uses the instance’s seed.
-   *
-   * @param fh            Open FileHandle.
-   * @param output        Destination buffer.
-   * @param outputOffset  Byte offset.
-   */
-  public async hashFileHandleTo(_fh: FileHandle, _output: Uint8Array, _outputOffset?: number): Promise<void> {
     notInitialized();
   }
 

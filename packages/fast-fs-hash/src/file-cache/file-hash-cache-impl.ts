@@ -148,7 +148,7 @@ export function createWasmFileHashCacheImpl(): FileHashCacheImpl {
 
           const filePath = rootPathSlash + rel;
 
-          // 1. stat(path) — single libuv call, no FileHandle overhead.
+          // 1. stat(path) — single libuv call
           let statOk = false;
           try {
             const s = await stat(filePath, STAT_BIGINT);
