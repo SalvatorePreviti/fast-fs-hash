@@ -1,12 +1,12 @@
 {
-  "name": "@fast-fs-hash/freebsd-x64",
-  "version": "0.0.1",
-  "description": "fast-fs-hash native binding for FreeBSD x64",
+  "name": "@fast-fs-hash/fast-fs-hash-node-darwin-arm64",
+  "version": "0.0.0-rc0",
+  "description": "fast-fs-hash native binding for macOS arm64",
   "os": [
-    "freebsd"
+    "darwin"
   ],
   "cpu": [
-    "x64"
+    "arm64"
   ],
   "main": "fast_fs_hash.node",
   "files": [

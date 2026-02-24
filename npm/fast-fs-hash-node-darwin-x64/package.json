@@ -1,9 +1,9 @@
 {
-  "name": "@fast-fs-hash/win32-x64-msvc",
-  "version": "0.0.1",
-  "description": "fast-fs-hash native binding for Windows x64",
+  "name": "@fast-fs-hash/fast-fs-hash-node-darwin-x64",
+  "version": "0.0.0-rc0",
+  "description": "fast-fs-hash native binding for macOS x64",
   "os": [
-    "win32"
+    "darwin"
   ],
   "cpu": [
     "x64"

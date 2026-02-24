@@ -4,7 +4,7 @@
  * Injects optionalDependencies into packages/fast-fs-hash/package.json.
  *
  * Run this in CI just before `npm publish`. The optionalDependencies point
- * to the 9 platform-specific native-binding packages (@fast-fs-hash/<platform>).
+ * to the 8 platform-specific native-binding packages (@fast-fs-hash/fast-fs-hash-node-<platform>).
  *
  * These are NOT stored in source because:
  *   - They don't exist on npm during local development

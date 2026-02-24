@@ -1,9 +1,9 @@
 {
-  "name": "@fast-fs-hash/darwin-x64",
-  "version": "0.0.1",
-  "description": "fast-fs-hash native binding for macOS x64",
+  "name": "@fast-fs-hash/fast-fs-hash-node-freebsd-x64",
+  "version": "0.0.0-rc0",
+  "description": "fast-fs-hash native binding for FreeBSD x64",
   "os": [
-    "darwin"
+    "freebsd"
   ],
   "cpu": [
     "x64"

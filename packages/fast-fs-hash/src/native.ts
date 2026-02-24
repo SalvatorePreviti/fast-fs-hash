@@ -2,7 +2,7 @@
  * Native binding loader.
  *
  * Attempts to load the pre-built platform-specific `.node` addon from
- * optional dependency packages (e.g. `@fast-fs-hash/darwin-arm64`).
+ * optional dependency packages (e.g. `@fast-fs-hash/fast-fs-hash-node-darwin-arm64`).
  * Falls back to a local development build at `../build/Release/`.
  *
  * Returns `null` when no native binding is available.
@@ -108,33 +108,66 @@ function getPlatformPackages(): string[] {
     const isMusl = !report?.header?.glibcVersionRuntime;
     const preferred = isMusl ? "musl" : "gnu";
     const fallback = isMusl ? "gnu" : "musl";
-    return [`@fast-fs-hash/${platform}-${arch}-${preferred}`, `@fast-fs-hash/${platform}-${arch}-${fallback}`];
+    return [
+      `@fast-fs-hash/fast-fs-hash-node-${platform}-${arch}-${preferred}`,
+      `@fast-fs-hash/fast-fs-hash-node-${platform}-${arch}-${fallback}`,
+    ];
   }
-
   if (platform === "win32") {
-    return [`@fast-fs-hash/${platform}-${arch}-msvc`];
+    return [`@fast-fs-hash/fast-fs-hash-node-${platform}-${arch}-msvc`];
   }
-
-  return [`@fast-fs-hash/${platform}-${arch}`];
+  return [`@fast-fs-hash/fast-fs-hash-node-${platform}-${arch}`];
 }
 
 /**
  * Cached native binding (loaded once, shared by all callers).
  * `undefined` = not yet attempted, `null` = no native binding available.
  */
+
 let _cachedBinding: NativeBindingExport | null | undefined;
-
-/** Whether we've already warned on stderr about the missing native addon. */
 let _nativeWarned = false;
-
-/** Lookup targets tried while resolving the native binding. */
 let _nativeLookupTargets: string[] = [];
 let _nativeLookupErrors: string[] = [];
 
-function warnNativeUnavailable(): void {
+// --- FAST_FS_HASH_NO_NATIVE env var support ---
+// Modes:
+//   "wasm"         - Native disallowed, WASM loaded, warning printed mentioning FAST_FS_HASH_NO_NATIVE
+//   "wasm-silent"  - Native disallowed, WASM loaded, no warning at all
+//   "fatal"        - If native is missing, print error with stack trace and call process.exit(1)
+function getNoNativeMode(): "wasm" | "wasm-silent" | "fatal" | undefined {
+  const v = process.env.FAST_FS_HASH_NO_NATIVE;
+  if (!v) {
+    return undefined;
+  }
+  switch (v.toLowerCase()) {
+    case "wasm": {
+      return "wasm";
+    }
+    case "wasm-silent": {
+      return "wasm-silent";
+    }
+    case "fatal": {
+      return "fatal";
+    }
+    default: {
+      return undefined;
+    }
+  }
+}
+
+function warnNativeUnavailable(mode?: string): void {
+  if (mode === "wasm-silent") {
+    return;
+  }
   const lookedIn = _nativeLookupTargets.length > 0 ? `\nlooked in:\n  - ${_nativeLookupTargets.join("\n  - ")}` : "";
   const reasons = _nativeLookupErrors.length > 0 ? `\nerrors:\n  - ${_nativeLookupErrors.join("\n  - ")}` : "";
-  console.warn(`fast-fs-hash: native binding unavailable, using WASM fallback (slower).${lookedIn}${reasons}`);
+  if (mode === "wasm") {
+    console.warn(
+      `fast-fs-hash: native binding disabled by FAST_FS_HASH_NO_NATIVE, using WASM fallback.${lookedIn}${reasons}`
+    );
+  } else {
+    console.warn(`fast-fs-hash: native binding unavailable, using WASM fallback (slower).${lookedIn}${reasons}`);
+  }
 }
 
 /**
@@ -145,10 +178,24 @@ function warnNativeUnavailable(): void {
  *              Default `false` (silent).
  */
 export function getNativeBinding(warn = false): NativeBindingExport | null {
+  const mode = getNoNativeMode();
+  if (mode === "wasm" || mode === "wasm-silent") {
+    // Native disallowed — always use WASM
+    _cachedBinding = null;
+    if (!_nativeWarned) {
+      _nativeWarned = true;
+      warnNativeUnavailable(mode);
+    }
+    return null;
+  }
+
   if (_cachedBinding !== undefined) {
     if (warn && _cachedBinding === null && !_nativeWarned) {
       _nativeWarned = true;
-      warnNativeUnavailable();
+      warnNativeUnavailable(mode);
+    }
+    if (mode === "fatal" && _cachedBinding === null) {
+      fatalNoNative();
     }
     return _cachedBinding;
   }
@@ -184,7 +231,20 @@ export function getNativeBinding(warn = false): NativeBindingExport | null {
   _cachedBinding = null;
   if (warn && !_nativeWarned) {
     _nativeWarned = true;
-    warnNativeUnavailable();
+    warnNativeUnavailable(mode);
+  }
+  if (mode === "fatal") {
+    fatalNoNative();
   }
   return null;
+}
+
+function fatalNoNative(): never {
+  const lookedIn = _nativeLookupTargets.length > 0 ? `\nlooked in:\n  - ${_nativeLookupTargets.join("\n  - ")}` : "";
+  const reasons = _nativeLookupErrors.length > 0 ? `\nerrors:\n  - ${_nativeLookupErrors.join("\n  - ")}` : "";
+  const err = new Error(
+    `fast-fs-hash: native binding unavailable and FAST_FS_HASH_NO_NATIVE=fatal.${lookedIn}${reasons}`
+  );
+  console.error(err);
+  process.exit(1);
 }

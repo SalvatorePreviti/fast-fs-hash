@@ -1,6 +1,6 @@
 > **⚠️ This is a platform-specific binary package.**
 >
-> You should not install `@fast-fs-hash/linux-x64-musl` directly.
+> You should not install `@fast-fs-hash/fast-fs-hash-node-freebsd-x64` directly.
 > Instead, install the main package which will automatically select the correct binary for your platform:
 >
 > ```sh

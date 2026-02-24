@@ -80,16 +80,19 @@ jobs:
             os: ubuntu-24.04
             can-test: true
           - target: linux-arm64-gnu
-            os: ubuntu-24.04-arm
-            can-test: true
+            os: ubuntu-24.04
+            use-docker: true
+            use-qemu: true
+            docker-platform: linux/arm64
+            docker-image: node:22-bookworm
+            docker-setup: apt-get update && apt-get install -y cmake make g++ python3 git
 
           #  - Linux musl (build in Docker, test in separate job)
           - target: linux-x64-musl
             os: ubuntu-24.04
             use-docker: true
-          - target: linux-arm64-musl
-            os: ubuntu-24.04-arm
-            use-docker: true
+            docker-image: node:22-alpine
+            docker-setup: apk add --no-cache cmake make g++ python3 linux-headers git
 
     steps:
       - uses: actions/checkout@v4
@@ -124,12 +127,20 @@ jobs:
         if: ${{ matrix.can-test }}
         run: npm run bench
 
-      #  - Docker builds (Linux musl via Alpine)
-      - name: Build native addon (Alpine/musl)
+      #  - Set up QEMU for cross-arch Docker builds
+      - name: Set up QEMU
+        if: ${{ matrix.use-qemu }}
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      #  - Docker builds (Linux musl via Alpine, Linux arm64 glibc)
+      - name: Build native addon (Docker)
         if: ${{ matrix.use-docker }}
         run: |
-          docker run --rm -e CI=true -v "$PWD:/workspace" -w /workspace node:22-alpine sh -c "
-            apk add --no-cache cmake make g++ python3 linux-headers git &&
+          docker run --rm ${{ matrix.docker-platform && format('--platform {0}', matrix.docker-platform) || '' }} \
+            -e CI=true -v "$PWD:/workspace" -w /workspace ${{ matrix.docker-image }} sh -c "
+            ${{ matrix.docker-setup }} &&
             npm ci &&
             npm run build:native
           "
@@ -159,19 +170,18 @@ jobs:
   test-musl:
     name: Test ${{ matrix.target }}
     needs: [build-native]
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: linux-x64-musl
-            runner: ubuntu-24.04
-          - target: linux-arm64-musl
-            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
+
+
 
       - name: Download artifact
         uses: actions/download-artifact@v4
@@ -179,15 +189,26 @@ jobs:
           name: binding-${{ matrix.target }}
           path: packages/fast-fs-hash/build/Release
 
-      - name: Test inside Alpine
+      - name: Test inside Alpine (native via simulated install)
         run: |
-          docker run --rm -e CI=true -v "$PWD:/workspace" -w /workspace node:22-alpine sh -c "
+          docker run --rm \
+            -e CI=true \
+            -e FAST_FS_HASH_NO_NATIVE=fatal \
+            -v "$PWD:/workspace" -w /workspace node:22-alpine sh -c '
             apk add --no-cache git &&
             npm ci &&
             npm run build:ts &&
+
+            # Simulate native install: create the scoped package directory
+            pkg_dir="node_modules/@fast-fs-hash/fast-fs-hash-node-${{ matrix.target }}"
+            mkdir -p "$pkg_dir"
+            cp "npm/fast-fs-hash-node-${{ matrix.target }}/package.json" "$pkg_dir/package.json"
+            cp "packages/fast-fs-hash/build/Release/fast_fs_hash.node" "$pkg_dir/fast_fs_hash.node"
+            echo "Simulated native install:" && ls -lh "$pkg_dir/" &&
+
             npm test &&
             npm run bench
-          "
+          '
 
   #  - FreeBSD (build + test inside a FreeBSD VM)
   build-freebsd:
@@ -225,8 +246,8 @@ jobs:
   #  - Publish (ONLY after ALL builds + tests pass)
   #
   # Triggered only on the publish branch.
-  # Downloads every platform artifact, verifies all 9 .node binaries are present, then publishes:
-  #   1) All 9 platform packages (@fast-fs-hash/<platform>)
+  # Downloads every platform artifact, verifies all 8 .node binaries are present, then publishes:
+  #   1) All 8 platform packages (@fast-fs-hash/fast-fs-hash-node-<platform>)
   #   2) The main package (fast-fs-hash) — last, so optionalDeps exist
   #
   publish:

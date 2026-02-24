@@ -33,6 +33,14 @@ if (!existsSync(ARTIFACTS_DIR)) {
   process.exit(1);
 }
 
+/**
+ * Strip the "fast-fs-hash-node-" prefix from a folder name to recover
+ * the CI build target (e.g. "fast-fs-hash-node-linux-x64-musl" → "linux-x64-musl").
+ */
+function toArtifactTarget(folderName) {
+  return folderName.replace(/^fast-fs-hash-node-/, "");
+}
+
 logTitle("Packaging platform binaries");
 
 const platforms = getPlatforms();
@@ -48,7 +56,8 @@ for (const target of platforms) {
     continue;
   }
 
-  const src = path.join(ARTIFACTS_DIR, `binding-${target}`, "fast_fs_hash.node");
+  const artifactTarget = toArtifactTarget(target);
+  const src = path.join(ARTIFACTS_DIR, `binding-${artifactTarget}`, "fast_fs_hash.node");
   const dest = path.join(NPM_DIR, target, "fast_fs_hash.node");
 
   if (!existsSync(src)) {

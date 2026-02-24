@@ -1,12 +1,12 @@
 {
-  "name": "@fast-fs-hash/linux-arm64-gnu",
-  "version": "0.0.1",
-  "description": "fast-fs-hash native binding for Linux arm64 (glibc)",
+  "name": "@fast-fs-hash/fast-fs-hash-node-linux-x64-gnu",
+  "version": "0.0.0-rc0",
+  "description": "fast-fs-hash native binding for Linux x64 (glibc)",
   "os": [
     "linux"
   ],
   "cpu": [
-    "arm64"
+    "x64"
   ],
   "main": "fast_fs_hash.node",
   "files": [

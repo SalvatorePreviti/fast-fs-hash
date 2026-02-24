@@ -4,7 +4,7 @@
  * Syncs shared files (README.md, LICENSE, NOTICES.md) from the repo root
  * into every publishable package directory:
  *   - packages/fast-fs-hash/
- *   - npm/<platform>/  (9 platform packages)
+ *   - npm/<platform>/  (8 platform packages)
  *
  * In CI: throws if any file is out of date (never writes).
  */
