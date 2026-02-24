@@ -1,7 +1,7 @@
 import { stat } from "node:fs/promises";
-import { decodeFilePaths } from "../functions";
-import type { XXHash128LibraryStatus } from "../xxhash128/xxhash128-base";
+import { decodeFilePaths, encodeFilePaths } from "../functions";
 import { MAX_WASM_LANES, wasmCreateHashLanes, wasmHashFileTo } from "../xxhash128/xxhash128-wasm";
+import type { FileHashCacheBase } from "./file-hash-cache-base";
 import {
   ENTRY_STRIDE,
   F_DONE,
@@ -15,42 +15,43 @@ import {
 /**
  * Backend-specific stat+hash operations for file-hash-cache.
  *
- * The WASM fallback ({@link createWasmFileHashCacheImpl}) uses `stat()` +
- * Uses `stat(path)` with bounded concurrency and hashes changed files via
- * the chunked {@link wasmHashFile}.  The native C++
- * backend is loaded directly from the binding and offloads the entire
- * stat+hash loop to multi-threaded async workers.
+ * Every method receives the owning {@link FileHashCacheBase} instance as the
+ * first argument.  Implementations extract what they need from it:
  *
- * All methods that accept paths for stat/hash work receive `pathsBuf`
- * (null-separated UTF-8 — from `encodeFilePaths`).  `remapOldEntries` also
- * receives null-separated buffers matching the on-disk format.
+ * - **WASM fallback** ({@link createWasmFileHashCacheImpl}): reads
+ *   `cache.currentFiles` (decoded `string[]`) and `cache.rootPath`.
+ *   Never touches path buffers — avoids the encode→decode round-trip.
+ *
+ * - **Native C++ wrapper** ({@link createNativeFileHashCacheImpl}): calls
+ *   `cache.getPathsBuf()` (lazy encode) to obtain the NUL-separated buffer
+ *   the C++ worker threads expect.  String arrays are never decoded.
  *
  * @internal — Not part of the public API.
  */
 export interface FileHashCacheImpl {
-  /** Backend library status: `"native"` or `"wasm"`. */
-  readonly libraryStatus: XXHash128LibraryStatus;
+  /** Whether this impl is backed by the native addon or WASM. */
+  readonly native: boolean;
 
   /**
    * Per-file stat + compare against old entries, with early exit on
    * first change.
    *
+   * @param cache       The owning cache instance.
    * @param entriesBuf  Zeroed buffer (n × ENTRY_STRIDE) for new entries.
    * @param oldBuf      Old entries buffer read from the cache file.
    * @param fileStates  Per-file state flags (written by this method).
-   * @param pathsBuf    Null-separated UTF-8 paths (from `encodeFilePaths`).
    * @returns `true` if all files match (cache valid), `false` otherwise.
    */
-  statAndMatch(entriesBuf: Buffer, oldBuf: Buffer, fileStates: Uint8Array, pathsBuf: Uint8Array): Promise<boolean>;
+  statAndMatch(cache: FileHashCacheBase, entriesBuf: Buffer, oldBuf: Buffer, fileStates: Uint8Array): Promise<boolean>;
 
   /**
    * Complete entries that still need stat and/or hash work.
    *
+   * @param cache       The owning cache instance.
    * @param entriesBuf  Entries buffer (n × ENTRY_STRIDE), partially filled.
    * @param fileStates  Per-file state flags (`F_DONE` entries are skipped).
-   * @param pathsBuf    Null-separated UTF-8 paths (from `encodeFilePaths`).
    */
-  completeEntries(entriesBuf: Buffer, fileStates: Uint8Array, pathsBuf: Uint8Array): Promise<void>;
+  completeEntries(cache: FileHashCacheBase, entriesBuf: Buffer, fileStates: Uint8Array): Promise<void>;
 
   /**
    * Merge-join old sorted entries with new file list.
@@ -59,25 +60,26 @@ export interface FileHashCacheImpl {
    * copies the 48-byte old entry (stat + hash) into `newEntries` at
    * the new position and sets `newStates[ni] = F_HAS_OLD`.
    *
-   * Both path buffers are null-separated UTF-8 — produced by
-   * `encodeFilePaths()`.  O(oldCount + newCount) time, zero allocation.
+   * O(oldCount + newCount) time.
    *
-   * @param oldEntries  Old entries buffer.
-   * @param oldPaths    Old null-separated paths.
-   * @param oldCount    Old file count.
-   * @param newEntries  New entries buffer (n × ENTRY_STRIDE), zeroed.
-   * @param newStates   New per-file states array.
-   * @param newPaths    New null-separated paths.
-   * @param newCount    New file count.
+   * Callers provide whichever representation they already have:
+   * - `Buffer` (from the cache file) — native passes directly, WASM decodes.
+   * - `readonly string[]` (in-memory array) — WASM uses directly, native encodes.
+   *
+   * @param cache        The owning cache instance.
+   * @param oldEntries   Old entries buffer.
+   * @param oldPaths     Old file paths: NUL-separated UTF-8 buffer or decoded string array.
+   * @param oldCount     Old file count.
+   * @param newEntries   New entries buffer (n × ENTRY_STRIDE), zeroed.
+   * @param newStates    New per-file states array.
    */
   remapOldEntries(
+    cache: FileHashCacheBase,
     oldEntries: Buffer,
-    oldPaths: Buffer,
+    oldPaths: Buffer | readonly string[],
     oldCount: number,
     newEntries: Buffer,
-    newStates: Uint8Array,
-    newPaths: Buffer,
-    newCount: number
+    newStates: Uint8Array
   ): void;
 }
 
@@ -89,31 +91,31 @@ export interface FileHashCacheImpl {
  * into memory. Stat and hash are sequential per file to match C++ error
  * semantics. No XXHash128 instances are created.
  *
+ * Path resolution uses `cache.currentFiles` (decoded `string[]`) joined with
+ * `cache.rootPathSlash` — no buffer encoding or NUL scanning involved.
+ *
  * @returns A frozen, reusable impl object.
  *
  * @internal — Not part of the public API.
  */
 export function createWasmFileHashCacheImpl(): FileHashCacheImpl {
   return {
-    libraryStatus: "wasm",
+    native: false,
 
     async statAndMatch(
+      cache: FileHashCacheBase,
       entriesBuf: Buffer,
       oldBuf: Buffer,
-      fileStates: Uint8Array,
-      pathsBuf: Uint8Array
+      fileStates: Uint8Array
     ): Promise<boolean> {
       const n = fileStates.length;
-      const files = decodeFilePaths(pathsBuf);
-      if (files.length !== n) {
-        return false; // Path count mismatch -> cache invalid (matches C++ n == fc check)
-      }
+      const files = cache.currentFiles;
+      const rootPathSlash = cache.rootPathSlash;
+
       if (files.length < n) {
-        // Fewer decoded paths than entries — treat missing tails as not-checked.
-        for (let i = files.length; i < n; i++) {
-          entriesBuf.fill(0, i * ENTRY_STRIDE, (i + 1) * ENTRY_STRIDE);
-        }
+        return false; // Fewer paths decoded than expected — corrupt cache.
       }
+
       // Safe: pool buffers are 8-byte aligned; ENTRY_STRIDE (48) is divisible by 8.
       // Use BigUint64 not BigInt64 — stat fields are unsigned (ino/size can be ≥ 2^63).
       // Pass byteLength>>>3 explicitly — without it the view spans the full backing
@@ -135,14 +137,16 @@ export function createWasmFileHashCacheImpl(): FileHashCacheImpl {
           }
 
           const eOff = i * ENTRY_STRIDE;
-          const filePath = files[i];
+          const rel = files[i];
 
-          // Skip empty paths (rare: consecutive \0 in pathsBuf).
-          if (!filePath) {
+          // Skip empty paths (defensive — normalizeFilePaths should not produce these).
+          if (!rel) {
             entriesBuf.fill(0, eOff, eOff + 32);
             fileStates[i] = F_DONE;
             continue;
           }
+
+          const filePath = rootPathSlash + rel;
 
           // 1. stat(path) — single libuv call, no FileHandle overhead.
           let statOk = false;
@@ -203,19 +207,19 @@ export function createWasmFileHashCacheImpl(): FileHashCacheImpl {
       return !changed;
     },
 
-    async completeEntries(entriesBuf: Buffer, fileStates: Uint8Array, pathsBuf: Uint8Array): Promise<void> {
+    async completeEntries(cache: FileHashCacheBase, entriesBuf: Buffer, fileStates: Uint8Array): Promise<void> {
       const n = fileStates.length;
       if (n === 0) {
         return;
       }
 
-      const files = decodeFilePaths(pathsBuf);
+      const files = cache.currentFiles;
+      const rootPathSlash = cache.rootPathSlash;
+
       if (files.length < n) {
-        // Fewer decoded paths than entries — zero out the trailing entries.
-        for (let i = files.length; i < n; i++) {
-          entriesBuf.fill(0, i * ENTRY_STRIDE, (i + 1) * ENTRY_STRIDE);
-        }
+        return; // Fewer paths decoded than expected — corrupt cache.
       }
+
       // BigUint64Array view for zero-overhead stat field reads/writes.
       // Pass byteLength>>>3 explicitly to avoid spanning the full backing ArrayBuffer.
       const bue = new BigUint64Array(entriesBuf.buffer, entriesBuf.byteOffset, entriesBuf.byteLength >>> 3);
@@ -245,7 +249,8 @@ export function createWasmFileHashCacheImpl(): FileHashCacheImpl {
           }
 
           const eOff = i * ENTRY_STRIDE;
-          const filePath = files[i];
+          const rel = files[i];
+          const filePath = rel ? rootPathSlash + rel : "";
           let needHash = state === F_NEED_HASH;
 
           if (state === F_NOT_CHECKED) {
@@ -299,52 +304,123 @@ export function createWasmFileHashCacheImpl(): FileHashCacheImpl {
     },
 
     remapOldEntries(
+      cache: FileHashCacheBase,
       oldEntries: Buffer,
-      oldPaths: Buffer,
+      oldPaths: Buffer | readonly string[],
       oldCount: number,
       newEntries: Buffer,
-      newStates: Uint8Array,
-      newPaths: Buffer,
-      newCount: number
+      newStates: Uint8Array
     ): void {
-      // Walk both null-separated buffers directly — no string array allocations.
-      // Each segment is compared byte-for-byte via Buffer.compare on the raw slices.
-      let oByte = 0; // byte cursor into oldPaths
-      let nByte = 0; // byte cursor into newPaths
-      let oi = 0; // old file index
-      let ni = 0; // new file index
+      // Narrow: string[] from setFiles (use directly), Buffer from validate (decode).
+      const oldFiles = Buffer.isBuffer(oldPaths) ? decodeFilePaths(oldPaths) : oldPaths;
+      const newFiles = cache.currentFiles;
+      const oLen = Math.min(oldCount, oldFiles.length);
+      const nLen = newFiles.length;
+      let oi = 0;
+      let ni = 0;
 
-      while (oi < oldCount && ni < newCount) {
-        // Find NUL terminator for each current segment (indexOf is optimised to memchr in V8).
-        const oEnd = oldPaths.indexOf(0, oByte);
-        if (oEnd < 0) {
-          break;
-        }
-        const nEnd = newPaths.indexOf(0, nByte);
-        if (nEnd < 0) {
-          break;
-        }
+      while (oi < oLen && ni < nLen) {
+        const oldFile = oldFiles[oi];
+        const newFile = newFiles[ni];
 
-        const cmp = oldPaths.compare(newPaths, nByte, nEnd, oByte, oEnd);
-
-        if (cmp === 0) {
+        if (oldFile === newFile) {
           // Paths match — copy 48-byte old entry to new position.
           oldEntries.copy(newEntries, ni * ENTRY_STRIDE, oi * ENTRY_STRIDE, (oi + 1) * ENTRY_STRIDE);
           newStates[ni] = F_HAS_OLD;
-          oByte = oEnd + 1;
-          nByte = nEnd + 1;
           oi++;
           ni++;
-        } else if (cmp < 0) {
+        } else if (oldFile < newFile) {
           // Old path < new path — file was removed, advance old.
-          oByte = oEnd + 1;
           oi++;
         } else {
           // Old path > new path — file was added, advance new.
-          nByte = nEnd + 1;
           ni++;
         }
       }
+    },
+  };
+}
+
+/**
+ * Shape of the raw native binding cache functions.
+ *
+ * Matches the N-API `CallbackInfo` arg order in
+ * `CacheAsyncWorkers.h` / `CacheRemapOldEntries`.
+ *
+ * @internal
+ */
+export interface NativeCacheBinding {
+  statAndMatch(
+    entriesBuf: Buffer,
+    oldBuf: Buffer,
+    fileStates: Uint8Array,
+    pathsBuf: Uint8Array,
+    rootPath: string
+  ): Promise<boolean>;
+  completeEntries(entriesBuf: Buffer, fileStates: Uint8Array, pathsBuf: Uint8Array, rootPath: string): Promise<void>;
+  remapOldEntries(
+    oldEntries: Buffer,
+    oldPaths: Buffer,
+    oldCount: number,
+    newEntries: Buffer,
+    newStates: Uint8Array,
+    newPaths: Buffer,
+    newCount: number
+  ): void;
+}
+
+/**
+ * Create a native C++ backed {@link FileHashCacheImpl}.
+ *
+ * Wraps the raw N-API functions from the native binding, extracting
+ * path buffers from `cache.getPathsBuf()` on demand.  String arrays
+ * are never decoded — the C++ worker threads parse the NUL-separated
+ * buffer directly and prepend `rootPath`.
+ *
+ * @param binding  The native binding export.
+ * @returns A frozen, reusable impl object.
+ *
+ * @internal — Not part of the public API.
+ */
+export function createNativeFileHashCacheImpl({
+  statAndMatch: nativeStatAndMatch,
+  completeEntries: nativeCompleteEntries,
+  remapOldEntries: nativeRemapOldEntries,
+}: NativeCacheBinding): FileHashCacheImpl {
+  return {
+    native: true,
+
+    statAndMatch(
+      cache: FileHashCacheBase,
+      entriesBuf: Buffer,
+      oldBuf: Buffer,
+      fileStates: Uint8Array
+    ): Promise<boolean> {
+      return nativeStatAndMatch(entriesBuf, oldBuf, fileStates, cache.getPathsBuf(), cache.rootPath);
+    },
+
+    completeEntries(cache: FileHashCacheBase, entriesBuf: Buffer, fileStates: Uint8Array): Promise<void> {
+      return nativeCompleteEntries(entriesBuf, fileStates, cache.getPathsBuf(), cache.rootPath);
+    },
+
+    remapOldEntries(
+      cache: FileHashCacheBase,
+      oldEntries: Buffer,
+      oldPaths: Buffer | readonly string[],
+      oldCount: number,
+      newEntries: Buffer,
+      newStates: Uint8Array
+    ): void {
+      // Narrow: Buffer from validate (use directly), string[] from setFiles (encode for C++).
+      nativeRemapOldEntries(
+        oldEntries,
+        Buffer.isBuffer(oldPaths) ? oldPaths : encodeFilePaths(oldPaths),
+        oldCount,
+        newEntries,
+        newStates,
+        cache.getPathsBuf(),
+        cache.currentFiles.length
+      );
     },
   };
 }

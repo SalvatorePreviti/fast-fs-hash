@@ -19,7 +19,8 @@ namespace fast_fs_hash {
       const uint8_t * old_data,
       Napi::ObjectReference states_ref,
       uint8_t * states_data,
-      size_t file_count) :
+      size_t file_count,
+      std::string root_path) :
       Napi::AsyncWorker(env),
       deferred_(deferred),
       paths_ref_(std::move(paths_ref)),
@@ -31,7 +32,8 @@ namespace fast_fs_hash {
       old_data_(old_data),
       states_ref_(std::move(states_ref)),
       states_data_(states_data),
-      file_count_(file_count) {}
+      file_count_(file_count),
+      root_path_(std::move(root_path)) {}
 
     void Execute() override {
       const size_t fc = this->file_count_;
@@ -51,7 +53,7 @@ namespace fast_fs_hash {
         return;
       }
 
-      // Use the lesser of PathIndex count and expected file count for safety.
+      // Use the lesser of path count and expected file count for safety.
       const size_t n = paths.count < fc ? paths.count : fc;
 
       CacheStatMatchRunner runner{
@@ -60,6 +62,9 @@ namespace fast_fs_hash {
         this->entries_data_,
         this->old_data_,
         this->states_data_,
+        this->root_path_.c_str(),
+        this->root_path_.size(),
+        paths.max_seg_len,
       };
 
       if (!runner.run(0)) [[unlikely]] {
@@ -90,6 +95,7 @@ namespace fast_fs_hash {
     Napi::ObjectReference states_ref_;
     uint8_t * states_data_;
     size_t file_count_;
+    std::string root_path_;
     bool valid_ = false;
   };
 
@@ -105,7 +111,8 @@ namespace fast_fs_hash {
       uint8_t * entries_data,
       Napi::ObjectReference states_ref,
       uint8_t * states_data,
-      size_t file_count) :
+      size_t file_count,
+      std::string root_path) :
       Napi::AsyncWorker(env),
       deferred_(deferred),
       paths_ref_(std::move(paths_ref)),
@@ -115,7 +122,8 @@ namespace fast_fs_hash {
       entries_data_(entries_data),
       states_ref_(std::move(states_ref)),
       states_data_(states_data),
-      file_count_(file_count) {}
+      file_count_(file_count),
+      root_path_(std::move(root_path)) {}
 
     void Execute() override {
       const size_t fc = this->file_count_;
@@ -142,6 +150,9 @@ namespace fast_fs_hash {
         n,
         this->entries_data_,
         this->states_data_,
+        this->root_path_.c_str(),
+        this->root_path_.size(),
+        paths.max_seg_len,
       };
 
       if (!runner.run(0)) [[unlikely]] {
@@ -173,14 +184,16 @@ namespace fast_fs_hash {
     Napi::ObjectReference states_ref_;
     uint8_t * states_data_;
     size_t file_count_;
+    std::string root_path_;
   };
 
   /**
-   * cacheStatAndMatch(entriesBuf, oldBuf, fileStates, pathsBuf)
+   * cacheStatAndMatch(entriesBuf, oldBuf, fileStates, pathsBuf, rootPath)
    *   -> Promise<boolean>
    *
    * File count is derived from fileStates.ElementLength().
-   * File paths are parsed from pathsBuf (null-separated UTF-8).
+   * File paths are parsed from pathsBuf (null-separated UTF-8 relative paths).
+   * rootPath is prepended to each relative path before stat/hash.
    *
    * Parallel stat + compare with old entries.  Returns true if all files match.
    */
@@ -191,6 +204,7 @@ namespace fast_fs_hash {
     auto oldBuf = info[1].As<Napi::Uint8Array>();
     auto fileStates = info[2].As<Napi::Uint8Array>();
     auto pathsBuf = info[3].As<Napi::Uint8Array>();
+    std::string rootPath = info[4].As<Napi::String>().Utf8Value();
 
     const size_t file_count = fileStates.ElementLength();
 
@@ -207,18 +221,20 @@ namespace fast_fs_hash {
       oldBuf.Data(),
       Napi::ObjectReference::New(fileStates, 1),
       fileStates.Data(),
-      file_count);
+      file_count,
+      std::move(rootPath));
 
     worker->Queue();
     return deferred.Promise();
   }
 
   /**
-   * cacheCompleteEntries(entriesBuf, fileStates, pathsBuf)
+   * cacheCompleteEntries(entriesBuf, fileStates, pathsBuf, rootPath)
    *   -> Promise<undefined>
    *
    * File count is derived from fileStates.ElementLength().
-   * File paths are parsed from pathsBuf (null-separated UTF-8).
+   * File paths are parsed from pathsBuf (null-separated UTF-8 relative paths).
+   * rootPath is prepended to each relative path before stat/hash.
    *
    * Parallel stat + hash for entries that still need work.
    */
@@ -228,6 +244,7 @@ namespace fast_fs_hash {
     auto entriesBuf = info[0].As<Napi::Uint8Array>();
     auto fileStates = info[1].As<Napi::Uint8Array>();
     auto pathsBuf = info[2].As<Napi::Uint8Array>();
+    std::string rootPath = info[3].As<Napi::String>().Utf8Value();
 
     const size_t file_count = fileStates.ElementLength();
 
@@ -242,7 +259,8 @@ namespace fast_fs_hash {
       entriesBuf.Data(),
       Napi::ObjectReference::New(fileStates, 1),
       fileStates.Data(),
-      file_count);
+      file_count,
+      std::move(rootPath));
 
     worker->Queue();
     return deferred.Promise();

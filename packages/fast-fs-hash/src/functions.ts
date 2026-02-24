@@ -1,4 +1,4 @@
-import { bufferAlloc, bufferAllocUnsafe, bufferFrom } from "./helpers";
+import { bufferAlloc, bufferAllocUnsafe, bufferFrom, isBuffer } from "./helpers";
 
 /** The size of a 128 bit hash in bytes. */
 export const HASH_SIZE = 16;
@@ -92,7 +92,7 @@ export function decodeFilePaths(buf: Uint8Array): string[] {
     return [];
   }
 
-  const view = bufferFrom(buf.buffer, buf.byteOffset, len);
+  const view = isBuffer(buf) ? buf : bufferFrom(buf.buffer, buf.byteOffset, len);
 
   const paths: string[] = [];
   for (let segStart = 0; segStart < len; ) {
@@ -107,7 +107,7 @@ export function decodeFilePaths(buf: Uint8Array): string[] {
     }
     segStart = end + 1;
   }
-  // Trailing bytes without a final \0 are silently dropped (C++ PathIndex compat).
+  // Trailing bytes without a final \0 are silently dropped
   return paths;
 }
 

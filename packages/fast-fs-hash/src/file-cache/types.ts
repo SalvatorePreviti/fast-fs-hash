@@ -7,12 +7,6 @@
 /** Options for the {@link FileHashCacheBase} constructor. */
 export interface FileHashCacheOptions {
   /**
-   * Whether this instance can serialize (write) cache files.
-   * When `false` (the default), validation is read-only (faster, less memory).
-   */
-  writable?: boolean;
-
-  /**
    * User-defined cache version (full u32, 0-4 294 967 295).  Default: 0.
    *
    * A version mismatch between the constructor and the cache file rejects

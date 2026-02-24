@@ -35,6 +35,7 @@ export {
   iterateFilePaths,
 } from "./functions";
 export type { HashInput } from "./helpers";
+export { findCommonRootPath, normalizeFilePaths, toRelativePath } from "./path-utils";
 export { XXHash128 } from "./xxhash128/xxhash128";
 export type { HashFilesBulkOptions, HashFilesBulkOutputMode, XXHash128LibraryStatus } from "./xxhash128/xxhash128-base";
 export { XXHash128Base } from "./xxhash128/xxhash128-base";

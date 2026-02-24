@@ -18,6 +18,8 @@ const { generate } = require("./generate-raw-data.cjs") as {
   generate: () => { files: string[]; modFilePath: string; cacheDir: string };
 };
 
+const RAW_DATA_DIR = path.join(import.meta.dirname, "raw-data");
+
 let counter = 0;
 function cachePath(cacheDir: string, label: string): string {
   return path.join(cacheDir, `${label}-${++counter}.cache`);
@@ -32,7 +34,7 @@ describe("FileHashCache — serialize (no existing cache)", async () => {
 
   for (const Ctor of [FileHashCache, FileHashCacheWasm]) {
     const cp = cachePath(cacheDir, "warmup");
-    const c = new Ctor(cp, { version: 1, writable: true });
+    const c = new Ctor(RAW_DATA_DIR, cp, { version: 1 });
     c.setFiles(files);
     await c.validate();
     await c.serialize();
@@ -50,7 +52,7 @@ describe("FileHashCache — serialize (no existing cache)", async () => {
       try {
         unlinkSync(cpNative);
       } catch {}
-      const cache = new FileHashCache(cpNative, { version: 1, writable: true });
+      const cache = new FileHashCache(RAW_DATA_DIR, cpNative, { version: 1 });
       cache.setFiles(files);
       await cache.serialize();
       await cache.dispose();
@@ -64,7 +66,7 @@ describe("FileHashCache — serialize (no existing cache)", async () => {
       try {
         unlinkSync(cpWasm);
       } catch {}
-      const cache = new FileHashCacheWasm(cpWasm, { version: 1, writable: true });
+      const cache = new FileHashCacheWasm(RAW_DATA_DIR, cpWasm, { version: 1 });
       cache.setFiles(files);
       await cache.serialize();
       await cache.dispose();

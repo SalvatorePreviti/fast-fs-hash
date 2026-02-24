@@ -16,6 +16,9 @@ export type HashInput = string | Buffer | Uint8Array;
 
 export const { from: bufferFrom, alloc: bufferAlloc, allocUnsafe: bufferAllocUnsafe, isBuffer } = Buffer;
 
+/** No-op callback — avoids allocating a new closure on every `.catch()`. */
+export function noop(): void {}
+
 /** Throw a "not initialized" error. */
 export function notInitialized(): never {
   throw new Error("XXHash128: library not initialized. Call XXHash128.init() or XXHash128Wasm.init() before use.");
@@ -32,8 +35,26 @@ export function toBuffer(input: HashInput): Buffer {
   return bufferFrom(input.buffer, input.byteOffset, input.byteLength);
 }
 
-/** No-op callback — avoids allocating a new closure on every `.catch()`. */
-export const noop = () => {};
+/**
+ * Element-wise strict equality check for two readonly arrays.
+ * Returns `true` when both arrays have the same length and every
+ * element at the same index is `===`-equal.
+ */
+export function arraysEqual<T>(a: readonly T[], b: readonly T[]): boolean {
+  if (a === b) {
+    return true;
+  }
+  const len = a.length;
+  if (len !== b.length) {
+    return false;
+  }
+  for (let i = 0; i < len; ++i) {
+    if (a[i] !== b[i]) {
+      return false;
+    }
+  }
+  return true;
+}
 
 /** Close a file handle, ignoring errors (best-effort). */
 export function safeClose(fh: FileHandle): Promise<void> {

@@ -29,19 +29,19 @@ Results from Node.js v22.22.0, Vitest 4.x:
 
 **Native (C++ addon):**
 
-| Scenario                            | Mean   | Hz         |
-| ----------------------------------- | ------ | ---------- |
-| validate (no change)                | 0.9 ms | 1 080 op/s |
-| serialize (no existing cache)       | 5.5 ms | 182 op/s   |
-| validate+serialize (1 file changed) | 4.2 ms | 236 op/s   |
+| Scenario                            | Mean   | Hz       |
+| ----------------------------------- | ------ | -------- |
+| validate (no change)                | 1.1 ms | 918 op/s |
+| serialize (no existing cache)       | 5.7 ms | 176 op/s |
+| validate+serialize (1 file changed) | 3.9 ms | 254 op/s |
 
 **WASM fallback:**
 
 | Scenario                            | Mean    | Hz       |
 | ----------------------------------- | ------- | -------- |
-| validate (no change)                | 3.0 ms  | 338 op/s |
-| serialize (no existing cache)       | 13.9 ms | 72 op/s  |
-| validate+serialize (1 file changed) | 6.5 ms  | 153 op/s |
+| validate (no change)                | 3.1 ms  | 322 op/s |
+| serialize (no existing cache)       | 14.7 ms | 68 op/s  |
+| validate+serialize (1 file changed) | 6.8 ms  | 146 op/s |
 
 _Results vary by hardware, file sizes, and OS cache state._
 
@@ -53,12 +53,12 @@ Results from Node.js v22.22.0, Vitest 4.x:
 
 | Scenario                          | Mean    | Hz       | Throughput | Relative        |
 | --------------------------------- | ------- | -------- | ---------- | --------------- |
-| native (hashFilesBulk)            | 5.1 ms  | 195 op/s | 4.8 GB/s   | **8.1× faster** |
-| native (hashFilesBulk + per file) | 5.4 ms  | 186 op/s | 4.6 GB/s   | **7.8× faster** |
-| WASM (hashFilesBulk)              | 11.7 ms | 85 op/s  | 2.1 GB/s   | **3.6× faster** |
-| WASM (hashFilesBulk + per file)   | 11.8 ms | 85 op/s  | 2.1 GB/s   | **3.5× faster** |
-| Node.js crypto (md5, per file)    | 41.2 ms | 24 op/s  | 0.6 GB/s   | **1.0× faster** |
-| Node.js crypto (md5)              | 41.8 ms | 24 op/s  | 0.6 GB/s   | baseline        |
+| native (hashFilesBulk + per file) | 5.2 ms  | 193 op/s | 4.8 GB/s   | **8.6× faster** |
+| native (hashFilesBulk)            | 5.2 ms  | 191 op/s | 4.7 GB/s   | **8.5× faster** |
+| WASM (hashFilesBulk + per file)   | 11.6 ms | 87 op/s  | 2.1 GB/s   | **3.9× faster** |
+| WASM (hashFilesBulk)              | 12.0 ms | 83 op/s  | 2.1 GB/s   | **3.7× faster** |
+| Node.js crypto (md5, per file)    | 43.2 ms | 23 op/s  | 0.6 GB/s   | **1.0× faster** |
+| Node.js crypto (md5)              | 44.7 ms | 22 op/s  | 0.6 GB/s   | baseline        |
 
 _Results vary by hardware, file sizes, and OS cache state._
 
@@ -74,25 +74,25 @@ Results from Node.js v22.22.0, Vitest 4.x:
 
 | Scenario           | Mean   | Hz             | Relative        |
 | ------------------ | ------ | -------------- | --------------- |
-| WASM XXH3-128      | 0.2 µs | 4 674 900 op/s | **7.6× faster** |
-| native XXH3-128    | 0.3 µs | 3 410 596 op/s | **5.6× faster** |
-| Node.js crypto md5 | 1.6 µs | 612 769 op/s   | baseline        |
+| WASM XXH3-128      | 0.2 µs | 4 516 742 op/s | **7.5× faster** |
+| native XXH3-128    | 0.3 µs | 3 221 209 op/s | **5.3× faster** |
+| Node.js crypto md5 | 1.7 µs | 603 665 op/s   | baseline        |
 
 **64 KB buffer:**
 
 | Scenario           | Mean    | Hz           | Relative         |
 | ------------------ | ------- | ------------ | ---------------- |
-| native XXH3-128    | 1.8 µs  | 553 684 op/s | **41.1× faster** |
-| WASM XXH3-128      | 5.3 µs  | 190 354 op/s | **14.1× faster** |
-| Node.js crypto md5 | 74.2 µs | 13 482 op/s  | baseline         |
+| native XXH3-128    | 1.7 µs  | 576 445 op/s | **42.8× faster** |
+| WASM XXH3-128      | 5.2 µs  | 193 979 op/s | **14.4× faster** |
+| Node.js crypto md5 | 74.3 µs | 13 462 op/s  | baseline         |
 
 **1 MB buffer:**
 
 | Scenario           | Mean       | Hz          | Relative         |
 | ------------------ | ---------- | ----------- | ---------------- |
-| native XXH3-128    | 23.9 µs    | 41 811 op/s | **49.2× faster** |
-| WASM XXH3-128      | 83.5 µs    | 11 981 op/s | **14.1× faster** |
-| Node.js crypto md5 | 1 177.3 µs | 849 op/s    | baseline         |
+| native XXH3-128    | 23.9 µs    | 41 785 op/s | **50.2× faster** |
+| WASM XXH3-128      | 83.8 µs    | 11 937 op/s | **14.3× faster** |
+| Node.js crypto md5 | 1 200.5 µs | 833 op/s    | baseline         |
 
 _Results vary by hardware._
 
@@ -171,6 +171,29 @@ They are available immediately after `validate()` and written automatically by `
 
 Instances are **single-use** — you can use `await using` for automatic disposal.
 
+#### Auto-root mode (`rootPath: true`)
+
+When you pass `true` as the `rootPath` (the first constructor argument), the root directory
+is automatically computed from the file list on every `setFiles()` call using the common
+parent directory of all files. This is useful when the set of tracked files determines the
+natural project root:
+
+```ts
+const files = ["/project/src/a.ts", "/project/src/b.ts", "/project/lib/c.ts"];
+
+await using cache = new FileHashCache(true, ".cache/build.fsh", { version: 1 });
+cache.setFiles(files);
+// rootPath is now "/project" (common parent of all files)
+```
+
+You can switch between auto and explicit root at any time via `setFiles()`:
+
+```ts
+cache.setFiles(files, true);       // Enable auto-root
+cache.setFiles(files, "/my/root"); // Switch to explicit root
+cache.setFiles(files);             // Keep current mode (auto or explicit)
+```
+
 ### Example: Simple build cache
 
 Skip a build entirely when source files haven't changed:
@@ -183,9 +206,8 @@ await FileHashCache.init();
 
 const files = globSync("src/**/*.ts");
 
-await using cache = new FileHashCache(".cache/build.fsh", {
+await using cache = new FileHashCache(".", ".cache/build.fsh", {
   version: 1, // bump to invalidate all caches
-  writable: true,
 });
 
 cache.setFiles(files);
@@ -214,9 +236,8 @@ import { FileHashCache } from "fast-fs-hash";
 await FileHashCache.init();
 
 async function build(entryPoints: string[]) {
-  await using cache = new FileHashCache(".cache/tsc.fsh", {
+  await using cache = new FileHashCache(".", ".cache/tsc.fsh", {
     version: 2,
-    writable: true,
   });
 
   // 1. Validate with whatever file list was in the last cache.
@@ -273,9 +294,8 @@ await FileHashCache.init();
 async function incrementalBuild() {
   const files = globSync("src/**/*.ts");
 
-  await using cache = new FileHashCache(".cache/incremental.fsh", {
+  await using cache = new FileHashCache(".", ".cache/incremental.fsh", {
     version: 1,
-    writable: true,
   });
 
   cache.setFiles(files);
@@ -313,9 +333,8 @@ await FileHashCache.init();
 
 // Write phase:
 {
-  await using cache = new FileHashCache(".cache/output.fsh", {
+  await using cache = new FileHashCache(".", ".cache/output.fsh", {
     version: 1,
-    writable: true,
   });
   cache.setFiles(sourceFiles);
   await cache.serialize();
@@ -328,7 +347,7 @@ await FileHashCache.init();
 
 // Read phase (next run):
 {
-  await using cache = new FileHashCache(".cache/output.fsh", {
+  await using cache = new FileHashCache(".", ".cache/output.fsh", {
     version: 1,
   });
   cache.setFiles(sourceFiles);

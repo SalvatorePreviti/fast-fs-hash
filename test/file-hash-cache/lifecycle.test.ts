@@ -47,18 +47,18 @@ describe("FileHashCache", () => {
 
   describe("validate (no existing cache)", () => {
     it("returns false without setFiles and no cache", async () => {
-      await using c = new FileHashCache(cachePath());
+      await using c = new FileHashCache(FIXTURE_DIR, cachePath());
       expect(await c.validate()).toBe(false);
     });
 
     it("returns false for non-existent cache file", async () => {
-      await using c = new FileHashCache(cachePath(), { version: 1 });
+      await using c = new FileHashCache(FIXTURE_DIR, cachePath(), { version: 1 });
       c.setFiles([fixtureFile("a.txt")]);
       expect(await c.validate()).toBe(false);
     });
 
     it("returns changed=false with empty file list", async () => {
-      await using c = new FileHashCache(cachePath(), { version: 1 });
+      await using c = new FileHashCache(FIXTURE_DIR, cachePath(), { version: 1 });
       c.setFiles([]);
       expect(await c.validate()).toBe(true);
     });
@@ -73,14 +73,14 @@ describe("FileHashCache", () => {
 
       // Seed.
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         await c.serialize();
       }
 
       // Validate (unchanged) then getChangedFiles — must return same reference each time.
       {
-        await using c = new FileHashCache(cp, { version: 1 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         expect(await c.validate()).toBe(true);
         const first = c.getChangedFiles();
@@ -95,13 +95,13 @@ describe("FileHashCache", () => {
       const files = [fixtureFile("a.txt"), fixtureFile("b.txt")];
 
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         await c.serialize();
       }
 
       {
-        await using c = new FileHashCache(cp, { version: 1 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         expect(await c.validate()).toBe(true);
         // Hashes loaded from cache — no complete() needed.
@@ -118,14 +118,14 @@ describe("FileHashCache", () => {
 
       // Seed with one set of files.
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles([fixtureFile("a.txt")]);
         await c.serialize();
       }
 
       // Validate with different file list — returns false.
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         expect(await c.validate()).toBe(false);
         // Before complete(): returns [] (not ready).
@@ -148,7 +148,7 @@ describe("FileHashCache", () => {
 
       // Write cache.
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         expect(await c.validate()).toBe(false);
         await c.serialize();
@@ -156,7 +156,7 @@ describe("FileHashCache", () => {
 
       // Validate (should be unchanged).
       {
-        await using c = new FileHashCache(cp, { version: 1 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         expect(await c.validate()).toBe(true);
       }
@@ -169,7 +169,7 @@ describe("FileHashCache", () => {
 
       // Write with user data.
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         await c.validate();
         await c.serialize();
@@ -179,7 +179,7 @@ describe("FileHashCache", () => {
 
       // Read user data back.
       {
-        await using c = new FileHashCache(cp, { version: 1 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         expect(await c.validate()).toBe(true);
 
@@ -196,7 +196,7 @@ describe("FileHashCache", () => {
 
       // Write with user values.
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         await c.validate();
         c.userValue0 = 111;
@@ -208,7 +208,7 @@ describe("FileHashCache", () => {
 
       // Read user values.
       {
-        await using c = new FileHashCache(cp, { version: 1 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         expect(await c.validate()).toBe(true);
         expect(c.userValue0).toBe(111);
@@ -222,14 +222,14 @@ describe("FileHashCache", () => {
       const cp = cachePath("empty");
 
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles([]);
         await c.validate();
         await c.serialize();
       }
 
       {
-        await using c = new FileHashCache(cp, { version: 1 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles([]);
         expect(await c.validate()).toBe(true);
       }
@@ -244,14 +244,14 @@ describe("FileHashCache", () => {
       const files = [fixtureFile("a.txt")];
 
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         await c.validate();
         await c.serialize();
       }
 
       {
-        await using c = new FileHashCache(cp, { version: 2 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 2 });
         c.setFiles(files);
         expect(await c.validate()).toBe(false);
       }
@@ -263,14 +263,14 @@ describe("FileHashCache", () => {
       const files2 = [fixtureFile("a.txt"), fixtureFile("b.txt")];
 
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files1);
         await c.validate();
         await c.serialize();
       }
 
       {
-        await using c = new FileHashCache(cp, { version: 1 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files2);
         expect(await c.validate()).toBe(false);
       }
@@ -282,14 +282,14 @@ describe("FileHashCache", () => {
       const files2 = [fixtureFile("a.txt")];
 
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files1);
         await c.validate();
         await c.serialize();
       }
 
       {
-        await using c = new FileHashCache(cp, { version: 1 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files2);
         expect(await c.validate()).toBe(false);
       }
@@ -302,7 +302,7 @@ describe("FileHashCache", () => {
       const files = [mutable];
 
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         await c.validate();
         await c.serialize();
@@ -313,7 +313,7 @@ describe("FileHashCache", () => {
       writeFileSync(mutable, "modified content");
 
       {
-        await using c = new FileHashCache(cp, { version: 1 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         expect(await c.validate()).toBe(false);
       }
@@ -326,7 +326,7 @@ describe("FileHashCache", () => {
       const files = [mutable];
 
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         await c.validate();
         await c.serialize();
@@ -336,7 +336,7 @@ describe("FileHashCache", () => {
       writeFileSync(mutable, "much longer content here!!!");
 
       {
-        await using c = new FileHashCache(cp, { version: 1 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         expect(await c.validate()).toBe(false);
       }
@@ -349,7 +349,7 @@ describe("FileHashCache", () => {
       const files = [mutable];
 
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         await c.validate();
         await c.serialize();
@@ -360,7 +360,7 @@ describe("FileHashCache", () => {
       writeFileSync(mutable, "stable content here");
 
       {
-        await using c = new FileHashCache(cp, { version: 1 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         expect(await c.validate()).toBe(true);
       }
@@ -373,7 +373,7 @@ describe("FileHashCache", () => {
       const files = [mutable];
 
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         await c.validate();
         await c.serialize();
@@ -382,7 +382,7 @@ describe("FileHashCache", () => {
       rmSync(mutable, { force: true });
 
       {
-        await using c = new FileHashCache(cp, { version: 1 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         expect(await c.validate()).toBe(false);
       }
@@ -398,7 +398,7 @@ describe("FileHashCache", () => {
 
       // Initial write.
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         await c.validate();
         await c.serialize();
@@ -406,7 +406,7 @@ describe("FileHashCache", () => {
 
       // Re-open, validate (unchanged), then serialize again.
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         expect(await c.validate()).toBe(true);
         await c.serialize();
@@ -414,7 +414,7 @@ describe("FileHashCache", () => {
 
       // Validate once more — should still be valid.
       {
-        await using c = new FileHashCache(cp, { version: 1 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         expect(await c.validate()).toBe(true);
       }
@@ -428,7 +428,7 @@ describe("FileHashCache", () => {
 
       // Initial write.
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         await c.validate();
         await c.serialize();
@@ -440,7 +440,7 @@ describe("FileHashCache", () => {
 
       // Serialize after change.
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         expect(await c.validate()).toBe(false);
         await c.serialize();
@@ -448,7 +448,7 @@ describe("FileHashCache", () => {
 
       // Final validate — should be valid now.
       {
-        await using c = new FileHashCache(cp, { version: 1 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         expect(await c.validate()).toBe(true);
       }
@@ -464,14 +464,14 @@ describe("FileHashCache", () => {
 
       // serialize without calling validate first
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         await c.serialize();
       }
 
       // Validate the resulting cache — should be unchanged (all correct).
       {
-        await using c = new FileHashCache(cp, { version: 1 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         expect(await c.validate()).toBe(true);
       }
@@ -484,14 +484,14 @@ describe("FileHashCache", () => {
 
       // Cold: serialize without validate
       {
-        await using c = new FileHashCache(cpCold, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cpCold, { version: 1 });
         c.setFiles(files);
         await c.serialize();
       }
 
       // Warm: validate then serialize
       {
-        await using c = new FileHashCache(cpWarm, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cpWarm, { version: 1 });
         c.setFiles(files);
         await c.validate();
         await c.serialize();
@@ -499,11 +499,11 @@ describe("FileHashCache", () => {
 
       // Both should validate identically.
       {
-        await using c1 = new FileHashCache(cpCold, { version: 1 });
+        await using c1 = new FileHashCache(FIXTURE_DIR, cpCold, { version: 1 });
         c1.setFiles(files);
         expect(await c1.validate()).toBe(true);
 
-        await using c2 = new FileHashCache(cpWarm, { version: 1 });
+        await using c2 = new FileHashCache(FIXTURE_DIR, cpWarm, { version: 1 });
         c2.setFiles(files);
         expect(await c2.validate()).toBe(true);
       }
@@ -514,16 +514,16 @@ describe("FileHashCache", () => {
       const files = [fixtureFile("a.txt"), fixtureFile("b.txt"), fixtureFile("c.txt")];
 
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         await c.serialize();
       }
 
       {
-        await using c = new FileHashCache(cp, { version: 1 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         expect(await c.validate()).toBe(true);
-        expect(c.getFiles().length).toBe(3);
+        expect(c.currentFiles.length).toBe(3);
       }
     });
 
@@ -531,16 +531,16 @@ describe("FileHashCache", () => {
       const cp = cachePath("no-val-empty");
 
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles([]);
         await c.serialize();
       }
 
       {
-        await using c = new FileHashCache(cp, { version: 1 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles([]);
         expect(await c.validate()).toBe(true);
-        expect(c.getFiles().length).toBe(0);
+        expect(c.currentFiles.length).toBe(0);
       }
     });
 
@@ -549,7 +549,7 @@ describe("FileHashCache", () => {
       const files = [fixtureFile("a.txt")];
 
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         c.userValue0 = 42;
         c.userValue1 = 100;
@@ -557,7 +557,7 @@ describe("FileHashCache", () => {
       }
 
       {
-        await using c = new FileHashCache(cp, { version: 1 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         expect(await c.validate()).toBe(true);
         expect(c.userValue0).toBe(42);
@@ -571,7 +571,7 @@ describe("FileHashCache", () => {
       const payload = Buffer.from("cold-payload");
 
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         await c.serialize();
         await c.write(payload);
@@ -579,7 +579,7 @@ describe("FileHashCache", () => {
       }
 
       {
-        await using c = new FileHashCache(cp, { version: 1 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         expect(await c.validate()).toBe(true);
         const buf = Buffer.alloc(64);
@@ -596,7 +596,7 @@ describe("FileHashCache", () => {
 
       // Cold write without validate.
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         await c.serialize();
       }
@@ -607,7 +607,7 @@ describe("FileHashCache", () => {
 
       // Now validate — should detect the change.
       {
-        await using c = new FileHashCache(cp, { version: 1 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         expect(await c.validate()).toBe(false);
       }

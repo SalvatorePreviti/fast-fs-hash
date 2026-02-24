@@ -47,7 +47,7 @@ describe("FileHashCache", () => {
 
   describe("getChangedFiles", () => {
     it("returns empty array before complete() or serialize()", async () => {
-      const c = new FileHashCache(cachePath(), { version: 1, writable: true });
+      const c = new FileHashCache(FIXTURE_DIR, cachePath(), { version: 1 });
       c.setFiles([fixtureFile("a.txt")]);
       // _completed is false — getChangedFiles() signals "not ready" with []
       expect(c.getChangedFiles()).toEqual([]);
@@ -58,11 +58,11 @@ describe("FileHashCache", () => {
       const cp = cachePath("gc-cold");
       const files = [fixtureFile("a.txt"), fixtureFile("b.txt")];
 
-      await using c = new FileHashCache(cp, { version: 1, writable: true });
+      await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
       c.setFiles(files);
       await c.serialize();
       const changed = c.getChangedFiles();
-      expect(changed).toEqual(files.sort());
+      expect(changed).toEqual(["a.txt", "b.txt"]);
     });
 
     it("returns empty array when validate succeeds then serialize", async () => {
@@ -71,14 +71,14 @@ describe("FileHashCache", () => {
 
       // Seed the cache.
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         await c.serialize();
       }
 
       // Re-open, validate (unchanged), then serialize.
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         expect(await c.validate()).toBe(true);
         await c.serialize();
@@ -95,7 +95,7 @@ describe("FileHashCache", () => {
 
       // Seed the cache.
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         await c.serialize();
       }
@@ -106,15 +106,15 @@ describe("FileHashCache", () => {
 
       // Validate + serialize — only the modified file should appear.
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         expect(await c.validate()).toBe(false);
         await c.serialize();
         const changed = c.getChangedFiles();
-        expect(changed).toContain(mutable);
+        expect(changed).toContain("gc-mut.txt");
         // The other two files should NOT be in the changed list.
-        expect(changed).not.toContain(fixtureFile("a.txt"));
-        expect(changed).not.toContain(fixtureFile("b.txt"));
+        expect(changed).not.toContain("a.txt");
+        expect(changed).not.toContain("b.txt");
       }
     });
 
@@ -125,19 +125,19 @@ describe("FileHashCache", () => {
 
       // Seed with files1.
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files1);
         await c.serialize();
       }
 
       // Serialize with completely different file list.
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files2);
         await c.validate();
         await c.serialize();
         const changed = c.getChangedFiles();
-        expect(changed).toEqual(files2.sort());
+        expect(changed).toEqual(["b.txt", "c.txt"]);
       }
     });
 
@@ -146,18 +146,18 @@ describe("FileHashCache", () => {
       const files = [fixtureFile("a.txt")];
 
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         await c.serialize();
       }
 
       {
-        await using c = new FileHashCache(cp, { version: 2, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 2 });
         c.setFiles(files);
         await c.validate();
         await c.serialize();
         const changed = c.getChangedFiles();
-        expect(changed).toEqual(files);
+        expect(changed).toEqual(["a.txt"]);
       }
     });
 
@@ -165,17 +165,17 @@ describe("FileHashCache", () => {
       const cp = cachePath("gc-no-val");
       const files = [fixtureFile("a.txt"), fixtureFile("b.txt")];
 
-      await using c = new FileHashCache(cp, { version: 1, writable: true });
+      await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
       c.setFiles(files);
       await c.serialize();
       const changed = c.getChangedFiles();
-      expect(changed).toEqual(files.sort());
+      expect(changed).toEqual(["a.txt", "b.txt"]);
     });
 
     it("returns empty array for empty file list", async () => {
       const cp = cachePath("gc-empty");
 
-      await using c = new FileHashCache(cp, { version: 1, writable: true });
+      await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
       c.setFiles([]);
       await c.serialize();
       expect(c.getChangedFiles()).toEqual([]);
@@ -187,7 +187,7 @@ describe("FileHashCache", () => {
 
       // Seed the cache.
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         await c.serialize();
       }
@@ -197,7 +197,7 @@ describe("FileHashCache", () => {
 
       // Re-open, validate, call complete(), then getChangedFiles before serialize.
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         expect(await c.validate()).toBe(false);
 
@@ -223,7 +223,7 @@ describe("FileHashCache", () => {
       const cp = cachePath("gc-idempotent");
       const files = [fixtureFile("a.txt")];
 
-      await using c = new FileHashCache(cp, { version: 1, writable: true });
+      await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
       c.setFiles(files);
       await c.complete();
       const changed1 = c.getChangedFiles();
@@ -234,7 +234,7 @@ describe("FileHashCache", () => {
     });
 
     it("getChangedFiles returns same array reference on repeated calls (cached)", async () => {
-      await using c = new FileHashCache(cachePath(), { version: 1, writable: true });
+      await using c = new FileHashCache(FIXTURE_DIR, cachePath(), { version: 1 });
       c.setFiles([fixtureFile("a.txt"), fixtureFile("b.txt")]);
       await c.complete();
       const first = c.getChangedFiles();
@@ -245,7 +245,7 @@ describe("FileHashCache", () => {
     });
 
     it("getChangedFiles cache resets after setFiles with changed list", async () => {
-      await using c = new FileHashCache(cachePath(), { version: 1, writable: true });
+      await using c = new FileHashCache(FIXTURE_DIR, cachePath(), { version: 1 });
       c.setFiles([fixtureFile("a.txt")]);
       await c.complete();
       const before = c.getChangedFiles();
@@ -257,7 +257,7 @@ describe("FileHashCache", () => {
       const after = c.getChangedFiles();
 
       expect(after).not.toBe(before);
-      expect(after).toEqual([fixtureFile("b.txt"), fixtureFile("c.txt")].sort());
+      expect(after).toEqual(["b.txt", "c.txt"]);
     });
   });
 
@@ -265,18 +265,18 @@ describe("FileHashCache", () => {
 
   describe("getFileHash", () => {
     it("returns null before setFiles", () => {
-      const c = new FileHashCache(cachePath());
+      const c = new FileHashCache(FIXTURE_DIR, cachePath());
       expect(c.getFileHash(0)).toBeNull();
     });
 
     it("returns null for empty file list (no entriesBuf)", () => {
-      const c = new FileHashCache(cachePath());
+      const c = new FileHashCache(FIXTURE_DIR, cachePath());
       c.setFiles([]);
       expect(c.getFileHash(0)).toBeNull();
     });
 
     it("returns null for out-of-bounds positive index", async () => {
-      await using c = new FileHashCache(cachePath(), { version: 1, writable: true });
+      await using c = new FileHashCache(FIXTURE_DIR, cachePath(), { version: 1 });
       c.setFiles([fixtureFile("a.txt")]);
       await c.complete(); // ensures _entriesBuf is allocated
       expect(c.getFileHash(0)).not.toBeNull(); // in-bounds
@@ -285,21 +285,21 @@ describe("FileHashCache", () => {
     });
 
     it("returns null for negative index (coerced to large value via >>> 0)", async () => {
-      await using c = new FileHashCache(cachePath(), { version: 1, writable: true });
+      await using c = new FileHashCache(FIXTURE_DIR, cachePath(), { version: 1 });
       c.setFiles([fixtureFile("a.txt")]);
       await c.complete(); // ensures _entriesBuf is allocated
       expect(c.getFileHash(-1)).toBeNull();
     });
 
     it("returns null after setFiles on a fresh cache (no prior completion)", () => {
-      const c = new FileHashCache(cachePath());
+      const c = new FileHashCache(FIXTURE_DIR, cachePath());
       c.setFiles([fixtureFile("a.txt")]);
       // _entriesBuf is null until complete()/serialize()/validate() runs.
       expect(c.getFileHash(0)).toBeNull();
     });
 
     it("returns Uint8Array of length 16 after complete()", async () => {
-      await using c = new FileHashCache(cachePath(), { version: 1, writable: true });
+      await using c = new FileHashCache(FIXTURE_DIR, cachePath(), { version: 1 });
       c.setFiles([fixtureFile("a.txt"), fixtureFile("b.txt")]);
       await c.complete();
       const h0 = c.getFileHash(0);
@@ -311,7 +311,7 @@ describe("FileHashCache", () => {
     });
 
     it("bytes are non-zero after complete()", async () => {
-      await using c = new FileHashCache(cachePath(), { version: 1, writable: true });
+      await using c = new FileHashCache(FIXTURE_DIR, cachePath(), { version: 1 });
       c.setFiles([fixtureFile("a.txt"), fixtureFile("b.txt")]);
       await c.complete();
       expect(c.getFileHash(0)?.some((b) => b !== 0)).toBe(true);
@@ -319,12 +319,12 @@ describe("FileHashCache", () => {
     });
 
     it("hash matches XXHash128.hashFile result after complete()", async () => {
-      await using c = new FileHashCache(cachePath(), { version: 1, writable: true });
+      await using c = new FileHashCache(FIXTURE_DIR, cachePath(), { version: 1 });
       c.setFiles([fixtureFile("a.txt"), fixtureFile("b.txt")]);
       await c.complete();
-      const sortedFiles = c.getFiles();
+      const sortedFiles = c.currentFiles;
       for (let i = 0; i < sortedFiles.length; i++) {
-        const expected = await XXHash128.hashFile(sortedFiles[i]);
+        const expected = await XXHash128.hashFile(path.join(FIXTURE_DIR, sortedFiles[i]));
         const actual = c.getFileHash(i);
         expect(actual).not.toBeNull();
         expect(Buffer.from(actual || new Uint8Array(0)).equals(expected as Buffer)).toBe(true);
@@ -332,7 +332,7 @@ describe("FileHashCache", () => {
     });
 
     it("different files have different hashes after serialize", async () => {
-      await using c = new FileHashCache(cachePath(), { version: 1, writable: true });
+      await using c = new FileHashCache(FIXTURE_DIR, cachePath(), { version: 1 });
       c.setFiles([fixtureFile("a.txt"), fixtureFile("b.txt"), fixtureFile("c.txt")]);
       await c.serialize();
       const h0 = Buffer.from(c.getFileHash(0) || new Uint8Array(0));
@@ -344,7 +344,7 @@ describe("FileHashCache", () => {
     });
 
     it("returns view into same underlying buffer on repeated calls (reference stability)", async () => {
-      await using c = new FileHashCache(cachePath(), { version: 1, writable: true });
+      await using c = new FileHashCache(FIXTURE_DIR, cachePath(), { version: 1 });
       c.setFiles([fixtureFile("a.txt")]);
       await c.complete();
       const h1 = c.getFileHash(0) || new Uint8Array(0);
@@ -361,7 +361,7 @@ describe("FileHashCache", () => {
 
       // Seed and capture hash for first file.
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         await c.serialize();
         hashAfterWrite = Buffer.from(c.getFileHash(0) || new Uint8Array(0));
@@ -370,7 +370,7 @@ describe("FileHashCache", () => {
 
       // Re-open, validate unchanged — hash at index 0 must match.
       {
-        await using c = new FileHashCache(cp, { version: 1 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         expect(await c.validate()).toBe(true);
         const hashAfterValidate = Buffer.from(c.getFileHash(0) || new Uint8Array(0));
@@ -391,14 +391,14 @@ describe("FileHashCache", () => {
 
       // Seed the cache with [a, b, c].
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(originalFiles);
         await c.serialize();
       }
 
       // Re-open, validate (all match), then setFiles with a different list.
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(originalFiles);
         expect(await c.validate()).toBe(true);
 
@@ -422,14 +422,14 @@ describe("FileHashCache", () => {
 
       // Seed with [a, b].
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles([a, b]);
         await c.serialize();
       }
 
       // Re-open, validate, then add c.
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles([a, b]);
         expect(await c.validate()).toBe(true);
 
@@ -440,7 +440,7 @@ describe("FileHashCache", () => {
         const changed = c.getChangedFiles();
 
         // c is new -> changed. a and b should be unchanged.
-        expect(changed).toEqual([c_file]);
+        expect(changed).toEqual(["c.txt"]);
       }
     });
 
@@ -452,14 +452,14 @@ describe("FileHashCache", () => {
 
       // Seed with [a, b].
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles([a, b]);
         await c.serialize();
       }
 
       // Validate -> getChangedFiles (empty) -> setFiles(expanded) -> getChangedFiles (new file).
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles([a, b]);
         expect(await c.validate()).toBe(true);
         await c.complete();
@@ -476,17 +476,17 @@ describe("FileHashCache", () => {
         // Second getChangedFiles after complete() — c is new, should appear as changed.
         await c.complete();
         const changed2 = c.getChangedFiles();
-        expect(changed2).toEqual([c_file]);
+        expect(changed2).toEqual(["c.txt"]);
         // a and b should NOT be changed (remapped from prior validation).
-        expect(changed2).not.toContain(a);
-        expect(changed2).not.toContain(b);
+        expect(changed2).not.toContain("a.txt");
+        expect(changed2).not.toContain("b.txt");
 
         await c.serialize();
       }
 
       // Verify the cache is valid with the expanded list.
       {
-        await using c = new FileHashCache(cp, { version: 1 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles([a, b, c_file]);
         expect(await c.validate()).toBe(true);
       }
@@ -498,14 +498,14 @@ describe("FileHashCache", () => {
 
       // Seed.
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         await c.serialize();
       }
 
       // Validate, then setFiles with identical list -> state preserved.
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         expect(await c.validate()).toBe(true);
         await c.complete();
@@ -525,14 +525,14 @@ describe("FileHashCache", () => {
 
       // Seed with [a, b, c].
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles([a, b, c_file]);
         await c.serialize();
       }
 
       // Validate [a, b, c], then remap to [a, c] and serialize.
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles([a, b, c_file]);
         expect(await c.validate()).toBe(true);
         c.setFiles([a, c_file]);
@@ -541,7 +541,7 @@ describe("FileHashCache", () => {
 
       // Re-open with [a, c] — should validate successfully.
       {
-        await using c = new FileHashCache(cp, { version: 1 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles([a, c_file]);
         expect(await c.validate()).toBe(true);
       }

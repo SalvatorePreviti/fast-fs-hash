@@ -10,16 +10,21 @@
  * When maxCount is bounded (cache workers), allocates upfront
  * and fills in a single memchr pass. When unbounded (SIZE_MAX),
  * counts nulls first for an exact-sized allocation.
+ *
+ * After construction, `max_seg_len` holds the length of the longest
+ * segment (in bytes, excluding the NUL terminator). Callers can use
+ * this to pre-allocate scratch buffers for path resolution.
  */
 struct PathIndex : NonCopyable {
   size_t count;
   const char ** segments;
+  size_t max_seg_len;
 
   /** True if the constructor failed to allocate despite non-empty input (OOM). */
   FSH_FORCE_INLINE bool oom() const noexcept { return this->oom_; }
 
   inline PathIndex(const uint8_t * buf, size_t len, size_t maxCount = SIZE_MAX) noexcept :
-    count(0), segments(nullptr), oom_(false) {
+    count(0), segments(nullptr), max_seg_len(0), oom_(false) {
     if (len == 0 || buf == nullptr || maxCount == 0) {
       return;
     }
@@ -52,18 +57,24 @@ struct PathIndex : NonCopyable {
       return;
     }
 
-    // Single fill pass.
+    // Single fill pass — also track the longest segment.
     const char ** dst = this->segments;
     const char ** const dstEnd = this->segments + n;
+    size_t maxLen = 0;
     for (const uint8_t * p = buf; p < end && dst < dstEnd;) {
       const uint8_t * nul = static_cast<const uint8_t *>(memchr(p, 0, static_cast<size_t>(end - p)));
       if (!nul) {
         break;
       }
       *dst++ = reinterpret_cast<const char *>(p);
+      const size_t segLen = static_cast<size_t>(nul - p);
+      if (segLen > maxLen) {
+        maxLen = segLen;
+      }
       p = nul + 1;
     }
     this->count = static_cast<size_t>(dst - this->segments);
+    this->max_seg_len = maxLen;
     this->segments[this->count] = nullptr;  // sentinel
   }
 

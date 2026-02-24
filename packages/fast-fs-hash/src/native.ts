@@ -83,8 +83,19 @@ export interface NativeXXHash128Constructor {
 interface NativeBindingExport {
   XXHash128: NativeXXHash128Constructor;
   libraryStatus?: "native";
-  statAndMatch?: (entriesBuf: Buffer, oldBuf: Buffer, fileStates: Uint8Array, pathsBuf: Uint8Array) => Promise<boolean>;
-  completeEntries?: (entriesBuf: Buffer, fileStates: Uint8Array, pathsBuf: Uint8Array) => Promise<void>;
+  statAndMatch?: (
+    entriesBuf: Buffer,
+    oldBuf: Buffer,
+    fileStates: Uint8Array,
+    pathsBuf: Uint8Array,
+    rootPath: string
+  ) => Promise<boolean>;
+  completeEntries?: (
+    entriesBuf: Buffer,
+    fileStates: Uint8Array,
+    pathsBuf: Uint8Array,
+    rootPath: string
+  ) => Promise<void>;
   remapOldEntries?: (
     oldEntries: Buffer,
     oldPaths: Buffer,

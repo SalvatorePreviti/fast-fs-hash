@@ -21,6 +21,8 @@ const { generate, mutateModFile } = require("./generate-raw-data.cjs") as {
   mutateModFile: () => void;
 };
 
+const RAW_DATA_DIR = path.join(import.meta.dirname, "raw-data");
+
 let counter = 0;
 function cachePath(cacheDir: string, label: string): string {
   return path.join(cacheDir, `${label}-${++counter}.cache`);
@@ -35,7 +37,7 @@ describe("FileHashCache — validate+serialize (1 file changed)", async () => {
 
   for (const Ctor of [FileHashCache, FileHashCacheWasm]) {
     const cp = cachePath(cacheDir, "warmup");
-    const c = new Ctor(cp, { version: 1, writable: true });
+    const c = new Ctor(RAW_DATA_DIR, cp, { version: 1 });
     c.setFiles(files);
     await c.validate();
     await c.serialize();
@@ -46,7 +48,7 @@ describe("FileHashCache — validate+serialize (1 file changed)", async () => {
 
   const cpNative = cachePath(cacheDir, "one-change-native");
   {
-    const c = new FileHashCache(cpNative, { version: 1, writable: true });
+    const c = new FileHashCache(RAW_DATA_DIR, cpNative, { version: 1 });
     c.setFiles(files);
     await c.validate();
     await c.serialize();
@@ -55,7 +57,7 @@ describe("FileHashCache — validate+serialize (1 file changed)", async () => {
 
   const cpWasm = cachePath(cacheDir, "one-change-wasm");
   {
-    const c = new FileHashCacheWasm(cpWasm, { version: 1, writable: true });
+    const c = new FileHashCacheWasm(RAW_DATA_DIR, cpWasm, { version: 1 });
     c.setFiles(files);
     await c.validate();
     await c.serialize();
@@ -68,7 +70,7 @@ describe("FileHashCache — validate+serialize (1 file changed)", async () => {
     "native  validate+serialize (1 file changed)",
     async () => {
       mutateModFile();
-      const cache = new FileHashCache(cpNative, { version: 1, writable: true });
+      const cache = new FileHashCache(RAW_DATA_DIR, cpNative, { version: 1 });
       cache.setFiles(files);
       if (await cache.validate()) {
         throw new Error("should not validate");
@@ -85,7 +87,7 @@ describe("FileHashCache — validate+serialize (1 file changed)", async () => {
     "wasm    validate+serialize (1 file changed)",
     async () => {
       mutateModFile();
-      const cache = new FileHashCacheWasm(cpWasm, { version: 1, writable: true });
+      const cache = new FileHashCacheWasm(RAW_DATA_DIR, cpWasm, { version: 1 });
       cache.setFiles(files);
       if (await cache.validate()) {
         throw new Error("should not validate");

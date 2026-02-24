@@ -45,6 +45,87 @@ namespace fast_fs_hash {
   }
 
   /**
+   * Copy a relative path to a destination buffer.
+   * On Windows, converts forward slashes to backslashes (the OS separator).
+   * On POSIX, this is just strcpy — forward slashes are native.
+   */
+  FSH_FORCE_INLINE static void copy_rel_path(char * dst, const char * src) {
+#ifdef _WIN32
+    while (*src) {
+      *dst++ = (*src == '/') ? '\\' : *src;
+      ++src;
+    }
+    *dst = '\0';
+#else
+    strcpy(dst, src);
+#endif
+  }
+
+  /**
+   * Compute effective root length and prefix length for path resolution.
+   * Strips trailing separator from root if present.
+   *
+   * @param root_path   Root directory string.
+   * @param root_len    Length of root_path.
+   * @param out_rl      Receives effective root length (trailing sep stripped).
+   * @param out_prefix  Receives prefix length (rl + 1: root + separator).
+   */
+  FSH_FORCE_INLINE static void compute_root_prefix(
+    const char * root_path, size_t root_len, size_t & out_rl, size_t & out_prefix) {
+    size_t rl = root_len;
+    if (rl > 0 && (root_path[rl - 1] == '/' || root_path[rl - 1] == '\\'))
+      --rl;
+    out_rl = rl;
+    out_prefix = rl + 1;
+  }
+
+  /**
+   * Allocate a combined per-thread slab and pre-write the root prefix.
+   *
+   * Layout per thread: `[READ_BUFFER_SIZE | path_scratch_stride]`
+   *
+   * @param tc           Thread count.
+   * @param root_path    Root directory (may have trailing separator).
+   * @param root_len     Length of root_path.
+   * @param max_seg_len  Longest relative path segment (from PathIndex).
+   * @param out_slab     Receives the allocated slab (caller owns).
+   * @param out_per_thread  Receives per-thread stride.
+   * @param out_prefix_len  Receives prefix length for process_files.
+   * @returns true on success, false on OOM.
+   */
+  FSH_FORCE_INLINE static bool alloc_slab_with_scratch(
+    int tc,
+    const char * root_path, size_t root_len, size_t max_seg_len,
+    AlignedPtr<unsigned char> & out_slab, size_t & out_per_thread, size_t & out_prefix_len) {
+
+    size_t rl, prefix_len;
+    compute_root_prefix(root_path, root_len, rl, prefix_len);
+    out_prefix_len = prefix_len;
+
+    // Path scratch: prefix + max relative path + NUL, rounded to 64-byte boundary.
+    const size_t path_stride = ((prefix_len + max_seg_len + 1) + 63) & ~size_t(63);
+    out_per_thread = READ_BUFFER_SIZE + path_stride;
+
+    AlignedPtr<unsigned char> slab(64, static_cast<size_t>(tc) * out_per_thread);
+    if (!slab) [[unlikely]]
+      return false;
+
+    // Pre-write "rootPath/" into each thread's path scratch area.
+    for (int i = 0; i < tc; ++i) {
+      char * ps = reinterpret_cast<char *>(slab.ptr + static_cast<size_t>(i) * out_per_thread + READ_BUFFER_SIZE);
+      memcpy(ps, root_path, rl);
+#ifdef _WIN32
+      ps[rl] = '\\';
+#else
+      ps[rl] = '/';
+#endif
+    }
+
+    out_slab = std::move(slab);
+    return true;
+  }
+
+  /**
    * Parallel stat + compare against old cache entries with early exit.
    *
    * For each file:
@@ -53,6 +134,10 @@ namespace fast_fs_hash {
    *   3. If match: copy 16-byte hash from old -> F_DONE
    *   4. If size matches but metadata changed: rehash -> compare content hash
    *   5. Else: F_NEED_HASH + set changed=true, early_exit=true
+   *
+   * Segments are relative paths (NUL-terminated pointers from PathIndex).
+   * The root directory prefix is pre-written into each thread's scratch
+   * buffer — only the relative tail is copied per file.
    */
   struct CacheStatMatchRunner {
     //  - Cache line 0: read-only config
@@ -61,6 +146,9 @@ namespace fast_fs_hash {
     uint8_t * entries_buf;
     const uint8_t * old_buf;
     uint8_t * file_states;
+    const char * root_path;
+    size_t root_len;
+    size_t max_seg_len;
     size_t work_batch = 0;
 
     //  - Cache line 1: hot contended atomic (work-stealing counter)
@@ -106,9 +194,11 @@ namespace fast_fs_hash {
       this->early_exit.store(false, std::memory_order_relaxed);
       this->changed.store(false, std::memory_order_relaxed);
 
-      // Pre-allocate read buffer slab (needed for rehash path).
-      AlignedPtr<unsigned char> slab(64, static_cast<size_t>(tc) * READ_BUFFER_SIZE);
-      if (!slab) [[unlikely]]
+      // Allocate combined read-buffer + path-scratch slab, pre-write root prefix.
+      AlignedPtr<unsigned char> slab;
+      size_t per_thread, prefix_len;
+      if (!alloc_slab_with_scratch(tc, this->root_path, this->root_len, this->max_seg_len, slab, per_thread, prefix_len))
+          [[unlikely]]
         return false;
 
       g_active_hash_threads.fetch_add(tc, std::memory_order_relaxed);
@@ -117,8 +207,9 @@ namespace fast_fs_hash {
       std::thread threads[MAX_STACK_THREADS];
       for (int i = 0; i < spawned; ++i)
         threads[i] =
-          std::thread(&CacheStatMatchRunner::process_files, this, slab.ptr + static_cast<size_t>(i + 1) * READ_BUFFER_SIZE);
-      this->process_files(slab.ptr);
+          std::thread(&CacheStatMatchRunner::process_files, this,
+            slab.ptr + static_cast<size_t>(i + 1) * per_thread, prefix_len);
+      this->process_files(slab.ptr, prefix_len);
       for (int i = 0; i < spawned; ++i)
         threads[i].join();
 
@@ -127,8 +218,9 @@ namespace fast_fs_hash {
     }
 
     /** Per-thread stat+match loop. */
-    FSH_FORCE_INLINE void process_files(unsigned char * rbuf_raw) const {
-      unsigned char * const rbuf = assume_aligned<64>(rbuf_raw);
+    FSH_FORCE_INLINE void process_files(unsigned char * base, size_t prefix_len) const {
+      unsigned char * const rbuf = assume_aligned<64>(base);
+      char * const path_buf = reinterpret_cast<char *>(base + READ_BUFFER_SIZE);
       const size_t fc = this->file_count;
       const size_t wb = this->work_batch;
       uint8_t * const ent = this->entries_buf;
@@ -137,17 +229,17 @@ namespace fast_fs_hash {
       const char * const * const segs = this->segments;
 
       for (;;) {
-        const size_t base = this->next_index.fetch_add(wb, std::memory_order_relaxed);
-        if (base >= fc) [[unlikely]]
+        const size_t base_idx = this->next_index.fetch_add(wb, std::memory_order_relaxed);
+        if (base_idx >= fc) [[unlikely]]
           break;
-        const size_t batch_end = base + wb < fc ? base + wb : fc;
+        const size_t batch_end = base_idx + wb < fc ? base_idx + wb : fc;
 
-        for (size_t idx = base; idx < batch_end; ++idx) {
+        for (size_t idx = base_idx; idx < batch_end; ++idx) {
           // Cooperative early exit — stop on first detected change.
           if (this->early_exit.load(std::memory_order_relaxed)) [[unlikely]]
             return;
 
-          const char * const path = segs[idx];
+          const char * const rel = segs[idx];
           const size_t eOff = idx * CACHE_ENTRY_STRIDE;
 
           // Prefetch next iteration's path string, old entry, and write-warm output slots.
@@ -159,14 +251,17 @@ namespace fast_fs_hash {
           FSH_PREFETCH_W(ent + eOff);
 
           // Skip empty paths (rare: consecutive null terminators in pathsBuf).
-          if (path[0] == '\0') [[unlikely]] {
+          if (rel[0] == '\0') [[unlikely]] {
             memset(ent + eOff, 0, 32);
             states[idx] = CACHE_F_DONE;
             continue;
           }
 
+          // Resolve: path_buf already holds "rootPath/", append relative path.
+          copy_rel_path(path_buf + prefix_len, rel);
+
           // 1. stat() -> write 32-byte record to entries_buf
-          const bool stat_ok = file_stat_to(path, ent + eOff);
+          const bool stat_ok = file_stat_to(path_buf, ent + eOff);
 
           // 2. Compare 32-byte stat section with old entry
           if (memcmp(ent + eOff, old + eOff, 32) == 0) [[likely]] {
@@ -183,7 +278,7 @@ namespace fast_fs_hash {
             memcpy(&old_size, old + eOff + 24, 8);
 
             if (new_size == old_size && new_size > 0) [[unlikely]] {
-              hash_file_to(path, ent + eOff + 32, rbuf);
+              hash_file_to(path_buf, ent + eOff + 32, rbuf);
               if (memcmp(ent + eOff + 32, old + eOff + 32, 16) == 0) [[likely]] {
                 // Content hash matches — entry is unchanged.
                 states[idx] = CACHE_F_DONE;
@@ -209,12 +304,18 @@ namespace fast_fs_hash {
   /**
    * Parallel stat + hash for entries that still need work.
    * Skips F_DONE entries.  No early exit — all remaining entries must be completed.
+   *
+   * Like CacheStatMatchRunner, segments are relative paths with per-thread
+   * scratch for root prefix prepend.
    */
   struct CacheCompleteRunner {
     const char * const * segments;
     size_t file_count;
     uint8_t * entries_buf;
     uint8_t * file_states;
+    const char * root_path;
+    size_t root_len;
+    size_t max_seg_len;
     size_t work_batch = 0;
 
     alignas(64) mutable std::atomic<size_t> next_index{0};
@@ -250,8 +351,11 @@ namespace fast_fs_hash {
       this->work_batch = batch;
       this->next_index.store(0, std::memory_order_relaxed);
 
-      AlignedPtr<unsigned char> slab(64, static_cast<size_t>(tc) * READ_BUFFER_SIZE);
-      if (!slab) [[unlikely]]
+      // Allocate combined read-buffer + path-scratch slab, pre-write root prefix.
+      AlignedPtr<unsigned char> slab;
+      size_t per_thread, prefix_len;
+      if (!alloc_slab_with_scratch(tc, this->root_path, this->root_len, this->max_seg_len, slab, per_thread, prefix_len))
+          [[unlikely]]
         return false;
 
       g_active_hash_threads.fetch_add(tc, std::memory_order_relaxed);
@@ -260,8 +364,9 @@ namespace fast_fs_hash {
       std::thread threads[MAX_STACK_THREADS];
       for (int i = 0; i < spawned; ++i)
         threads[i] =
-          std::thread(&CacheCompleteRunner::process_files, this, slab.ptr + static_cast<size_t>(i + 1) * READ_BUFFER_SIZE);
-      this->process_files(slab.ptr);
+          std::thread(&CacheCompleteRunner::process_files, this,
+            slab.ptr + static_cast<size_t>(i + 1) * per_thread, prefix_len);
+      this->process_files(slab.ptr, prefix_len);
       for (int i = 0; i < spawned; ++i)
         threads[i].join();
 
@@ -270,8 +375,9 @@ namespace fast_fs_hash {
     }
 
     /** Per-thread stat+hash loop for remaining entries. */
-    FSH_FORCE_INLINE void process_files(unsigned char * rbuf_raw) const {
-      unsigned char * const rbuf = assume_aligned<64>(rbuf_raw);
+    FSH_FORCE_INLINE void process_files(unsigned char * base, size_t prefix_len) const {
+      unsigned char * const rbuf = assume_aligned<64>(base);
+      char * const path_buf = reinterpret_cast<char *>(base + READ_BUFFER_SIZE);
       const size_t fc = this->file_count;
       const size_t wb = this->work_batch;
       uint8_t * const ent = this->entries_buf;
@@ -279,17 +385,17 @@ namespace fast_fs_hash {
       const char * const * const segs = this->segments;
 
       for (;;) {
-        const size_t base = this->next_index.fetch_add(wb, std::memory_order_relaxed);
-        if (base >= fc) [[unlikely]]
+        const size_t base_idx = this->next_index.fetch_add(wb, std::memory_order_relaxed);
+        if (base_idx >= fc) [[unlikely]]
           break;
-        const size_t batch_end = base + wb < fc ? base + wb : fc;
+        const size_t batch_end = base_idx + wb < fc ? base_idx + wb : fc;
 
-        for (size_t idx = base; idx < batch_end; ++idx) {
+        for (size_t idx = base_idx; idx < batch_end; ++idx) {
           const uint8_t state = states[idx];
           if (state == CACHE_F_DONE) [[likely]]
             continue;
 
-          const char * const path = segs[idx];
+          const char * const rel = segs[idx];
           const size_t eOff = idx * CACHE_ENTRY_STRIDE;
 
           // Prefetch next non-done entry's path and write-warm its output slot.
@@ -300,15 +406,18 @@ namespace fast_fs_hash {
           FSH_PREFETCH_W(ent + eOff);
 
           // Skip empty paths.
-          if (path[0] == '\0') [[unlikely]] {
+          if (rel[0] == '\0') [[unlikely]] {
             continue;
           }
+
+          // Resolve: path_buf already holds "rootPath/", append relative path.
+          copy_rel_path(path_buf + prefix_len, rel);
 
           if (state == CACHE_F_HAS_OLD) {
             // Old entry (stat + hash) pre-populated in entries_buf from remapped cache.
             // Re-stat into temp, compare with old stat — if unchanged, hash is valid.
             uint8_t tmp[32];
-            const bool sok = file_stat_to(path, tmp);
+            const bool sok = file_stat_to(path_buf, tmp);
             if (sok && memcmp(tmp, ent + eOff, 32) == 0) [[likely]] {
               // Stat unchanged — hash at eOff+32 is still valid.
               states[idx] = CACHE_F_DONE;
@@ -318,7 +427,7 @@ namespace fast_fs_hash {
             memcpy(ent + eOff, tmp, 32);
             if (sok) [[likely]] {
               // Stat changed — rehash.
-              hash_file_to(path, ent + eOff + 32, rbuf);
+              hash_file_to(path_buf, ent + eOff + 32, rbuf);
             } else {
               // Stat failed — zero hash (file disappeared).
               memset(ent + eOff + 32, 0, 16);
@@ -330,7 +439,7 @@ namespace fast_fs_hash {
           // F_NOT_CHECKED: need full stat + hash.
           // F_NEED_HASH: stat already written, just need hash.
           if (state == CACHE_F_NOT_CHECKED) [[likely]] {
-            if (!file_stat_to(path, ent + eOff)) {
+            if (!file_stat_to(path_buf, ent + eOff)) {
               // Stat failed — entry zeroed by file_stat_to, zero hash too.
               memset(ent + eOff + 32, 0, 16);
               // State stays F_NOT_CHECKED (changed).
@@ -338,7 +447,7 @@ namespace fast_fs_hash {
             }
           }
 
-          hash_file_to(path, ent + eOff + 32, rbuf);
+          hash_file_to(path_buf, ent + eOff + 32, rbuf);
           // State stays as original (F_NOT_CHECKED or F_NEED_HASH — changed).
         }
       }

@@ -21,7 +21,7 @@ import { XXHash128 } from "../../packages/fast-fs-hash/src/xxhash128/xxhash128";
 
 //  - Fixture setup
 
-type CacheCtor = new (filePath: string, options?: FileHashCacheOptions) => FileHashCacheBase;
+type CacheCtor = new (rootPath: string, filePath: string, options?: FileHashCacheOptions) => FileHashCacheBase;
 
 const TEST_DIR = path.resolve(import.meta.dirname, "tmp/fhc-format-core");
 const FIXTURE_DIR = path.join(TEST_DIR, "fixtures");
@@ -63,7 +63,6 @@ afterAll(() => {
  */
 function buildExpected(opts: {
   version: number;
-  wasmBit?: number;
   userValues?: [number, number, number, number];
   fingerprint?: Uint8Array;
   /** Sorted file paths. */
@@ -75,7 +74,6 @@ function buildExpected(opts: {
   userData?: Buffer;
 }): Buffer {
   const n = opts.files.length;
-  const wasmBit = opts.wasmBit ?? 0;
   const pathsBuf = n > 0 ? encodeFilePaths(opts.files) : Buffer.alloc(0);
   const pathsLen = pathsBuf.length;
   const entriesLen = n * ENTRY_STRIDE;
@@ -94,8 +92,7 @@ function buildExpected(opts: {
   dv.setUint32((H_USER + 1) * 4, uv[1], true);
   dv.setUint32((H_USER + 2) * 4, uv[2], true);
   dv.setUint32((H_USER + 3) * 4, uv[3], true);
-  // file count with wasm bit: (count << 1) | wasmBit
-  dv.setUint32(H_FILE_COUNT * 4, (n << 1) | wasmBit, true);
+  dv.setUint32(H_FILE_COUNT * 4, n, true);
   if (opts.fingerprint) {
     buf.set(opts.fingerprint, H_FINGERPRINT_BYTE);
   }
@@ -139,31 +136,26 @@ async function statAndHash(files: string[]): Promise<{ stats: ReturnType<typeof 
   return { stats, hashes };
 }
 
+/** Convert absolute file paths to paths relative to the test fixture dir. */
+function toRelPaths(absPaths: string[]): string[] {
+  return absPaths.map((f) => path.relative(FIXTURE_DIR, f));
+}
+
 //  - Tests
 
 const backends = [
   { name: "native", Ctor: FileHashCache as CacheCtor },
-  { name: "wasm", Ctor: FileHashCacheWasm as CacheCtor, wasmBit: 1 },
+  { name: "wasm", Ctor: FileHashCacheWasm as CacheCtor },
 ] as const;
 
 describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
   const { Ctor } = backend;
-  let wasmBit = "wasmBit" in backend ? backend.wasmBit : 0;
-
-  beforeAll(async () => {
-    if ("wasmBit" in backend) {
-      wasmBit = backend.wasmBit;
-      return;
-    }
-    await using probe = new Ctor(cachePath("probe"), { version: 1 });
-    wasmBit = probe.libraryStatus === "wasm" ? 1 : 0;
-  });
 
   it("zero files: serialize returns 'deleted' and removes old cache", async () => {
     const cp = cachePath();
     // First, create a cache file with some content.
     {
-      await using cache = new Ctor(cp, { version: 1, writable: true });
+      await using cache = new Ctor(FIXTURE_DIR, cp, { version: 1 });
       cache.setFiles([fixtureFile("a.txt")]);
       await cache.validate();
       await cache.serialize();
@@ -172,7 +164,7 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
 
     // Now serialize with zero files — should delete the cache.
     {
-      await using cache = new Ctor(cp, { version: 1, writable: true });
+      await using cache = new Ctor(FIXTURE_DIR, cp, { version: 1 });
       cache.setFiles([]);
       await cache.validate();
       const result = await cache.serialize();
@@ -185,7 +177,7 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
     const cp = cachePath();
     const file = fixtureFile("a.txt");
     {
-      await using cache = new Ctor(cp, { version: 42, writable: true });
+      await using cache = new Ctor(FIXTURE_DIR, cp, { version: 42 });
       cache.setFiles([file]);
       await cache.validate();
       await cache.serialize();
@@ -193,7 +185,7 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
 
     const sorted = [file];
     const { stats, hashes } = await statAndHash(sorted);
-    const expected = buildExpected({ wasmBit, version: 42, files: sorted, stats, hashes });
+    const expected = buildExpected({ version: 42, files: toRelPaths(sorted), stats, hashes });
 
     const actual = readFileSync(cp);
     expect(actual).toEqual(expected);
@@ -203,7 +195,7 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
     const cp = cachePath();
     const files = [fixtureFile("c.txt"), fixtureFile("a.txt"), fixtureFile("b.txt")];
     {
-      await using cache = new Ctor(cp, { version: 7, writable: true });
+      await using cache = new Ctor(FIXTURE_DIR, cp, { version: 7 });
       cache.setFiles(files);
       await cache.validate();
       await cache.serialize();
@@ -211,7 +203,7 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
 
     const sorted = [...files].sort();
     const { stats, hashes } = await statAndHash(sorted);
-    const expected = buildExpected({ wasmBit, version: 7, files: sorted, stats, hashes });
+    const expected = buildExpected({ version: 7, files: toRelPaths(sorted), stats, hashes });
 
     const actual = readFileSync(cp);
     expect(actual).toEqual(expected);
@@ -225,7 +217,7 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
     const cp = cachePath();
     const file = fixtureFile("b.txt");
     {
-      await using cache = new Ctor(cp, { version: 5, writable: true, fingerprint: fp });
+      await using cache = new Ctor(FIXTURE_DIR, cp, { version: 5, fingerprint: fp });
       cache.setFiles([file]);
       await cache.validate();
       await cache.serialize();
@@ -233,7 +225,7 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
 
     const sorted = [file];
     const { stats, hashes } = await statAndHash(sorted);
-    const expected = buildExpected({ wasmBit, version: 5, files: sorted, stats, hashes, fingerprint: fp });
+    const expected = buildExpected({ version: 5, files: toRelPaths(sorted), stats, hashes, fingerprint: fp });
 
     const actual = readFileSync(cp);
     expect(actual).toEqual(expected);
@@ -243,7 +235,7 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
     const cp = cachePath();
     const file = fixtureFile("a.txt");
     {
-      await using cache = new Ctor(cp, { version: 3, writable: true });
+      await using cache = new Ctor(FIXTURE_DIR, cp, { version: 3 });
       cache.setFiles([file]);
       await cache.validate();
       cache.userValue0 = 0xdeadbeef;
@@ -256,9 +248,8 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
     const sorted = [file];
     const { stats, hashes } = await statAndHash(sorted);
     const expected = buildExpected({
-      wasmBit,
       version: 3,
-      files: sorted,
+      files: toRelPaths(sorted),
       stats,
       hashes,
       userValues: [0xdeadbeef, 0xcafebabe, 0x12345678, 0xaabbccdd],
@@ -274,7 +265,7 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
     const cp = cachePath();
     const files = [fixtureFile("b.txt"), fixtureFile("c.txt"), fixtureFile("a.txt")];
     {
-      await using cache = new Ctor(cp, { version: 99, writable: true, fingerprint: fp });
+      await using cache = new Ctor(FIXTURE_DIR, cp, { version: 99, fingerprint: fp });
       cache.setFiles(files);
       await cache.validate();
       cache.userValue0 = 1;
@@ -287,9 +278,8 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
     const sorted = [...files].sort();
     const { stats, hashes } = await statAndHash(sorted);
     const expected = buildExpected({
-      wasmBit,
       version: 99,
-      files: sorted,
+      files: toRelPaths(sorted),
       stats,
       hashes,
       fingerprint: fp,
@@ -305,7 +295,7 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
     const file = fixtureFile("a.txt");
     const userData = Buffer.from("my custom payload\x00\xff\xfe");
     {
-      await using cache = new Ctor(cp, { version: 1, writable: true });
+      await using cache = new Ctor(FIXTURE_DIR, cp, { version: 1 });
       cache.setFiles([file]);
       await cache.validate();
       await cache.serialize();
@@ -315,7 +305,7 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
 
     const sorted = [file];
     const { stats, hashes } = await statAndHash(sorted);
-    const expected = buildExpected({ wasmBit, version: 1, files: sorted, stats, hashes, userData });
+    const expected = buildExpected({ version: 1, files: toRelPaths(sorted), stats, hashes, userData });
 
     const actual = readFileSync(cp);
     expect(actual).toEqual(expected);
@@ -326,7 +316,7 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
     const file = fixtureFile("a.txt");
     const payload = Buffer.from("readable-payload");
     {
-      await using cache = new Ctor(cp, { version: 1, writable: true });
+      await using cache = new Ctor(FIXTURE_DIR, cp, { version: 1 });
       cache.setFiles([file]);
       await cache.validate();
       await cache.serialize();
@@ -334,7 +324,7 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
       cache.position += payload.length;
     }
 
-    await using reader = new Ctor(cp, { version: 1 });
+    await using reader = new Ctor(FIXTURE_DIR, cp, { version: 1 });
     reader.setFiles([file]);
     expect(await reader.validate()).toBe(true);
 
@@ -349,13 +339,13 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
     const cp2 = cachePath();
     const files = [fixtureFile("a.txt"), fixtureFile("b.txt")];
     {
-      await using c1 = new Ctor(cp1, { version: 7, writable: true });
+      await using c1 = new Ctor(FIXTURE_DIR, cp1, { version: 7 });
       c1.setFiles(files);
       await c1.validate();
       await c1.serialize();
     }
     {
-      await using c2 = new Ctor(cp2, { version: 7, writable: true });
+      await using c2 = new Ctor(FIXTURE_DIR, cp2, { version: 7 });
       c2.setFiles(files);
       await c2.validate();
       await c2.serialize();

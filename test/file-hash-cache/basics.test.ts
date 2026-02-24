@@ -57,37 +57,30 @@ describe("FileHashCache", () => {
 
   describe("class hierarchy", () => {
     it("FileHashCache extends FileHashCacheBase", () => {
-      const c = new FileHashCache(cachePath(), { version: 1 });
+      const c = new FileHashCache(FIXTURE_DIR, cachePath(), { version: 1 });
       expect(c).toBeInstanceOf(FileHashCacheBase);
     });
 
     it("FileHashCacheWasm extends FileHashCacheBase", () => {
-      const c = new FileHashCacheWasm(cachePath(), { version: 1 });
+      const c = new FileHashCacheWasm(FIXTURE_DIR, cachePath(), { version: 1 });
       expect(c).toBeInstanceOf(FileHashCacheBase);
     });
 
     it("constructor sets readonly properties", () => {
       const fp16 = new Uint8Array(16);
       fp16.fill(0x42);
-      const c = new FileHashCache(cachePath("props"), {
+      const c = new FileHashCache(FIXTURE_DIR, cachePath("props"), {
         version: 42,
-        writable: true,
         fingerprint: fp16,
       });
       expect(c.filePath).toContain("props");
       expect(c.version).toBe(42);
-      expect(c.writable).toBe(true);
       expect(c.position).toBe(0);
     });
 
     it("version is treated as u32", () => {
-      const c = new FileHashCache(cachePath(), { version: -1 });
+      const c = new FileHashCache(FIXTURE_DIR, cachePath(), { version: -1 });
       expect(c.version).toBe(0xffffffff);
-    });
-
-    it("writable defaults to false", () => {
-      const c = new FileHashCache(cachePath());
-      expect(c.writable).toBe(false);
     });
   });
 
@@ -116,54 +109,54 @@ describe("FileHashCache", () => {
     });
   });
 
-  //  - setFiles / getFiles
+  //  - setFiles / currentFiles
 
-  describe("setFiles / getFiles", () => {
+  describe("setFiles / currentFiles", () => {
     it("returns empty array before setFiles", () => {
-      const c = new FileHashCache(cachePath());
-      expect(c.getFiles()).toEqual([]);
+      const c = new FileHashCache(FIXTURE_DIR, cachePath());
+      expect(c.currentFiles).toEqual([]);
     });
 
     it("setFiles sorts and deduplicates", () => {
-      const c = new FileHashCache(cachePath());
+      const c = new FileHashCache(FIXTURE_DIR, cachePath());
       c.setFiles(["z.ts", "a.ts", "m.ts", "a.ts"]);
-      expect(c.getFiles()).toEqual(["a.ts", "m.ts", "z.ts"]);
+      expect(c.currentFiles).toEqual(["a.ts", "m.ts", "z.ts"]);
     });
 
     it("setFiles accepts iterables", () => {
-      const c = new FileHashCache(cachePath());
+      const c = new FileHashCache(FIXTURE_DIR, cachePath());
       c.setFiles(new Set(["b", "a", "c"]));
-      expect(c.getFiles()).toEqual(["a", "b", "c"]);
+      expect(c.currentFiles).toEqual(["a", "b", "c"]);
     });
 
-    it("getFiles() result is cached — returns same array reference on repeated calls", () => {
-      const c = new FileHashCache(cachePath());
+    it("currentFiles() result is cached — returns same array reference on repeated calls", () => {
+      const c = new FileHashCache(FIXTURE_DIR, cachePath());
       c.setFiles(["z.ts", "a.ts", "m.ts"]);
-      const first = c.getFiles();
-      const second = c.getFiles();
+      const first = c.currentFiles;
+      const second = c.currentFiles;
       expect(first).toBe(second);
     });
 
-    it("getFiles() lazily decodes paths after loading from cache without prior setFiles", async () => {
+    it("currentFiles() lazily decodes paths after loading from cache without prior setFiles", async () => {
       const cp = cachePath("gf-lazy");
       const files = [fixtureFile("a.txt"), fixtureFile("b.txt"), fixtureFile("c.txt")];
 
       // Seed the cache.
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         await c.serialize();
       }
 
       // Re-open and validate WITHOUT calling setFiles — paths come from the cache file.
       {
-        await using c = new FileHashCache(cp, { version: 1 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         await c.validate();
-        // getFiles() must lazily decode from the loaded _pathsBuf.
-        expect(c.getFiles()).toEqual([...files].sort());
+        // currentFiles() must lazily decode from the loaded _pathsBuf.
+        expect(c.currentFiles).toEqual(["a.txt", "b.txt", "c.txt"]);
         // Second call must return the same cached reference.
-        const first = c.getFiles();
-        const second = c.getFiles();
+        const first = c.currentFiles;
+        const second = c.currentFiles;
         expect(first).toBe(second);
       }
     });
@@ -173,25 +166,25 @@ describe("FileHashCache", () => {
 
   describe("fileCount", () => {
     it("is 0 before setFiles", () => {
-      const c = new FileHashCache(cachePath());
+      const c = new FileHashCache(FIXTURE_DIR, cachePath());
       expect(c.fileCount).toBe(0);
     });
 
-    it("equals getFiles().length after setFiles", () => {
-      const c = new FileHashCache(cachePath());
+    it("equals currentFiles().length after setFiles", () => {
+      const c = new FileHashCache(FIXTURE_DIR, cachePath());
       c.setFiles([fixtureFile("a.txt"), fixtureFile("b.txt"), fixtureFile("c.txt")]);
-      expect(c.fileCount).toBe(c.getFiles().length);
+      expect(c.fileCount).toBe(c.currentFiles.length);
       expect(c.fileCount).toBe(3);
     });
 
     it("reflects deduplication", () => {
-      const c = new FileHashCache(cachePath());
+      const c = new FileHashCache(FIXTURE_DIR, cachePath());
       c.setFiles(["x", "x", "y"]);
       expect(c.fileCount).toBe(2);
     });
 
     it("matches number of valid getFileHash indices after completion", async () => {
-      await using c = new FileHashCache(cachePath(), { version: 1, writable: true });
+      await using c = new FileHashCache(FIXTURE_DIR, cachePath(), { version: 1 });
       const files = [fixtureFile("a.txt"), fixtureFile("b.txt")];
       c.setFiles(files);
       await c.complete();
@@ -206,13 +199,13 @@ describe("FileHashCache", () => {
       const files = [fixtureFile("a.txt"), fixtureFile("b.txt"), fixtureFile("c.txt")];
 
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         await c.serialize();
       }
 
       {
-        await using c = new FileHashCache(cp, { version: 1 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         await c.validate();
         expect(c.fileCount).toBe(files.length);
       }
@@ -223,25 +216,25 @@ describe("FileHashCache", () => {
 
   describe("getFileCount", () => {
     it("returns 0 before setFiles", () => {
-      const c = new FileHashCache(cachePath());
+      const c = new FileHashCache(FIXTURE_DIR, cachePath());
       expect(c.getFileCount()).toBe(0);
     });
 
     it("matches fileCount getter after setFiles", () => {
-      const c = new FileHashCache(cachePath());
+      const c = new FileHashCache(FIXTURE_DIR, cachePath());
       c.setFiles([fixtureFile("a.txt"), fixtureFile("b.txt")]);
       expect(c.getFileCount()).toBe(c.fileCount);
       expect(c.getFileCount()).toBe(2);
     });
 
     it("reflects deduplication (same as getter)", () => {
-      const c = new FileHashCache(cachePath());
+      const c = new FileHashCache(FIXTURE_DIR, cachePath());
       c.setFiles(["x", "x", "y"]);
       expect(c.getFileCount()).toBe(2);
     });
 
     it("returns 0 when not loaded and stays consistent with fileCount", () => {
-      const c = new FileHashCache(cachePath());
+      const c = new FileHashCache(FIXTURE_DIR, cachePath());
       expect(c.getFileCount()).toBe(0);
       expect(c.getFileCount()).toBe(c.fileCount);
     });
@@ -251,13 +244,13 @@ describe("FileHashCache", () => {
       const files = [fixtureFile("a.txt"), fixtureFile("b.txt")];
 
       {
-        await using c = new FileHashCache(cp, { version: 1, writable: true });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         c.setFiles(files);
         await c.serialize();
       }
 
       {
-        await using c = new FileHashCache(cp, { version: 1 });
+        await using c = new FileHashCache(FIXTURE_DIR, cp, { version: 1 });
         await c.validate();
         expect(c.getFileCount()).toBe(files.length);
         expect(c.getFileCount()).toBe(c.fileCount);
@@ -269,7 +262,7 @@ describe("FileHashCache", () => {
 
   describe("userValue0-3", () => {
     it("starts as all zeros", () => {
-      const c = new FileHashCache(cachePath());
+      const c = new FileHashCache(FIXTURE_DIR, cachePath());
       expect(c.userValue0).toBe(0);
       expect(c.userValue1).toBe(0);
       expect(c.userValue2).toBe(0);

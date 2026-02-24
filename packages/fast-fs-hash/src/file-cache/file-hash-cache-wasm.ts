@@ -16,16 +16,18 @@ let _implWasm: FileHashCacheImpl | null = null;
  * @example
  * ```ts
  * await FileHashCacheWasm.init();
- * const cache = new FileHashCacheWasm(".cache/fsh", { version: 1 });
+ * const cache = new FileHashCacheWasm("/my/project", ".cache/fsh", { version: 1 });
  * ```
  */
 export class FileHashCacheWasm extends FileHashCacheBase {
   /**
+   * @param rootPath  Absolute path to the project root directory, or `true`
+   *   to auto-compute the root from the file list.
    * @param filePath  Path to the cache file on disk.
-   * @param options   Configuration (version, fingerprint, writable, seeds).
+   * @param options   Configuration (version, fingerprint, seeds).
    */
-  public constructor(filePath: string, options?: FileHashCacheOptions) {
-    super(filePath, options, (_implWasm ??= createWasmFileHashCacheImpl()));
+  public constructor(rootPath: string | true, filePath: string, options?: FileHashCacheOptions) {
+    super(rootPath, filePath, options, (_implWasm ??= createWasmFileHashCacheImpl()));
   }
 
   /**

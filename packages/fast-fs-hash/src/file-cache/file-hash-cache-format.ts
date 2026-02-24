@@ -14,7 +14,7 @@
  *    3    12      userValue1  │ 4 × u32, user-defined, not validated
  *    4    16      userValue2  │
  *    5    20      userValue3  ┘
- *    6    24      File count ← (count << 1) | wasmBit
+ *    6    24      File count (u32)
  *    7    28      Fingerprint word 0  ┐
  *    8    32      Fingerprint word 1  │ 16-byte xxHash3-128
  *    9    36      Fingerprint word 2  │
@@ -73,7 +73,7 @@ export const H_VERSION = 1;
 /** Header - Slot 2: First user value. Slots 2-5 hold 4 u32 user values. */
 export const H_USER = 2;
 
-/** Header - Slot 6: File count with wasm bit — `(count << 1) | wasmBit`. */
+/** Header - Slot 6: File count (u32). */
 export const H_FILE_COUNT = 6;
 
 /** Header - Byte offset of the 16-byte fingerprint within the header (slot 7 × 4 = 28). */

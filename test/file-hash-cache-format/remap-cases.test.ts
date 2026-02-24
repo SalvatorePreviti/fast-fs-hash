@@ -21,7 +21,7 @@ import { XXHash128 } from "../../packages/fast-fs-hash/src/xxhash128/xxhash128";
 
 //  - Fixture setup
 
-type CacheCtor = new (filePath: string, options?: FileHashCacheOptions) => FileHashCacheBase;
+type CacheCtor = new (rootPath: string, filePath: string, options?: FileHashCacheOptions) => FileHashCacheBase;
 
 const TEST_DIR = path.resolve(import.meta.dirname, "tmp/fhc-format-remap");
 const FIXTURE_DIR = path.join(TEST_DIR, "fixtures");
@@ -63,7 +63,6 @@ afterAll(() => {
  */
 function buildExpected(opts: {
   version: number;
-  wasmBit?: number;
   userValues?: [number, number, number, number];
   fingerprint?: Uint8Array;
   /** Sorted file paths. */
@@ -75,7 +74,6 @@ function buildExpected(opts: {
   userData?: Buffer;
 }): Buffer {
   const n = opts.files.length;
-  const wasmBit = opts.wasmBit ?? 0;
   const pathsBuf = n > 0 ? encodeFilePaths(opts.files) : Buffer.alloc(0);
   const pathsLen = pathsBuf.length;
   const entriesLen = n * ENTRY_STRIDE;
@@ -94,8 +92,7 @@ function buildExpected(opts: {
   dv.setUint32((H_USER + 1) * 4, uv[1], true);
   dv.setUint32((H_USER + 2) * 4, uv[2], true);
   dv.setUint32((H_USER + 3) * 4, uv[3], true);
-  // file count with wasm bit: (count << 1) | wasmBit
-  dv.setUint32(H_FILE_COUNT * 4, (n << 1) | wasmBit, true);
+  dv.setUint32(H_FILE_COUNT * 4, n, true);
   if (opts.fingerprint) {
     buf.set(opts.fingerprint, H_FINGERPRINT_BYTE);
   }
@@ -139,25 +136,20 @@ async function statAndHash(files: string[]): Promise<{ stats: ReturnType<typeof 
   return { stats, hashes };
 }
 
+/** Convert absolute file paths to paths relative to the test fixture dir. */
+function toRelPaths(absPaths: string[]): string[] {
+  return absPaths.map((f) => path.relative(FIXTURE_DIR, f));
+}
+
 //  - Tests
 
 const backends = [
   { name: "native", Ctor: FileHashCache as CacheCtor },
-  { name: "wasm", Ctor: FileHashCacheWasm as CacheCtor, wasmBit: 1 },
+  { name: "wasm", Ctor: FileHashCacheWasm as CacheCtor },
 ] as const;
 
 describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
   const { Ctor } = backend;
-  let wasmBit = "wasmBit" in backend ? backend.wasmBit : 0;
-
-  beforeAll(async () => {
-    if ("wasmBit" in backend) {
-      wasmBit = backend.wasmBit;
-      return;
-    }
-    await using probe = new Ctor(cachePath("probe"), { version: 1 });
-    wasmBit = probe.libraryStatus === "wasm" ? 1 : 0;
-  });
 
   it("remove file from start: indices shift correctly (old[1]->new[0], old[2]->new[1])", async () => {
     const cp = cachePath("rm-start");
@@ -165,14 +157,14 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
     const files2 = [fixtureFile("b.txt"), fixtureFile("c.txt")]; // a removed
 
     {
-      await using c = new Ctor(cp, { version: 4, writable: true });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 4 });
       c.setFiles(files1);
       await c.validate();
       await c.serialize();
     }
 
     {
-      await using c = new Ctor(cp, { version: 4, writable: true });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 4 });
       c.setFiles(files2);
       expect(await c.validate()).toBe(false);
       await c.serialize();
@@ -180,12 +172,12 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
 
     const sorted = [...files2].sort();
     const { stats, hashes } = await statAndHash(sorted);
-    const expected = buildExpected({ wasmBit, version: 4, files: sorted, stats, hashes });
+    const expected = buildExpected({ version: 4, files: toRelPaths(sorted), stats, hashes });
     const actual = readFileSync(cp);
     expect(actual).toEqual(expected);
 
     {
-      await using c = new Ctor(cp, { version: 4 });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 4 });
       c.setFiles(files2);
       expect(await c.validate()).toBe(true);
     }
@@ -197,14 +189,14 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
     const files2 = [fixtureFile("a.txt"), fixtureFile("b.txt"), fixtureFile("c.txt")]; // a added at start
 
     {
-      await using c = new Ctor(cp, { version: 6, writable: true });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 6 });
       c.setFiles(files1);
       await c.validate();
       await c.serialize();
     }
 
     {
-      await using c = new Ctor(cp, { version: 6, writable: true });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 6 });
       c.setFiles(files2);
       expect(await c.validate()).toBe(false);
       await c.serialize();
@@ -212,12 +204,12 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
 
     const sorted = [...files2].sort();
     const { stats, hashes } = await statAndHash(sorted);
-    const expected = buildExpected({ wasmBit, version: 6, files: sorted, stats, hashes });
+    const expected = buildExpected({ version: 6, files: toRelPaths(sorted), stats, hashes });
     const actual = readFileSync(cp);
     expect(actual).toEqual(expected);
 
     {
-      await using c = new Ctor(cp, { version: 6 });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 6 });
       c.setFiles(files2);
       expect(await c.validate()).toBe(true);
     }
@@ -229,14 +221,14 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
     const files2 = [fixtureFile("b.txt"), fixtureFile("c.txt"), fixtureFile("d.txt")];
 
     {
-      await using c = new Ctor(cp, { version: 2, writable: true });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 2 });
       c.setFiles(files1);
       await c.validate();
       await c.serialize();
     }
 
     {
-      await using c = new Ctor(cp, { version: 2, writable: true });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 2 });
       c.setFiles(files2);
       expect(await c.validate()).toBe(false);
       await c.serialize();
@@ -244,12 +236,12 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
 
     const sorted = [...files2].sort();
     const { stats, hashes } = await statAndHash(sorted);
-    const expected = buildExpected({ wasmBit, version: 2, files: sorted, stats, hashes });
+    const expected = buildExpected({ version: 2, files: toRelPaths(sorted), stats, hashes });
     const actual = readFileSync(cp);
     expect(actual).toEqual(expected);
 
     {
-      await using c = new Ctor(cp, { version: 2 });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 2 });
       c.setFiles(files2);
       expect(await c.validate()).toBe(true);
     }
@@ -261,14 +253,14 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
     const files2 = [fixtureFile("d.txt"), fixtureFile("e.txt")]; // completely disjoint
 
     {
-      await using c = new Ctor(cp, { version: 3, writable: true });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 3 });
       c.setFiles(files1);
       await c.validate();
       await c.serialize();
     }
 
     {
-      await using c = new Ctor(cp, { version: 3, writable: true });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 3 });
       c.setFiles(files2);
       expect(await c.validate()).toBe(false);
       await c.serialize();
@@ -276,12 +268,12 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
 
     const sorted = [...files2].sort();
     const { stats, hashes } = await statAndHash(sorted);
-    const expected = buildExpected({ wasmBit, version: 3, files: sorted, stats, hashes });
+    const expected = buildExpected({ version: 3, files: toRelPaths(sorted), stats, hashes });
     const actual = readFileSync(cp);
     expect(actual).toEqual(expected);
 
     {
-      await using c = new Ctor(cp, { version: 3 });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 3 });
       c.setFiles(files2);
       expect(await c.validate()).toBe(true);
     }
@@ -299,14 +291,14 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
     ];
 
     {
-      await using c = new Ctor(cp, { version: 8, writable: true });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 8 });
       c.setFiles(files1);
       await c.validate();
       await c.serialize();
     }
 
     {
-      await using c = new Ctor(cp, { version: 8, writable: true });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 8 });
       c.setFiles(files2);
       expect(await c.validate()).toBe(false);
       await c.serialize();
@@ -314,12 +306,12 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
 
     const sorted = [...files2].sort();
     const { stats, hashes } = await statAndHash(sorted);
-    const expected = buildExpected({ wasmBit, version: 8, files: sorted, stats, hashes });
+    const expected = buildExpected({ version: 8, files: toRelPaths(sorted), stats, hashes });
     const actual = readFileSync(cp);
     expect(actual).toEqual(expected);
 
     {
-      await using c = new Ctor(cp, { version: 8 });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 8 });
       c.setFiles(files2);
       expect(await c.validate()).toBe(true);
     }
@@ -337,14 +329,14 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
     const files2 = [fixtureFile("c.txt")]; // c was at old index 2, new index 0
 
     {
-      await using c = new Ctor(cp, { version: 9, writable: true });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 9 });
       c.setFiles(files1);
       await c.validate();
       await c.serialize();
     }
 
     {
-      await using c = new Ctor(cp, { version: 9, writable: true });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 9 });
       c.setFiles(files2);
       expect(await c.validate()).toBe(false);
       await c.serialize();
@@ -352,12 +344,12 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
 
     const sorted = [...files2].sort();
     const { stats, hashes } = await statAndHash(sorted);
-    const expected = buildExpected({ wasmBit, version: 9, files: sorted, stats, hashes });
+    const expected = buildExpected({ version: 9, files: toRelPaths(sorted), stats, hashes });
     const actual = readFileSync(cp);
     expect(actual).toEqual(expected);
 
     {
-      await using c = new Ctor(cp, { version: 9 });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 9 });
       c.setFiles(files2);
       expect(await c.validate()).toBe(true);
     }
@@ -369,7 +361,7 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
 
     // Write initial cache.
     {
-      await using c = new Ctor(cp, { version: 11, writable: true });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 11 });
       c.setFiles(files1);
       await c.validate();
       await c.serialize();
@@ -383,7 +375,7 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
     // b F_HAS_OLD (unchanged->keep), c F_NOT_CHECKED (fresh).
     const files2 = [fixtureFile("a.txt"), fixtureFile("b.txt"), fixtureFile("c.txt")];
     {
-      await using c = new Ctor(cp, { version: 11, writable: true });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 11 });
       c.setFiles(files2);
       expect(await c.validate()).toBe(false);
       await c.serialize();
@@ -391,12 +383,12 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
 
     const sorted = [...files2].sort();
     const { stats, hashes } = await statAndHash(sorted);
-    const expected = buildExpected({ wasmBit, version: 11, files: sorted, stats, hashes });
+    const expected = buildExpected({ version: 11, files: toRelPaths(sorted), stats, hashes });
     const actual = readFileSync(cp);
     expect(actual).toEqual(expected);
 
     {
-      await using c = new Ctor(cp, { version: 11 });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 11 });
       c.setFiles(files2);
       expect(await c.validate()).toBe(true);
     }
@@ -417,7 +409,7 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
       fixtureFile("e.txt"),
     ];
     {
-      await using c = new Ctor(cp, { version: 20, writable: true });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 20 });
       c.setFiles(all5);
       await c.validate();
       await c.serialize();
@@ -426,7 +418,7 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
     // Step 2: shrink to [b, d] — a(removed), b(1->0), c(removed), d(3->1), e(removed)
     const bd = [fixtureFile("b.txt"), fixtureFile("d.txt")];
     {
-      await using c = new Ctor(cp, { version: 20, writable: true });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 20 });
       c.setFiles(bd);
       expect(await c.validate()).toBe(false);
       await c.serialize();
@@ -434,14 +426,14 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
     {
       const sorted = [...bd].sort();
       const { stats, hashes } = await statAndHash(sorted);
-      const expected = buildExpected({ wasmBit, version: 20, files: sorted, stats, hashes });
+      const expected = buildExpected({ version: 20, files: toRelPaths(sorted), stats, hashes });
       expect(readFileSync(cp)).toEqual(expected);
     }
 
     // Step 3: grow to [a, c, e] — no overlap with [b, d], all fresh
     const ace = [fixtureFile("a.txt"), fixtureFile("c.txt"), fixtureFile("e.txt")];
     {
-      await using c = new Ctor(cp, { version: 20, writable: true });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 20 });
       c.setFiles(ace);
       expect(await c.validate()).toBe(false);
       await c.serialize();
@@ -449,13 +441,13 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
     {
       const sorted = [...ace].sort();
       const { stats, hashes } = await statAndHash(sorted);
-      const expected = buildExpected({ wasmBit, version: 20, files: sorted, stats, hashes });
+      const expected = buildExpected({ version: 20, files: toRelPaths(sorted), stats, hashes });
       expect(readFileSync(cp)).toEqual(expected);
     }
 
     // Step 4: grow back to [a, b, c, d, e] — a(0->0), c(1->2), e(2->4), b+d fresh
     {
-      await using c = new Ctor(cp, { version: 20, writable: true });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 20 });
       c.setFiles(all5);
       expect(await c.validate()).toBe(false);
       await c.serialize();
@@ -463,13 +455,13 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
     {
       const sorted = [...all5].sort();
       const { stats, hashes } = await statAndHash(sorted);
-      const expected = buildExpected({ wasmBit, version: 20, files: sorted, stats, hashes });
+      const expected = buildExpected({ version: 20, files: toRelPaths(sorted), stats, hashes });
       expect(readFileSync(cp)).toEqual(expected);
     }
 
     // Step 5: validate succeeds with the final file list.
     {
-      await using c = new Ctor(cp, { version: 20 });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 20 });
       c.setFiles(all5);
       expect(await c.validate()).toBe(true);
     }
@@ -482,7 +474,7 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
     const files2 = [fixtureFile("c.txt"), fixtureFile("b.txt"), fixtureFile("a.txt")];
 
     {
-      await using c = new Ctor(cp, { version: 7, writable: true });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 7 });
       c.setFiles(files1);
       await c.validate();
       await c.serialize();
@@ -490,7 +482,7 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
 
     // Same files in different input order -> validate should PASS (sorted set matches).
     {
-      await using c = new Ctor(cp, { version: 7 });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 7 });
       c.setFiles(files2);
       expect(await c.validate()).toBe(true);
     }
@@ -508,7 +500,7 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
 
     // Write with fp1.
     {
-      await using c = new Ctor(cp, { version: 1, writable: true, fingerprint: fp1 });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 1, fingerprint: fp1 });
       c.setFiles(files1);
       await c.validate();
       await c.serialize();
@@ -517,7 +509,7 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
     // Open with fp2 + different files -> fingerprint mismatch blocks remap.
     // All entries must be computed from scratch.
     {
-      await using c = new Ctor(cp, { version: 1, writable: true, fingerprint: fp2 });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 1, fingerprint: fp2 });
       c.setFiles(files2);
       expect(await c.validate()).toBe(false);
       await c.serialize();
@@ -526,9 +518,8 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
     const sorted = [...files2].sort();
     const { stats, hashes } = await statAndHash(sorted);
     const expected = buildExpected({
-      wasmBit,
       version: 1,
-      files: sorted,
+      files: toRelPaths(sorted),
       stats,
       hashes,
       fingerprint: fp2,
@@ -537,7 +528,7 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
     expect(actual).toEqual(expected);
 
     {
-      await using c = new Ctor(cp, { version: 1, fingerprint: fp2 });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 1, fingerprint: fp2 });
       c.setFiles(files2);
       expect(await c.validate()).toBe(true);
     }
@@ -549,7 +540,7 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
     const files2 = [fixtureFile("b.txt"), fixtureFile("c.txt")];
 
     {
-      await using c = new Ctor(cp, { version: 1, writable: true });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 1 });
       c.setFiles(files1);
       await c.validate();
       await c.serialize();
@@ -557,7 +548,7 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
 
     // Different version -> magic/version check fails -> no remap, no old entries.
     {
-      await using c = new Ctor(cp, { version: 2, writable: true });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 2 });
       c.setFiles(files2);
       expect(await c.validate()).toBe(false);
       await c.serialize();
@@ -565,12 +556,12 @@ describe.each(backends)("FileHashCache binary format ($name)", (backend) => {
 
     const sorted = [...files2].sort();
     const { stats, hashes } = await statAndHash(sorted);
-    const expected = buildExpected({ wasmBit, version: 2, files: sorted, stats, hashes });
+    const expected = buildExpected({ version: 2, files: toRelPaths(sorted), stats, hashes });
     const actual = readFileSync(cp);
     expect(actual).toEqual(expected);
 
     {
-      await using c = new Ctor(cp, { version: 2 });
+      await using c = new Ctor(FIXTURE_DIR, cp, { version: 2 });
       c.setFiles(files2);
       expect(await c.validate()).toBe(true);
     }
