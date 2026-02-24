@@ -64,6 +64,26 @@ namespace fast_fs_hash {
     size_t max_path_len;  // longest path in segments (bytes, excl. NUL)
     size_t work_batch = 0;
 
+    /** Per-thread argument block (lives on the caller's stack). */
+    struct ThreadArg {
+      HashFilesWorker * self;
+      unsigned char * base;
+#ifdef _WIN32
+      wchar_t * wpath_scratch;
+      int wpath_cap;
+#endif
+    };
+
+    /** Static thread entry point — no lambdas, no captures. */
+    static void thread_proc(void * raw) {
+      auto * a = static_cast<ThreadArg *>(raw);
+      a->self->process_files(a->base
+#ifdef _WIN32
+        , a->wpath_scratch, a->wpath_cap
+#endif
+      );
+    }
+
     //  - Cache line 1: hot contended atomic (bounces between all cores)
     // Separated to prevent false sharing with the read-only fields above.
     alignas(64) mutable std::atomic<size_t> next_index{0};
@@ -137,17 +157,17 @@ namespace fast_fs_hash {
       g_active_hash_threads.fetch_add(tc, std::memory_order_relaxed);
 
       const int spawned = tc - 1;
+      ThreadArg args[MAX_STACK_THREADS];
       Thread threads[MAX_STACK_THREADS];
       for (int i = 0; i < spawned; ++i) {
         unsigned char * base = slab.ptr + static_cast<size_t>(i + 1) * per_thread;
-        threads[i] = Thread::create([this, base]() {
-          this->process_files(base
+        args[i] = {this, base
 #ifdef _WIN32
-            , reinterpret_cast<wchar_t *>(base + READ_BUFFER_SIZE)
-            , static_cast<int>(this->max_path_len + 1)
+          , reinterpret_cast<wchar_t *>(base + READ_BUFFER_SIZE)
+          , static_cast<int>(this->max_path_len + 1)
 #endif
-          );
-        });
+        };
+        threads[i] = Thread::create(thread_proc, &args[i]);
       }
       {
         unsigned char * base0 = slab.ptr;

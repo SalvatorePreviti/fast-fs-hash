@@ -1,6 +1,6 @@
 {
   "_description": "SHA-256 hashes of build artifacts and source code. Regenerated on every build.",
-  "generatedAt": "2026-02-24T03:16:14.588Z",
+  "generatedAt": "2026-02-24T03:34:09.501Z",
   "distArtifacts": {
     "index.cjs": {
       "sha256": "a2ce714d0c5fe89287130022222ab510e9a9ccad35c32eaa6fa1413c6a0b729d",
@@ -118,9 +118,9 @@
         "lines": 352
       },
       "CacheWorkers.h": {
-        "sha256": "c061aa5dedb33b83d97a866b1aa71428bb93442c14dc9bcd248a87bb6a4060f6",
-        "bytes": 19256,
-        "lines": 516
+        "sha256": "f2489870e924462c039ed792c5eabca100a2dcc81b5c9f630292c307547ac9c8",
+        "bytes": 20159,
+        "lines": 544
       },
       "FileHandle.h": {
         "sha256": "53b57870e88c1fc902033e339e509a998b4456e1a97bbfd1ad89621c2b643c40",
@@ -143,9 +143,9 @@
         "lines": 142
       },
       "HashFilesWorker.h": {
-        "sha256": "441aa4a4a413c5344c5589b298053bd3ab23ded7e18ad99d4011f5f1f084a4f4",
-        "bytes": 9255,
-        "lines": 242
+        "sha256": "6ee94c2a320bad7408b5d2d5972f8d4958c3f47996e353f555b340ba6193d7f3",
+        "bytes": 9781,
+        "lines": 262
       },
       "InstanceHashWorker.h": {
         "sha256": "ca2603cf63669296959e3664544a51b34b142dfadbf8c2aa7c5e15f763cf217e",
@@ -178,9 +178,9 @@
         "lines": 225
       },
       "Thread.h": {
-        "sha256": "9248e4ae2f35359f5e8b4478133bbadf9a37f773339328752dd4ced92874a9f5",
-        "bytes": 4490,
-        "lines": 175
+        "sha256": "d5b3ef5ddb0a8c63d7c0d2938bd24fcec5e8f910601a1b17c88697a975956036",
+        "bytes": 4053,
+        "lines": 168
       },
       "UpdateFileWorker.h": {
         "sha256": "145dbc1929af949138b42392fe74315ae27d7f4c54a5372b98b20f6fde1b1498",

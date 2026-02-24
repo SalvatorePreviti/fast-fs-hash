@@ -175,6 +175,20 @@ namespace fast_fs_hash {
     size_t max_seg_len;
     size_t work_batch = 0;
 
+    /** Per-thread argument block (lives on the caller's stack). */
+    struct ThreadArg {
+      CacheStatMatchRunner * self;
+      unsigned char * base;
+      size_t prefix_len;
+      size_t path_stride;
+    };
+
+    /** Static thread entry point — no lambdas, no captures. */
+    static void thread_proc(void * raw) {
+      auto * a = static_cast<ThreadArg *>(raw);
+      a->self->process_files(a->base, a->prefix_len, a->path_stride);
+    }
+
     //  - Cache line 1: hot contended atomic (work-stealing counter)
     alignas(64) mutable std::atomic<size_t> next_index{0};
 
@@ -228,12 +242,12 @@ namespace fast_fs_hash {
       g_active_hash_threads.fetch_add(tc, std::memory_order_relaxed);
 
       const int spawned = tc - 1;
+      ThreadArg args[MAX_STACK_THREADS];
       Thread threads[MAX_STACK_THREADS];
       for (int i = 0; i < spawned; ++i) {
         auto * base = slab.ptr + static_cast<size_t>(i + 1) * per_thread;
-        threads[i] = Thread::create([this, base, prefix_len, path_stride]() {
-          this->process_files(base, prefix_len, path_stride);
-        });
+        args[i] = {this, base, prefix_len, path_stride};
+        threads[i] = Thread::create(thread_proc, &args[i]);
       }
       this->process_files(slab.ptr, prefix_len, path_stride);
       for (int i = 0; i < spawned; ++i)
@@ -358,6 +372,20 @@ namespace fast_fs_hash {
     size_t max_seg_len;
     size_t work_batch = 0;
 
+    /** Per-thread argument block (lives on the caller's stack). */
+    struct ThreadArg {
+      CacheCompleteRunner * self;
+      unsigned char * base;
+      size_t prefix_len;
+      size_t path_stride;
+    };
+
+    /** Static thread entry point — no lambdas, no captures. */
+    static void thread_proc(void * raw) {
+      auto * a = static_cast<ThreadArg *>(raw);
+      a->self->process_files(a->base, a->prefix_len, a->path_stride);
+    }
+
     alignas(64) mutable std::atomic<size_t> next_index{0};
 
     /** Run parallel stat+hash.  Returns false on OOM only. */
@@ -401,12 +429,12 @@ namespace fast_fs_hash {
       g_active_hash_threads.fetch_add(tc, std::memory_order_relaxed);
 
       const int spawned = tc - 1;
+      ThreadArg args[MAX_STACK_THREADS];
       Thread threads[MAX_STACK_THREADS];
       for (int i = 0; i < spawned; ++i) {
         auto * base = slab.ptr + static_cast<size_t>(i + 1) * per_thread;
-        threads[i] = Thread::create([this, base, prefix_len, path_stride]() {
-          this->process_files(base, prefix_len, path_stride);
-        });
+        args[i] = {this, base, prefix_len, path_stride};
+        threads[i] = Thread::create(thread_proc, &args[i]);
       }
       this->process_files(slab.ptr, prefix_len, path_stride);
       for (int i = 0; i < spawned; ++i)

@@ -31,11 +31,13 @@ namespace fast_fs_hash {
 
     Thread(Thread && o) noexcept
 #ifdef _WIN32
-      : h_(o.h_) {
+      :
+      h_(o.h_) {
       o.h_ = nullptr;
     }
 #else
-      : t_(o.t_), joinable_(o.joinable_) {
+      :
+      t_(o.t_), joinable_(o.joinable_) {
       o.joinable_ = false;
     }
 #endif
@@ -94,45 +96,26 @@ namespace fast_fs_hash {
     }
 
     /**
-     * Create and start a thread running `fn()`.
+     * Create and start a thread running `fn(arg)`.
      *
-     * Returns an empty (non-joinable) Thread on allocation or OS failure —
-     * safe for work-stealing loops where the caller + surviving threads
-     * will drain the remaining work.
+     * Returns an empty (non-joinable) Thread on OS failure — safe for
+     * work-stealing loops where the caller + surviving threads will
+     * drain the remaining work.
      *
-     * One heap allocation per thread (type-erased context); freed by the
-     * new thread itself after moving the callable to a stack local.
+     * One small heap allocation (two pointers) per thread; freed by
+     * the new thread before invoking fn.
      */
-    template <typename Fn>
-    static Thread create(Fn fn) noexcept {
-      // Type-erased callable context — header (trampoline pointer) + payload.
-      // Allocated with malloc, constructed with placement new, freed by the
-      // new thread after invoking fn.
-      struct Ctx {
-        void (*trampoline)(void *);
-        Fn fn;
-      };
-
-      void * mem = malloc(sizeof(Ctx));
-      if (!mem) [[unlikely]]
+    static Thread create(void (*fn)(void *), void * arg) noexcept {
+      auto * ctx = static_cast<StartCtx_ *>(malloc(sizeof(StartCtx_)));
+      if (!ctx) [[unlikely]]
         return {};
-
-      // Construct the callable via placement new.
-      auto * ctx = static_cast<Ctx *>(mem);
-      ctx->trampoline = [](void * raw) {
-        auto * c = static_cast<Ctx *>(raw);
-        Fn local(static_cast<Fn &&>(c->fn));
-        c->fn.~Fn();
-        free(c);
-        local();
-      };
-      ::new (&ctx->fn) Fn(static_cast<Fn &&>(fn));
+      ctx->fn = fn;
+      ctx->arg = arg;
 
       Thread t;
 #ifdef _WIN32
       uintptr_t h = _beginthreadex(nullptr, 0, entry_win32_, ctx, 0, nullptr);
       if (!h) [[unlikely]] {
-        ctx->fn.~Fn();
         free(ctx);
         return {};
       }
@@ -140,7 +123,6 @@ namespace fast_fs_hash {
 #else
       int rc = pthread_create(&t.t_, nullptr, entry_posix_, ctx);
       if (rc != 0) [[unlikely]] {
-        ctx->fn.~Fn();
         free(ctx);
         return {};
       }
@@ -150,18 +132,31 @@ namespace fast_fs_hash {
     }
 
    private:
-    // Platform thread entry points.  Read the trampoline function
-    // pointer from the start of the type-erased context and invoke it.
-    // These must have C-compatible signatures matching the OS thread API.
+    /** Small POD forwarded to the OS thread entry point. */
+    struct StartCtx_ {
+      void (*fn)(void *);
+      void * arg;
+    };
+
+    // Platform thread entry points — read fn+arg from the heap context,
+    // free it, then call fn(arg).
 #ifdef _WIN32
     static unsigned __stdcall entry_win32_(void * raw) {
-      static_cast<void (**)(void *)>(raw)[0](raw);
+      auto * ctx = static_cast<StartCtx_ *>(raw);
+      auto fn = ctx->fn;
+      auto arg = ctx->arg;
+      free(ctx);
+      fn(arg);
       return 0;
     }
     HANDLE h_ = nullptr;
 #else
     static void * entry_posix_(void * raw) {
-      static_cast<void (**)(void *)>(raw)[0](raw);
+      auto * ctx = static_cast<StartCtx_ *>(raw);
+      auto fn = ctx->fn;
+      auto arg = ctx->arg;
+      free(ctx);
+      fn(arg);
       return nullptr;
     }
     pthread_t t_{};
