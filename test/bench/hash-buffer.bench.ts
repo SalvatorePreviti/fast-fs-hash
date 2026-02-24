@@ -20,13 +20,11 @@ describe("static hash() — in-memory buffer", async () => {
   await XXHash128.init();
   await XXHash128Wasm.init();
 
-  const small = randomBytes(1024);
+  const small = randomBytes(2048);
   const medium = randomBytes(64 * 1024);
   const large = randomBytes(1024 * 1024);
 
-  //  - 1 KB
-
-  describe("1 KB buffer", () => {
+  describe("2 KB buffer", () => {
     bench("native XXH3-128", () => {
       XXHash128.hash(small);
     });
@@ -39,8 +37,6 @@ describe("static hash() — in-memory buffer", async () => {
       nodeCryptoMd5(small);
     });
   });
-
-  //  - 64 KB
 
   describe("64 KB buffer", () => {
     bench("native XXH3-128", () => {
@@ -55,8 +51,6 @@ describe("static hash() — in-memory buffer", async () => {
       nodeCryptoMd5(medium);
     });
   });
-
-  //  - 1 MB
 
   describe("1 MB buffer", () => {
     bench("native XXH3-128", () => {

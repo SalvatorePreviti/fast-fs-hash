@@ -216,7 +216,7 @@ const fhcSections = [
 
 //  - In-memory hash buffer benchmarks
 
-const HASH_BUFFER_GROUPS = ["1 KB buffer", "64 KB buffer", "1 MB buffer"];
+const HASH_BUFFER_GROUPS = ["2 KB buffer", "64 KB buffer", "1 MB buffer"];
 
 function buildHashBufferTables(benchData) {
   const lines = [];

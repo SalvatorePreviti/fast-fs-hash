@@ -33,19 +33,28 @@ set(NATIVE_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/packages/fast-fs-hash/src/native)
 # (auto-detected), it produces a static `xxhash` target with correct
 # include directories — no install step.
 #
-# DISPATCH: Enable runtime SIMD dispatch (SSE2/AVX2/AVX512 via CPUID).
-# Gated on the TARGET architecture (CMAKE_SYSTEM_PROCESSOR) rather than
-# relying on xxHash's CMAKE_HOST_SYSTEM_INFORMATION, which detects the
-# HOST arch — incorrect when cross-compiling (e.g. win32-arm64 on x64).
-# On non-x86_64 targets, xxHash just compiles xxhash.c with native SIMD.
+# IMPORTANT: We deliberately do NOT set xxHash's DISPATCH variable.
+# xxHash's cmake_unofficial uses CMAKE_HOST_SYSTEM_INFORMATION to detect
+# the platform — this returns the HOST arch, not the TARGET arch, which
+# is wrong when cross-compiling (e.g. building x86_64 on an ARM64 host,
+# or building ARM64 on an x86_64 host). Instead, we add xxh_x86dispatch.c
+# to the xxhash target ourselves, gated on CMAKE_SYSTEM_PROCESSOR (the
+# actual target architecture).
 
 set(XXHASH_BUILD_XXHSUM OFF CACHE BOOL "" FORCE)  # don't build the CLI tool
-
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
-    set(DISPATCH 1)
-endif()
-
 add_subdirectory(deps/xxHash/cmake_unofficial xxhash_build)
+
+# x86_64 DISPATCH: Runtime CPUID-based SSE2/AVX2/AVX512 selection.
+# xxh_x86dispatch.c provides _dispatch variants of all XXH3 functions.
+# Our includes.h includes xxh_x86dispatch.h which remaps the standard
+# XXH3 API to these dispatch symbols.
+#
+# MUST be compiled with default flags (no -mavx2 etc.) — the dispatch
+# source uses __attribute__((target(...))) / MSVC intrinsics to generate
+# per-ISA code paths without requiring global ISA flags.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+    target_sources(xxhash PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/deps/xxHash/xxh_x86dispatch.c")
+endif()
 
 # - Node.js / N-API headers
 
