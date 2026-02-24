@@ -304,30 +304,35 @@ jobs:
       - name: Inject optionalDependencies for publish
         run: node scripts/prepublish.js
 
-      - name: Dry-run publish all packages
-        run: |
-          echo " - Dry-run: platform packages"
-          for dir in npm/*/; do
-            npm publish "$dir" --provenance --access public --dry-run
-          done
-          echo ""
-          echo " - Dry-run: main package"
-          npm publish packages/fast-fs-hash --provenance --access public --dry-run
-          echo ""
-          echo "All dry-run publishes passed."
-
       - name: Publish all packages
+        shell: bash
         run: |
-          echo " - Publishing 9 platform packages"
-          for dir in npm/*/; do
-            echo "Publishing @fast-fs-hash/$(basename "$dir")..."
+          publish_pkg() {
+            local dir="$1"
+            local pkg_name pkg_version
+            pkg_name=$(node -p "require('./${dir}/package.json').name")
+            pkg_version=$(node -p "require('./${dir}/package.json').version")
+
+            if npm view "${pkg_name}@${pkg_version}" version --json 2>/dev/null | grep -q "${pkg_version}"; then
+              echo "⏭  ${pkg_name}@${pkg_version} already published — skipping"
+              return 0
+            fi
+
+            echo "📦 Publishing ${pkg_name}@${pkg_version}..."
             npm publish "$dir" --provenance --access public
+          }
+
+          echo " - Publishing platform packages"
+          for dir in npm/*/; do
+            publish_pkg "$dir"
           done
+
           echo ""
           echo " - Publishing main package"
-          npm publish packages/fast-fs-hash --provenance --access public
+          publish_pkg packages/fast-fs-hash
+
           echo ""
-          echo "All 10 packages published successfully."
+          echo "✔ All packages published successfully."
 
       - name: Create and push git tag
         run: |
