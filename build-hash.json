@@ -1,6 +1,6 @@
 {
   "_description": "SHA-256 hashes of build artifacts and source code. Regenerated on every build.",
-  "generatedAt": "2026-02-24T12:11:03.934Z",
+  "generatedAt": "2026-02-24T12:57:57.734Z",
   "distArtifacts": {
     "index.cjs": {
       "sha256": "e3e28e5912d6875d3f615806a4233d63f5d49deb9cd8ee5b1ace2b735fdd85a9",
@@ -198,9 +198,9 @@
         "lines": 24
       },
       "includes.h": {
-        "sha256": "bd10d942de5c4de6995c0cd5bb72cba0fe9f58f94a9874f07947887a72ee6c4c",
-        "bytes": 3616,
-        "lines": 120
+        "sha256": "8546f9c1cc37573b5b0909b8ddc2552679e86fd4e96780ecd9ce9455eb700875",
+        "bytes": 4049,
+        "lines": 128
       }
     },
     "xxhash": {
@@ -232,9 +232,9 @@
     },
     "cmake": {
       "CMakeLists.txt": {
-        "sha256": "3829e475c0db33c0f286fe1bab089bafa8e12b39910d0ef591a5ad1a4a336f90",
-        "bytes": 8478,
-        "lines": 216
+        "sha256": "c2445fa809d65511afd8b648ddd188692a820eef03ed5fa1376d0daf1fda0ca5",
+        "bytes": 8729,
+        "lines": 222
       }
     }
   },
