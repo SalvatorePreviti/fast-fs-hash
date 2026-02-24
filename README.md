@@ -31,17 +31,17 @@ Results from Node.js v22.22.0, Vitest 4.x:
 
 | Scenario                            | Mean   | Hz       |
 | ----------------------------------- | ------ | -------- |
-| validate (no change)                | 1.0 ms | 954 op/s |
-| serialize (no existing cache)       | 5.2 ms | 192 op/s |
-| validate+serialize (1 file changed) | 4.1 ms | 245 op/s |
+| validate (no change)                | 1.1 ms | 920 op/s |
+| serialize (no existing cache)       | 5.6 ms | 179 op/s |
+| validate+serialize (1 file changed) | 4.4 ms | 228 op/s |
 
 **WASM fallback:**
 
 | Scenario                            | Mean    | Hz       |
 | ----------------------------------- | ------- | -------- |
-| validate (no change)                | 3.1 ms  | 320 op/s |
-| serialize (no existing cache)       | 14.5 ms | 69 op/s  |
-| validate+serialize (1 file changed) | 6.7 ms  | 149 op/s |
+| validate (no change)                | 3.2 ms  | 311 op/s |
+| serialize (no existing cache)       | 14.7 ms | 68 op/s  |
+| validate+serialize (1 file changed) | 6.9 ms  | 145 op/s |
 
 _Results vary by hardware, file sizes, and OS cache state._
 
@@ -53,12 +53,12 @@ Results from Node.js v22.22.0, Vitest 4.x:
 
 | Scenario                          | Mean    | Hz       | Throughput | Relative        |
 | --------------------------------- | ------- | -------- | ---------- | --------------- |
-| native (hashFilesBulk)            | 4.7 ms  | 212 op/s | 5.2 GB/s   | **9.2× faster** |
-| native (hashFilesBulk + per file) | 4.8 ms  | 208 op/s | 5.1 GB/s   | **9.1× faster** |
-| WASM (hashFilesBulk + per file)   | 11.9 ms | 84 op/s  | 2.1 GB/s   | **3.7× faster** |
-| WASM (hashFilesBulk)              | 11.9 ms | 84 op/s  | 2.1 GB/s   | **3.7× faster** |
-| Node.js crypto (md5, per file)    | 40.6 ms | 25 op/s  | 0.6 GB/s   | **1.1× faster** |
-| Node.js crypto (md5)              | 43.6 ms | 23 op/s  | 0.6 GB/s   | baseline        |
+| native (hashFilesBulk + per file) | 5.2 ms  | 193 op/s | 4.8 GB/s   | **8.3× faster** |
+| native (hashFilesBulk)            | 5.3 ms  | 190 op/s | 4.7 GB/s   | **8.2× faster** |
+| WASM (hashFilesBulk + per file)   | 12.0 ms | 83 op/s  | 2.1 GB/s   | **3.6× faster** |
+| WASM (hashFilesBulk)              | 12.0 ms | 83 op/s  | 2.1 GB/s   | **3.6× faster** |
+| Node.js crypto (md5, per file)    | 41.7 ms | 24 op/s  | 0.6 GB/s   | **1.0× faster** |
+| Node.js crypto (md5)              | 43.0 ms | 23 op/s  | 0.6 GB/s   | baseline        |
 
 _Results vary by hardware, file sizes, and OS cache state._
 
@@ -74,24 +74,24 @@ Results from Node.js v22.22.0, Vitest 4.x:
 
 | Scenario           | Mean   | Hz             | Relative        |
 | ------------------ | ------ | -------------- | --------------- |
-| WASM XXH3-128      | 0.2 µs | 4 659 233 op/s | **7.6× faster** |
-| native XXH3-128    | 0.3 µs | 3 487 878 op/s | **5.7× faster** |
-| Node.js crypto md5 | 1.6 µs | 611 963 op/s   | baseline        |
+| WASM XXH3-128      | 0.2 µs | 4 759 031 op/s | **7.8× faster** |
+| native XXH3-128    | 0.3 µs | 3 571 012 op/s | **5.9× faster** |
+| Node.js crypto md5 | 1.6 µs | 606 905 op/s   | baseline        |
 
 **64 KB buffer:**
 
 | Scenario           | Mean    | Hz           | Relative         |
 | ------------------ | ------- | ------------ | ---------------- |
-| native XXH3-128    | 1.7 µs  | 571 801 op/s | **42.5× faster** |
-| WASM XXH3-128      | 5.3 µs  | 190 466 op/s | **14.1× faster** |
-| Node.js crypto md5 | 74.3 µs | 13 464 op/s  | baseline         |
+| native XXH3-128    | 1.7 µs  | 582 750 op/s | **43.6× faster** |
+| WASM XXH3-128      | 5.2 µs  | 191 416 op/s | **14.3× faster** |
+| Node.js crypto md5 | 74.8 µs | 13 366 op/s  | baseline         |
 
 **1 MB buffer:**
 
 | Scenario           | Mean       | Hz          | Relative         |
 | ------------------ | ---------- | ----------- | ---------------- |
-| native XXH3-128    | 23.9 µs    | 41 814 op/s | **49.2× faster** |
-| WASM XXH3-128      | 84.4 µs    | 11 851 op/s | **13.9× faster** |
+| native XXH3-128    | 24.3 µs    | 41 186 op/s | **48.5× faster** |
+| WASM XXH3-128      | 83.8 µs    | 11 926 op/s | **14.0× faster** |
 | Node.js crypto md5 | 1 176.4 µs | 850 op/s    | baseline         |
 
 _Results vary by hardware._

@@ -224,21 +224,17 @@ export function createWasmFileHashCacheImpl(): FileHashCacheImpl {
       // Pass byteLength>>>3 explicitly to avoid spanning the full backing ArrayBuffer.
       const bue = new BigUint64Array(entriesBuf.buffer, entriesBuf.byteOffset, entriesBuf.byteLength >>> 3);
 
-      // Merged stat+hash worker pool with slab-allocated buffers.
-      // Each lane stats a file and, if it needs hashing, immediately
-      // hashes it in-place using its per-lane WASM state.  This eliminates
-      // a second worker-pool setup and pipelines stat I/O with hash I/O.
+      // --- Phase 1: Stat all files at high concurrency (STAT_CONCURRENCY = 32) ---
       //
-      // Lane count is bounded by MAX_WASM_LANES (8) — the WASM hashing
-      // bottleneck, not stat concurrency.  8 concurrent async stats still
-      // saturates the I/O subsystem on modern SSDs.
-      const lanes = Math.min(MAX_WASM_LANES, n);
-      const hashLane = wasmCreateHashLanes(lanes);
-      let cursor = 0;
+      // Stat operations are pure libuv I/O and don't touch WASM, so we can
+      // run many more in parallel than hash lanes allow.  Each worker marks
+      // files as F_NEED_HASH (stat succeeded, hash pending) or F_DONE
+      // (stat matched old data or stat failed → zeroed entry).
+      let statCursor = 0;
 
-      const worker = async (laneIdx: number): Promise<void> => {
+      const statWorker = async (): Promise<void> => {
         for (;;) {
-          const i = cursor++;
+          const i = statCursor++;
           if (i >= n) {
             break;
           }
@@ -251,7 +247,6 @@ export function createWasmFileHashCacheImpl(): FileHashCacheImpl {
           const eOff = i * ENTRY_STRIDE;
           const rel = files[i];
           const filePath = rel ? rootPathSlash + rel : "";
-          let needHash = state === F_NEED_HASH;
 
           if (state === F_NOT_CHECKED) {
             // Cold path: no prior data — stat the file.
@@ -262,11 +257,11 @@ export function createWasmFileHashCacheImpl(): FileHashCacheImpl {
               bue[u + 1] = s.mtimeNs;
               bue[u + 2] = s.ctimeNs;
               bue[u + 3] = s.size;
-              needHash = true;
+              fileStates[i] = F_NEED_HASH;
             } catch {
-              // Stat failed — zero entire entry, skip hash.
+              // Stat failed — zero entire entry, mark done.
               entriesBuf.fill(0, eOff, eOff + 48);
-              continue;
+              fileStates[i] = F_DONE;
             }
           } else if (state === F_HAS_OLD) {
             // Old entry pre-populated — re-stat and compare.
@@ -281,26 +276,53 @@ export function createWasmFileHashCacheImpl(): FileHashCacheImpl {
               bue[u + 1] = s.mtimeNs;
               bue[u + 2] = s.ctimeNs;
               bue[u + 3] = s.size;
-              needHash = true;
+              fileStates[i] = F_NEED_HASH;
             } catch {
-              // Stat failed — zero entire entry, skip hash.
+              // Stat failed — zero entire entry, mark done.
               entriesBuf.fill(0, eOff, eOff + 48);
-              continue;
+              fileStates[i] = F_DONE;
             }
           }
-
-          // Hash inline using this lane's slab-allocated buffers.
-          if (needHash) {
-            await hashLane(laneIdx, filePath, entriesBuf, eOff + 32);
-          }
+          // F_NEED_HASH entries from statAndMatch pass through unchanged.
         }
       };
 
-      const tasks = new Array<Promise<void>>(lanes);
-      for (let i = 0; i < lanes; i++) {
-        tasks[i] = worker(i);
+      const statLanes = Math.min(STAT_CONCURRENCY, n);
+      const statTasks = new Array<Promise<void>>(statLanes);
+      for (let i = 0; i < statLanes; i++) {
+        statTasks[i] = statWorker();
       }
-      await Promise.all(tasks);
+      await Promise.all(statTasks);
+
+      // --- Phase 2: Hash at bounded WASM concurrency (MAX_WASM_LANES = 8) ---
+      //
+      // Each lane has its own WASM instance (allocated inside wasmCreateHashLanes),
+      // so no state save/restore is needed across yield points.
+      const hashLanes = Math.min(MAX_WASM_LANES, n);
+      const hashLane = wasmCreateHashLanes(hashLanes);
+      let hashCursor = 0;
+
+      const hashWorker = async (laneIdx: number): Promise<void> => {
+        for (;;) {
+          const i = hashCursor++;
+          if (i >= n) {
+            break;
+          }
+          if (fileStates[i] !== F_NEED_HASH) {
+            continue;
+          }
+          const eOff = i * ENTRY_STRIDE;
+          const rel = files[i];
+          const filePath = rel ? rootPathSlash + rel : "";
+          await hashLane(laneIdx, filePath, entriesBuf, eOff + 32);
+        }
+      };
+
+      const hashTasks = new Array<Promise<void>>(hashLanes);
+      for (let i = 0; i < hashLanes; i++) {
+        hashTasks[i] = hashWorker(i);
+      }
+      await Promise.all(hashTasks);
     },
 
     remapOldEntries(
