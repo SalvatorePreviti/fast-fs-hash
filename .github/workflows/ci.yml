@@ -116,6 +116,10 @@ jobs:
         if: ${{ matrix.can-test }}
         run: npm run build:all
 
+      - name: Run benchmarks
+        if: ${{ matrix.can-test }}
+        run: npm run bench
+
       - name: Test with native binding
         if: ${{ matrix.can-test && runner.os != 'Windows' }}
         run: npm test
@@ -124,23 +128,35 @@ jobs:
         if: ${{ matrix.can-test && runner.os == 'Windows' }}
         shell: bash
         run: |
+          set +e
           shopt -s globstar
-          failed=0
+          failed_files=()
           for f in test/**/*.test.ts; do
             echo "::group::$f"
-            if npx vitest run "$f" --reporter=verbose --pool=threads; then
+            echo ">>> Running: $f"
+            npx vitest run "$f" --reporter=verbose --pool=threads
+            rc=$?
+            echo ">>> Exit code: $rc"
+            if [ $rc -eq 0 ]; then
               echo "✅ $f"
             else
-              echo "❌ $f"
-              failed=1
+              echo "❌ $f (exit code $rc)"
+              failed_files+=("$f")
             fi
             echo "::endgroup::"
           done
-          exit $failed
-
-      - name: Run benchmarks
-        if: ${{ matrix.can-test }}
-        run: npm run bench
+          echo ""
+          echo "=== Test Summary ==="
+          if [ ${#failed_files[@]} -eq 0 ]; then
+            echo "All test files passed."
+            exit 0
+          else
+            echo "FAILED files (${#failed_files[@]}):"
+            for ff in "${failed_files[@]}"; do
+              echo "  ❌ $ff"
+            done
+            exit 1
+          fi
 
       #  - Docker builds (Linux musl via Alpine)
       - name: Build native addon (Alpine/musl)

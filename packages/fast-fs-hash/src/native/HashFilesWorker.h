@@ -36,7 +36,7 @@ namespace fast_fs_hash {
    * icache pressure in the hot single-read loop.  The XXH3_state_t (576 B)
    * lives only on this frame, not on the hot-path stack.
    */
-  FSH_NO_INLINE static void hash_large_file(unsigned char * rbuf, size_t initial_bytes, FileHandle & file, uint8_t * dest) {
+  FSH_NO_INLINE inline void hash_large_file(unsigned char * rbuf, size_t initial_bytes, FileHandle & file, uint8_t * dest) {
     file.hint_sequential();  // worth the syscall only when multiple reads follow
 
     XXH3_state_t state;

@@ -19,7 +19,7 @@ namespace fast_fs_hash {
    * Hash from an already-opened file handle.  Shared implementation for
    * hash_file_to overloads — avoids code duplication.
    */
-  FSH_FORCE_INLINE static void hash_opened_file(FileHandle & file, uint8_t * dest, unsigned char * rbuf) {
+  FSH_FORCE_INLINE void hash_opened_file(FileHandle & file, uint8_t * dest, unsigned char * rbuf) {
     if (!file) [[unlikely]] {
       memset(dest, 0, 16);
       return;
@@ -44,14 +44,14 @@ namespace fast_fs_hash {
    * Open + read + hash a single file from a UTF-8 path, writing 16-byte
    * canonical digest to dest.  On error, dest is zeroed.
    */
-  FSH_FORCE_INLINE static void hash_file_to(const char * path, uint8_t * dest, unsigned char * rbuf) {
+  FSH_FORCE_INLINE void hash_file_to(const char * path, uint8_t * dest, unsigned char * rbuf) {
     FileHandle file(path);
     hash_opened_file(file, dest, rbuf);
   }
 
 #ifdef _WIN32
   /** Windows fast path: hash from a pre-converted UTF-16 path. */
-  FSH_FORCE_INLINE static void hash_file_to(const wchar_t * wpath, uint8_t * dest, unsigned char * rbuf) {
+  FSH_FORCE_INLINE void hash_file_to(const wchar_t * wpath, uint8_t * dest, unsigned char * rbuf) {
     FileHandle file(wpath);
     hash_opened_file(file, dest, rbuf);
   }
@@ -62,7 +62,7 @@ namespace fast_fs_hash {
    * On Windows, converts forward slashes to backslashes (the OS separator).
    * On POSIX, this is just strcpy — forward slashes are native.
    */
-  FSH_FORCE_INLINE static void copy_rel_path(char * dst, const char * src) {
+  FSH_FORCE_INLINE void copy_rel_path(char * dst, const char * src) {
 #ifdef _WIN32
     while (*src) {
       *dst++ = (*src == '/') ? '\\' : *src;
@@ -83,7 +83,7 @@ namespace fast_fs_hash {
    * @param out_rl      Receives effective root length (trailing sep stripped).
    * @param out_prefix  Receives prefix length (rl + 1: root + separator).
    */
-  FSH_FORCE_INLINE static void compute_root_prefix(
+  FSH_FORCE_INLINE void compute_root_prefix(
     const char * root_path, size_t root_len, size_t & out_rl, size_t & out_prefix) {
     size_t rl = root_len;
     if (rl > 0 && (root_path[rl - 1] == '/' || root_path[rl - 1] == '\\'))
@@ -106,7 +106,7 @@ namespace fast_fs_hash {
    * @param out_prefix_len  Receives prefix length for process_files.
    * @returns true on success, false on OOM.
    */
-  FSH_FORCE_INLINE static bool alloc_slab_with_scratch(
+  FSH_FORCE_INLINE bool alloc_slab_with_scratch(
     int tc,
     const char * root_path, size_t root_len, size_t max_seg_len,
     AlignedPtr<unsigned char> & out_slab, size_t & out_per_thread,

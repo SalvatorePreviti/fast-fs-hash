@@ -67,13 +67,16 @@ export const HF_B_SEED_42_0 = "4638f724963550a71a54688c03cf18ad";
 /** hash(salt=[1,2,3,4] + binary.bin, seed 0,0) */
 export const HF_BINARY_SALT_1234 = "48ff1eeae97208f1b02ffd1307ccc6da";
 
-//  - Test fixtures
+//  - Test fixtures (each test file gets its own directory to avoid race conditions)
 
-export const FIXTURES_DIR = path.resolve(import.meta.dirname, "..", "fixtures-xxhash128");
+let _fixturesDir = "";
 
-export const fileA = () => path.join(FIXTURES_DIR, "a.txt");
-export const fileB = () => path.join(FIXTURES_DIR, "b.txt");
-export const fileEmpty = () => path.join(FIXTURES_DIR, "empty.txt");
+/** Returns the per-file fixtures directory. Only valid after setupXXHash128Fixtures(). */
+export const fixturesDir = () => _fixturesDir;
+
+export const fileA = () => path.join(_fixturesDir, "a.txt");
+export const fileB = () => path.join(_fixturesDir, "b.txt");
+export const fileEmpty = () => path.join(_fixturesDir, "empty.txt");
 
 //  - Helper: run tests for both implementations
 
@@ -86,21 +89,25 @@ export const implementations: [string, HasherClass][] = [
 
 /**
  * Call once per test file to set up fixtures + init both hashers.
+ * Each file MUST pass a unique suffix to avoid race conditions when running in parallel.
  */
-export function setupXXHash128Fixtures(): void {
-  beforeAll(async () => {
-    rmSync(FIXTURES_DIR, { recursive: true, force: true });
-    mkdirSync(FIXTURES_DIR, { recursive: true });
+export function setupXXHash128Fixtures(suffix: string): void {
+  const dir = path.resolve(import.meta.dirname, "..", `fixtures-xxhash128-${suffix}`);
+  _fixturesDir = dir;
 
-    writeFileSync(fileA(), "hello world\n");
-    writeFileSync(fileB(), "goodbye world\n");
-    writeFileSync(fileEmpty(), "");
+  beforeAll(async () => {
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+
+    writeFileSync(path.join(dir, "a.txt"), "hello world\n");
+    writeFileSync(path.join(dir, "b.txt"), "goodbye world\n");
+    writeFileSync(path.join(dir, "empty.txt"), "");
 
     await XXHash128Wasm.init();
     await XXHash128.init();
   });
 
   afterAll(() => {
-    rmSync(FIXTURES_DIR, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
   });
 }

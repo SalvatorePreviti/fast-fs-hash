@@ -21,7 +21,7 @@ import {
   setupXXHash128Fixtures,
 } from "./_helpers";
 
-setupXXHash128Fixtures();
+setupXXHash128Fixtures("handle");
 
 //  - Static hashFileHandle
 

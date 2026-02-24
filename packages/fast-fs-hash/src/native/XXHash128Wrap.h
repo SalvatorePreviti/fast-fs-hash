@@ -279,6 +279,11 @@ class XXHash128Wrap final : public Napi::ObjectWrap<XXHash128Wrap> {
     auto deferred = Napi::Promise::Deferred::New(env);
     auto * worker = new HashFileHandleWorker(env, deferred, fd, this->seed_);
 
+    // Hold the JS FileHandle alive to prevent GC from closing the fd.
+    if (info.Length() >= 4 && info[3].IsObject()) {
+      worker->set_fh_ref(Napi::ObjectReference::New(info[3].As<Napi::Object>(), 1));
+    }
+
     if (info.Length() >= 2 && info[1].IsTypedArray()) {
       auto out = info[1].As<Napi::Uint8Array>();
       uint32_t offset = info.Length() >= 3 ? info[2].As<Napi::Number>().Uint32Value() : 0;
@@ -310,6 +315,11 @@ class XXHash128Wrap final : public Napi::ObjectWrap<XXHash128Wrap> {
 
     auto deferred = Napi::Promise::Deferred::New(env);
     auto * worker = new HashFileHandleWorker(env, deferred, fd, seed);
+
+    // Hold the JS FileHandle alive to prevent GC from closing the fd.
+    if (info.Length() >= 6 && info[5].IsObject()) {
+      worker->set_fh_ref(Napi::ObjectReference::New(info[5].As<Napi::Object>(), 1));
+    }
 
     if (info.Length() >= 2 && info[1].IsTypedArray()) {
       auto out = info[1].As<Napi::Uint8Array>();

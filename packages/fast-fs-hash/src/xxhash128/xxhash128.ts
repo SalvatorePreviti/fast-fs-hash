@@ -134,7 +134,7 @@ async function nativeInstanceHashFileTo(
 }
 
 async function nativeInstanceHashFileHandle(this: NativeInstance, fh: FileHandle): Promise<Buffer> {
-  return this._native.hashFileHandle(fh.fd, undefined, 0) as Promise<Buffer>;
+  return this._native.hashFileHandle(fh.fd, undefined, 0, fh) as Promise<Buffer>;
 }
 
 async function nativeInstanceHashFileHandleTo(
@@ -143,7 +143,7 @@ async function nativeInstanceHashFileHandleTo(
   output: Uint8Array,
   outputOffset?: number
 ): Promise<void> {
-  await this._native.hashFileHandle(fh.fd, output, outputOffset ?? 0);
+  await this._native.hashFileHandle(fh.fd, output, outputOffset ?? 0, fh);
 }
 
 //  - Static hashFilesBulk
@@ -259,7 +259,7 @@ function patchWithNative(nativeCtor: NativeXXHash128Constructor): void {
   }
 
   async function nativeStaticHashFileHandle(fh: FileHandle, seedLow?: number, seedHigh?: number): Promise<Buffer> {
-    return staticHashFileHandle(fh.fd, undefined, 0, seedLow ?? 0, seedHigh ?? 0) as Promise<Buffer>;
+    return staticHashFileHandle(fh.fd, undefined, 0, seedLow ?? 0, seedHigh ?? 0, fh) as Promise<Buffer>;
   }
 
   async function nativeStaticHashFileHandleTo(
@@ -269,7 +269,7 @@ function patchWithNative(nativeCtor: NativeXXHash128Constructor): void {
     seedLow?: number,
     seedHigh?: number
   ): Promise<void> {
-    await staticHashFileHandle(fh.fd, output, outputOffset ?? 0, seedLow ?? 0, seedHigh ?? 0);
+    await staticHashFileHandle(fh.fd, output, outputOffset ?? 0, seedLow ?? 0, seedHigh ?? 0, fh);
   }
 
   // Static methods — delegate to C++ without any JS instance creation.

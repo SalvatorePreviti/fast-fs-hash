@@ -8,10 +8,10 @@ import { XXHash128, XXHash128Wasm } from "fast-fs-hash";
 import { describe, expect, it } from "vitest";
 
 import {
-  FIXTURES_DIR,
   fileA,
   fileB,
   fileEmpty,
+  fixturesDir,
   H_EMPTY,
   H_GOODBYE_WORLD_LF,
   H_HELLO_WORLD_LF,
@@ -27,7 +27,7 @@ import {
   setupXXHash128Fixtures,
 } from "./_helpers";
 
-setupXXHash128Fixtures();
+setupXXHash128Fixtures("file");
 
 //  - Static hashFile
 
@@ -130,7 +130,7 @@ describe.each(implementations)("%s — static hashFile", (_name, Hasher) => {
   });
 
   it("binary salt with binary file", async () => {
-    const binaryFile = path.join(FIXTURES_DIR, "..", "fixtures/hash-fixture/binary.bin");
+    const binaryFile = path.join(fixturesDir(), "..", "fixtures/hash-fixture/binary.bin");
     const salt = Buffer.from([0x01, 0x02, 0x03, 0x04]);
     const result = await Hasher.hashFile(binaryFile, 0, 0, salt);
     expect(result.toString("hex")).toBe(HF_BINARY_SALT_1234);
@@ -182,7 +182,7 @@ describe.each(implementations)("%s — static hashFile", (_name, Hasher) => {
   });
 
   it("rejects for directory path", async () => {
-    await expect(Hasher.hashFile(FIXTURES_DIR)).rejects.toThrow();
+    await expect(Hasher.hashFile(fixturesDir())).rejects.toThrow();
   });
 });
 

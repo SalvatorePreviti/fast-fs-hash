@@ -34,7 +34,7 @@ import {
   setupXXHash128Fixtures,
 } from "./_helpers";
 
-setupXXHash128Fixtures();
+setupXXHash128Fixtures("core");
 
 //  - Pre-init behavior
 

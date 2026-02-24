@@ -33,6 +33,10 @@ class HashFileHandleWorker final : public Napi::AsyncWorker {
   HashFileHandleWorker(Napi::Env env, Napi::Promise::Deferred deferred, NativeFd fd, uint64_t seed) :
     Napi::AsyncWorker(env), deferred_(deferred), fd_(fd), seed_(seed) {}
 
+  /** Hold a reference to the JS FileHandle object to prevent GC
+   *  from closing the fd while async work is in progress. */
+  void set_fh_ref(Napi::ObjectReference ref) { this->fh_ref_ = std::move(ref); }
+
   /** Attach an externally-owned output buffer — digest written at `data`. */
   void set_external_output(uint8_t * data, Napi::ObjectReference ref) {
     this->output_data_ = data;
@@ -70,7 +74,7 @@ class HashFileHandleWorker final : public Napi::AsyncWorker {
       XXH3_128bits_reset_withSeed(&state, this->seed_);
       XXH3_128bits_update(&state, rbuf.ptr, bytes);
 
-      off_t file_offset = static_cast<off_t>(bytes);
+      int64_t file_offset = static_cast<int64_t>(bytes);
       for (;;) {
         const int64_t n2 = do_read(this->fd_, rbuf.ptr, fast_fs_hash::READ_BUFFER_SIZE, file_offset);
         if (n2 <= 0) [[unlikely]] {
@@ -81,7 +85,7 @@ class HashFileHandleWorker final : public Napi::AsyncWorker {
           break;
         }
         XXH3_128bits_update(&state, rbuf.ptr, static_cast<size_t>(n2));
-        file_offset += static_cast<off_t>(n2);
+        file_offset += n2;
       }
 
       XXH128_canonicalFromHash(reinterpret_cast<XXH128_canonical_t *>(this->digest_), XXH3_128bits_digest(&state));
@@ -110,6 +114,7 @@ class HashFileHandleWorker final : public Napi::AsyncWorker {
   NativeFd fd_;
   uint64_t seed_;
 
+  Napi::ObjectReference fh_ref_;  // prevents GC of the JS FileHandle
   uint8_t * output_data_ = nullptr;
   Napi::ObjectReference output_ref_;
   bool has_external_ = false;
@@ -118,9 +123,9 @@ class HashFileHandleWorker final : public Napi::AsyncWorker {
 
   // Positional read wrapper — returns bytes read, or -1 on error.
 #ifndef _WIN32
-  static int64_t do_read(NativeFd fd, void * buf, size_t len, off_t offset) {
+  static int64_t do_read(NativeFd fd, void * buf, size_t len, int64_t offset) {
     for (;;) {
-      ssize_t n = ::pread(fd, buf, len, offset);
+      ssize_t n = ::pread(fd, buf, len, static_cast<off_t>(offset));
       if (n >= 0) [[likely]]
         return static_cast<int64_t>(n);
       if (errno == EINTR) [[likely]]
@@ -129,13 +134,13 @@ class HashFileHandleWorker final : public Napi::AsyncWorker {
     }
   }
 #else
-  static int64_t do_read(NativeFd fd, void * buf, size_t len, off_t offset) {
+  static int64_t do_read(NativeFd fd, void * buf, size_t len, int64_t offset) {
     OVERLAPPED ov = {};
-    ov.Offset = static_cast<DWORD>(offset);
+    ov.Offset = static_cast<DWORD>(static_cast<uint64_t>(offset));
     ov.OffsetHigh = static_cast<DWORD>(static_cast<uint64_t>(offset) >> 32);
     DWORD to_read = len > 0x7FFFFFFFu ? 0x7FFFFFFFu : static_cast<DWORD>(len);
     DWORD bytes_read = 0;
-    if (!ReadFile(reinterpret_cast<HANDLE>(fd), buf, to_read, &bytes_read, &ov)) [[unlikely]] {
+    if (!ReadFile(fd, buf, to_read, &bytes_read, &ov)) [[unlikely]] {
       if (GetLastError() == ERROR_HANDLE_EOF) return 0;
       return -1;
     }

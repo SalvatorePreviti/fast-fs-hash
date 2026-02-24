@@ -1,10 +1,10 @@
 {
   "_description": "SHA-256 hashes of build artifacts and source code. Regenerated on every build.",
-  "generatedAt": "2026-02-24T07:22:05.374Z",
+  "generatedAt": "2026-02-24T07:52:08.098Z",
   "distArtifacts": {
     "index.cjs": {
-      "sha256": "a2ce714d0c5fe89287130022222ab510e9a9ccad35c32eaa6fa1413c6a0b729d",
-      "bytes": 102957,
+      "sha256": "fc698d4eaae3d7120d64faaa213028bba349a9b036979ede83ac4eb25bbdc39d",
+      "bytes": 102973,
       "lines": 2839
     },
     "index.d.cts": {
@@ -77,9 +77,9 @@
         "lines": 46
       },
       "native.ts": {
-        "sha256": "8abd250a6725ae7d61c245080800b0d86a5eb4c46519043b5c47dc1e30b5c94f",
-        "bytes": 6204,
-        "lines": 199
+        "sha256": "f08fb90ceb46f534ce9c3c61fde423ba862bb31ca0d79af93f8c8daee33e4074",
+        "bytes": 6232,
+        "lines": 200
       },
       "path-utils.ts": {
         "sha256": "f73a577c0d4fd7cfdf1b05c49da5e725ffad83280842e3ada5dcbaa0790e9a81",
@@ -101,8 +101,8 @@
         "lines": 927
       },
       "xxhash128/xxhash128.ts": {
-        "sha256": "691276850725df7d83f4250448ced0f0c4ef299a44cfd767a102d64dba745b5c",
-        "bytes": 11935,
+        "sha256": "0d69c7a408bb31706925a2203af8b4afa66056fc56b5f39799edc1296a075f2a",
+        "bytes": 11951,
         "lines": 346
       }
     },
@@ -118,8 +118,8 @@
         "lines": 352
       },
       "CacheWorkers.h": {
-        "sha256": "f2489870e924462c039ed792c5eabca100a2dcc81b5c9f630292c307547ac9c8",
-        "bytes": 20159,
+        "sha256": "b30ab1bab2ca2e86e74af157d3aa8c05617391bf86c72f11037103de69087c9f",
+        "bytes": 20117,
         "lines": 544
       },
       "FileHandle.h": {
@@ -133,9 +133,9 @@
         "lines": 156
       },
       "HashFileHandleWorker.h": {
-        "sha256": "fc1aa8a3324c84f23258bb70ee5c782878d00eabc686d12d28f04a2c5f072e6c",
-        "bytes": 4797,
-        "lines": 148
+        "sha256": "5c625977df6b8d049e280f6b5c345b91a7e340d46880116e7c35801cc86cdce5",
+        "bytes": 5081,
+        "lines": 153
       },
       "HashFileWorker.h": {
         "sha256": "bfb423eeb3216ba97d1f7b72b80349ce5c0477b3fe1b261517494075d48a3fed",
@@ -143,7 +143,7 @@
         "lines": 142
       },
       "HashFilesWorker.h": {
-        "sha256": "6ee94c2a320bad7408b5d2d5972f8d4958c3f47996e353f555b340ba6193d7f3",
+        "sha256": "bba79d9efb437420aa05d6cf9f3dd7f553a69fa56d67e28b55c94fcf96021e72",
         "bytes": 9781,
         "lines": 262
       },
@@ -193,9 +193,9 @@
         "lines": 72
       },
       "XXHash128Wrap.h": {
-        "sha256": "03656302e5a67140b4dfc5ef1de1d30f5fd007a824f0bd78eef46ece3cdaf4f6",
-        "bytes": 13769,
-        "lines": 337
+        "sha256": "091ed677f0babde3bb257160f7db9602836933e16fce49e982b87c9fe76f1ae3",
+        "bytes": 14199,
+        "lines": 347
       },
       "binding.cpp": {
         "sha256": "c8ce6fdd544c32ed18f2f0b633e28ccba8f08ade5c87e5571541d0799f2d1085",
