@@ -41,7 +41,7 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run build:all
-      - run: npm test
+      - run: npm test -- --reporter=verbose
         env:
           FAST_FS_HASH_NO_NATIVE: fatal
       - run: npm run bench
@@ -125,7 +125,7 @@ jobs:
 
       - name: Test with native binding
         if: ${{ matrix.can-test }}
-        run: npm test
+        run: npm test -- --reporter=verbose
         env:
           FAST_FS_HASH_NO_NATIVE: fatal
 
@@ -189,8 +189,6 @@ jobs:
         with:
           submodules: true
 
-
-
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
@@ -214,7 +212,7 @@ jobs:
             cp "packages/fast-fs-hash/build/Release/fast_fs_hash.node" "$pkg_dir/fast_fs_hash.node"
             echo "Simulated native install:" && ls -lh "$pkg_dir/" &&
 
-            npm test &&
+            npm test -- --reporter=verbose &&
             npm run bench
           '
 
@@ -232,7 +230,7 @@ jobs:
         uses: cross-platform-actions/action@v0.26.0
         with:
           operating_system: freebsd
-          version: "14.2"
+          version: "14.3"
           memory: 8G
           cpu_count: 3
           shell: bash
@@ -242,7 +240,7 @@ jobs:
             npm run build:all
             ls -lh packages/fast-fs-hash/build/Release/fast_fs_hash.node
             export FAST_FS_HASH_NO_NATIVE=fatal
-            npm test
+            npm test -- --reporter=verbose
             npm run bench
 
       - name: Upload artifact

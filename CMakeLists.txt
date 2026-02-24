@@ -1,14 +1,13 @@
 # fast-fs-hash — Native addon build configuration
 #
 # Uses cmake-js for Node.js addon compilation. xxHash is included as a
-# git submodule at deps/xxHash (pinned to v0.8.3).
+# git submodule at deps/xxHash (pinned to v0.8.3) and built via its
+# official cmake_unofficial/CMakeLists.txt as a static library.
 #
 # xxHash SIMD strategy:
-#   x86_64 (GCC/Clang) — xxh_x86dispatch.c provides runtime CPU dispatch
-#     via CPUID, selecting SSE2/AVX2/AVX512 code paths compiled with
-#     __attribute__((target(...))). No -mavx2 flags needed at build time.
-#   x86_64 (MSVC) — dispatch is not supported (no target attributes).
-#     Uses xxhash.c which compiles to SSE2 (always available on x86_64).
+#   x86_64 — DISPATCH mode: xxh_x86dispatch.c provides runtime CPU dispatch
+#     via CPUID, selecting SSE2/AVX2/AVX512 code paths at runtime.
+#     GCC/Clang use __attribute__((target(...))); MSVC uses intrinsics directly.
 #   ARM64 — xxhash.c with NEON (always available on AArch64, auto-detected).
 #
 # Build:
@@ -27,11 +26,26 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # Native C++ source directory
 set(NATIVE_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/packages/fast-fs-hash/src/native)
 
-# - xxHash (git submodule)
+# - xxHash (git submodule, built via its official CMake)
+#
+# xxHash is at deps/xxHash (v0.8.3). We use add_subdirectory to build it
+# as a static library via cmake_unofficial/CMakeLists.txt. In bundled mode
+# (auto-detected), it produces a static `xxhash` target with correct
+# include directories — no install step.
+#
+# DISPATCH: Enable runtime SIMD dispatch (SSE2/AVX2/AVX512 via CPUID).
+# Gated on the TARGET architecture (CMAKE_SYSTEM_PROCESSOR) rather than
+# relying on xxHash's CMAKE_HOST_SYSTEM_INFORMATION, which detects the
+# HOST arch — incorrect when cross-compiling (e.g. win32-arm64 on x64).
+# On non-x86_64 targets, xxHash just compiles xxhash.c with native SIMD.
 
-# xxHash is included as a git submodule at deps/xxHash, pinned to v0.8.3.
-# We only use the header + .c source directly — no need for xxHash's CMake targets.
-set(XXHASH_DIR ${CMAKE_CURRENT_SOURCE_DIR}/deps/xxHash)
+set(XXHASH_BUILD_XXHSUM OFF CACHE BOOL "" FORCE)  # don't build the CLI tool
+
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+    set(DISPATCH 1)
+endif()
+
+add_subdirectory(deps/xxHash/cmake_unofficial xxhash_build)
 
 # - Node.js / N-API headers
 
@@ -53,10 +67,7 @@ execute_process(
 string(REPLACE "\"" "" NODE_ADDON_API_DIR ${NODE_ADDON_API_DIR})
 include_directories(${NODE_ADDON_API_DIR})
 
-# xxHash header directory
-include_directories(${XXHASH_DIR})
-
-# Native C++ headers
+# Native C++ headers (xxHash headers come from the xxhash target)
 include_directories(${NATIVE_SRC_DIR})
 
 # - Compile the addon
@@ -66,33 +77,13 @@ add_library(${PROJECT_NAME} SHARED
     ${CMAKE_JS_SRC}
 )
 
-# - xxHash implementation
-#
-# On x86_64 with GCC/Clang: xxh_x86dispatch.c compiles multiple SIMD
-# variants (SSE2, AVX2, AVX512) using __attribute__((target(...))) and
-# selects the best one at runtime via CPUID. Must be compiled with base
-# flags only (no -mavx2 etc.) — the target attributes handle per-function ISA.
-# xxhash.c is ALSO needed: the dispatch file only overrides the hot-path
-# functions (hash, hashWithSeed, hashWithSecret, update). All other
-# functions (reset, createState, digest, ...) come from xxhash.c.
-#
-# On MSVC or non-x86: xxhash.c with the platform's native SIMD.
-# MSVC lacks __attribute__((target(...))), so dispatch would compile all
-# paths to the same SSE2 code — no point in the extra complexity.
-
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64" AND NOT MSVC)
-    target_sources(${PROJECT_NAME} PRIVATE
-        ${XXHASH_DIR}/xxhash.c
-        ${XXHASH_DIR}/xxh_x86dispatch.c
-    )
-else()
-    target_sources(${PROJECT_NAME} PRIVATE ${XXHASH_DIR}/xxhash.c)
-endif()
-
 # N-API: don't throw C++ exceptions, use Napi::Error instead.
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     NAPI_DISABLE_CPP_EXCEPTIONS
 )
+
+# Link xxHash static library + cmake-js libraries
+target_link_libraries(${PROJECT_NAME} PRIVATE xxhash ${CMAKE_JS_LIB})
 
 # Output as .node
 set_target_properties(${PROJECT_NAME} PROPERTIES
@@ -100,18 +91,16 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     SUFFIX ".node"
 )
 
-# Link cmake-js libraries (needed on Windows)
-target_link_libraries(${PROJECT_NAME} ${CMAKE_JS_LIB})
-
 # - High-performance build configuration
 #
 # We build with maximum optimizations since this is a compute-heavy
 # native addon: LTO, no-exceptions, no-RTTI, loop unrolling, and
 # architecture-specific SIMD flags.
 #
-# Flags are split by language (C vs CXX) using generator expressions
-# because xxh_x86dispatch.c is compiled as C and C++-only flags like
-# -fno-rtti and -fno-exceptions would produce warnings.
+# Optimization flags are applied to both our addon AND the xxHash static
+# library so that LTO can optimize across TUs (xxhash.c ↔ binding.cpp).
+# C++-only flags (-fno-rtti, -fno-exceptions) are applied only to our addon.
+# Linker flags apply only to our addon (the final .node shared library).
 
 include(CheckCXXCompilerFlag)
 include(CheckCCompilerFlag)
@@ -119,12 +108,12 @@ include(CheckCCompilerFlag)
 if(MSVC)
     # MSVC: maximum speed, whole-program optimization, no buffer checks,
     # no exceptions, no RTTI, favor speed over size, omit frame pointers.
+    set(FSH_C_FLAGS /O2 /Oi /Ot /Oy /GL /GS- /DNDEBUG /Gy /Gw)
+    target_compile_options(xxhash PRIVATE ${FSH_C_FLAGS})
     target_compile_options(${PROJECT_NAME} PRIVATE
-        /O2 /Oi /Ot /Oy /GL /GS- /DNDEBUG
+        ${FSH_C_FLAGS}
         $<$<COMPILE_LANGUAGE:CXX>:/EHs-c->   # disable C++ exceptions
         $<$<COMPILE_LANGUAGE:CXX>:/GR->       # disable RTTI
-        /Gy      # function-level linking (enable COMDAT folding)
-        /Gw      # optimize global data (allow linker to discard unused globals)
     )
     # LTCG + aggressive linker optimizations: eliminate dead code, fold identical COMDATs,
     # strip debug info from release builds.
@@ -133,8 +122,8 @@ if(MSVC)
     )
 else()
     # GCC / Clang: aggressive optimizations for throughput-critical code.
-    # Common flags for both C and C++:
-    target_compile_options(${PROJECT_NAME} PRIVATE
+    # Common C flags applied to both xxhash and our addon:
+    set(FSH_C_FLAGS
         -O3
         -DNDEBUG
         -g0                           # no debug info
@@ -151,7 +140,10 @@ else()
         -fstrict-aliasing             # strict aliasing for better optimization
     )
 
-    # C++-only flags (would warn on C files):
+    target_compile_options(xxhash PRIVATE ${FSH_C_FLAGS})
+    target_compile_options(${PROJECT_NAME} PRIVATE ${FSH_C_FLAGS})
+
+    # C++-only flags (would warn on C files) — addon only:
     target_compile_options(${PROJECT_NAME} PRIVATE
         $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>
         $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>
@@ -159,32 +151,37 @@ else()
     )
 
     # Thin LTO — faster than full LTO, comparable code quality.
-    # Applied to both C and C++ so the linker can optimize across TUs.
+    # Applied to both targets so the linker can optimize across TUs.
     check_cxx_compiler_flag("-flto=thin" HAS_THIN_LTO)
     if(HAS_THIN_LTO)
+        target_compile_options(xxhash PRIVATE -flto=thin)
         target_compile_options(${PROJECT_NAME} PRIVATE -flto=thin)
         target_link_options(${PROJECT_NAME} PRIVATE -flto=thin)
     else()
         check_cxx_compiler_flag("-flto" HAS_LTO)
         if(HAS_LTO)
+            target_compile_options(xxhash PRIVATE -flto)
             target_compile_options(${PROJECT_NAME} PRIVATE -flto)
             target_link_options(${PROJECT_NAME} PRIVATE -flto)
         endif()
     endif()
 
-    # Linux/FreeBSD-specific: PIC optimizations
+    # Linux/FreeBSD-specific: PIC optimizations (both targets)
     if(NOT APPLE)
         check_cxx_compiler_flag("-fno-semantic-interposition" HAS_NO_SEMANTIC_INTERPOSITION)
         if(HAS_NO_SEMANTIC_INTERPOSITION)
+            target_compile_options(xxhash PRIVATE -fno-semantic-interposition)
             target_compile_options(${PROJECT_NAME} PRIVATE -fno-semantic-interposition)
         endif()
         check_cxx_compiler_flag("-fno-plt" HAS_NO_PLT)
         if(HAS_NO_PLT)
+            target_compile_options(xxhash PRIVATE -fno-plt)
             target_compile_options(${PROJECT_NAME} PRIVATE -fno-plt)
         endif()
     endif()
 
     # Platform-specific linker flags for dead code elimination and stripping
+    # (addon only — xxhash is a static lib, no linker flags needed)
     if(APPLE)
         target_link_options(${PROJECT_NAME} PRIVATE
             -Wl,-dead_strip              # macOS: remove unreferenced functions/data
@@ -201,10 +198,9 @@ endif()
 
 # - Architecture-specific flags
 #
-# x86_64: No extra SIMD flags — xxh_x86dispatch.c handles runtime selection
-#         via CPUID + __attribute__((target(...))). Adding -mavx2 globally
-#         would break CPUs without AVX2 since our own C++ code would also
-#         be compiled with AVX2 instructions.
+# x86_64: No extra SIMD flags — on Linux, xxh_x86dispatch handles runtime
+#         selection via CPUID + __attribute__((target(...))). Adding -mavx2
+#         globally would break CPUs without AVX2.
 #
 # ARM64:  NEON is always available on AArch64 and xxHash auto-detects it.
 #         We add armv8-a+crypto (AES/SHA/PMULL) which is supported by
