@@ -55,7 +55,7 @@ package matching your current OS and architecture.
 
 Supported platforms: **macOS**, **Linux** (glibc & musl), **Windows**, **FreeBSD** — both **x64** and **arm64**.
 
-On x64, optimized variants for **AVX2** and **AVX-512** are included and selected automatically at load time.
+On x64, optimized variants for **AVX2** and **AVX-512** are included and selected automatically at load time via native CPUID detection. Set `FAST_FS_HASH_ISA=avx2|avx512|baseline` to override.
 
 **CI note:** Some CI configurations disable optional dependencies by default
 (e.g. `npm install --no-optional` or `--omit=optional`). To get the native addon

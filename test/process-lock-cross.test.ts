@@ -4,6 +4,11 @@ import { Worker } from "node:worker_threads";
 import { ProcessLock } from "fast-fs-hash";
 import { describe, expect, it } from "vitest";
 
+// Windows uses kernel-managed named mutexes with different cross-process semantics
+// (auto-released, re-entrant) — these tests validate POSIX shm-based locking.
+const isWindows = process.platform === "win32";
+const describeUnix = isWindows ? describe.skip : describe;
+
 /** Run a JS snippet in a child process. Returns stdout. */
 function runChild(code: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -24,7 +29,7 @@ function runChild(code: string): Promise<string> {
 
 const IMPORT = 'import { ProcessLock } from "./packages/fast-fs-hash/dist/index.mjs";';
 
-describe("ProcessLock cross-process", () => {
+describeUnix("ProcessLock cross-process", () => {
   it("child process can acquire after parent releases", async () => {
     const key = `cross-test-${Date.now()}`;
     const lock = await ProcessLock.acquire(key);
@@ -105,7 +110,7 @@ describe("ProcessLock cross-process", () => {
 
 const WORKER_HELPER = path.resolve(import.meta.dirname, "_worker-thread-helper.mjs");
 
-describe("ProcessLock worker thread", () => {
+describeUnix("ProcessLock worker thread", () => {
   it("lock is released when worker is terminated", async () => {
     const key = `worker-term-${Date.now()}`;
 
