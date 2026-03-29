@@ -128,7 +128,11 @@ namespace fast_fs_hash {
 
 #else
 
-// ─── POSIX ───────────────────────────────────────────────────────────
+// ─── POSIX: shm-based cross-process lock ─────────────────────────────
+//
+// Uses process-shared pthread_mutex in POSIX shared memory (shm_open).
+// Crash recovery: if the owner PID is dead, shm_unlink the stale segment
+// and create a fresh one (avoids pthread_mutex_destroy which crashes on FreeBSD).
 
 #  include <sys/mman.h>
 #  include <signal.h>
@@ -137,14 +141,13 @@ namespace fast_fs_hash {
 namespace fast_fs_hash {
 
   struct ShmLockState {
-    std::atomic<uint64_t> magic;  // SHM_LOCK_MAGIC when initialized
-    std::atomic<pid_t> ownerPid;  // PID of current holder, 0 = unlocked
-    std::atomic<int32_t> mapCount;  // number of active shm mappings (for shm_unlink)
-    std::atomic<int32_t> initFlag;  // CAS flag: 0=uninit, 1=initializing, 2=ready
+    std::atomic<uint64_t> magic;
+    std::atomic<pid_t> ownerPid;
+    std::atomic<int32_t> initFlag;  // 0=uninit, 1=initializing, 2=ready
     pthread_mutex_t mutex;
   };
 
-  static constexpr uint64_t SHM_LOCK_MAGIC = 0x6673684C6F636B32ULL;  // "fshLock2" (v2 with mapCount)
+  static constexpr uint64_t SHM_LOCK_MAGIC = 0x6673684C6F636B33ULL;  // "fshLock3"
   static constexpr size_t SHM_LOCK_SIZE = sizeof(ShmLockState);
 
   struct ProcessLockHandle {
@@ -160,9 +163,7 @@ namespace fast_fs_hash {
     return kill(pid, 0) == 0 || errno != ESRCH;
   }
 
-  /** Initialize mutex in shared memory. Called only by the winner of the CAS race.
-   *  @param resetMapCount  true for first-time init, false for recovery (preserve existing count). */
-  FSH_NO_INLINE static bool initShmMutex(ShmLockState * state, bool resetMapCount) noexcept {
+  FSH_NO_INLINE static bool initShmMutex(ShmLockState * state) noexcept {
     pthread_mutexattr_t attr;
     if (pthread_mutexattr_init(&attr) != 0) {
       return false;
@@ -174,55 +175,31 @@ namespace fast_fs_hash {
       return false;
     }
     state->ownerPid.store(0, std::memory_order_relaxed);
-    if (resetMapCount) {
-      state->mapCount.store(0, std::memory_order_relaxed);
-    }
     state->magic.store(SHM_LOCK_MAGIC, std::memory_order_release);
     state->initFlag.store(2, std::memory_order_release);
     return true;
   }
 
-  /** Ensure the shm is initialized. Thread/process-safe via CAS on initFlag.
-   *  @param resetMapCount  true for first-time init, false for recovery. */
-  static inline bool ensureInitialized(ShmLockState * state, bool resetMapCount = true) noexcept {
+  static inline bool ensureInitialized(ShmLockState * state) noexcept {
     int32_t expected = 0;
     if (state->initFlag.compare_exchange_strong(expected, 1, std::memory_order_acq_rel)) {
-      return initShmMutex(state, resetMapCount);
+      return initShmMutex(state);
     }
-    // Someone else is initializing or already done. Spin-wait for ready.
     for (int i = 0; i < 10100; ++i) {
       if (state->initFlag.load(std::memory_order_acquire) == 2) {
         return true;
       }
       if (i > 100) {
-        struct timespec ts = {0, 100000L};  // 100µs
+        struct timespec ts = {0, 100000L};
         nanosleep(&ts, nullptr);
       } else if (i > 5) {
         cpu_pause();
       }
     }
-    return false;  // Init stuck — give up
+    return false;
   }
 
-  /** Try to recover a stale lock from a dead owner. CAS-safe. */
-  static inline bool tryRecoverStaleLock(ShmLockState * state) noexcept {
-    const pid_t owner = state->ownerPid.load(std::memory_order_acquire);
-    if (owner == 0 || isPidAlive(owner)) {
-      return false;
-    }
-    // Owner is dead. CAS ownerPid to 0 to claim recovery rights.
-    pid_t expected = owner;
-    if (!state->ownerPid.compare_exchange_strong(expected, 0, std::memory_order_acq_rel)) {
-      return false;  // Another recoverer beat us
-    }
-    // Reinitialize the mutex (the dead process may have left it locked).
-    // Preserve mapCount — existing mappings are still valid.
-    pthread_mutex_destroy(&state->mutex);
-    state->initFlag.store(0, std::memory_order_release);
-    return ensureInitialized(state, false);
-  }
-
-  /** Open and map shm. Increments mapCount. Returns nullptr on failure. */
+  /** Open and map an shm segment. Returns nullptr on failure. */
   static inline ShmLockState * openShmState(const char * shmName, int & outFd) noexcept {
     const int fd = shm_open(shmName, O_RDWR | O_CREAT, 0666);
     if (fd < 0) [[unlikely]] {
@@ -250,19 +227,27 @@ namespace fast_fs_hash {
       close(fd);
       return nullptr;
     }
-    state->mapCount.fetch_add(1, std::memory_order_relaxed);
     outFd = fd;
     return state;
   }
 
-  /** Unmap and close. Decrements mapCount. If last mapping, shm_unlink. */
-  static inline void closeShmState(ShmLockState * state, int fd, const char * shmName) noexcept {
-    const int32_t prev = state->mapCount.fetch_sub(1, std::memory_order_acq_rel);
+  static inline void closeShmState(ShmLockState * state, int fd) noexcept {
     munmap(state, SHM_LOCK_SIZE);
     close(fd);
-    if (prev <= 1 && shmName) {
-      shm_unlink(shmName);
+  }
+
+  /** Recover a stale lock by unlinking the old shm and creating a fresh one.
+   *  Never calls pthread_mutex_destroy (which crashes on FreeBSD). */
+  static inline bool tryRecoverStaleLock(const char * shmName, ShmLockState *& state, int & shmFd) noexcept {
+    const pid_t owner = state->ownerPid.load(std::memory_order_acquire);
+    if (owner == 0 || isPidAlive(owner)) {
+      return false;
     }
+    // Owner is dead — unlink the stale segment and create a fresh one
+    closeShmState(state, shmFd);
+    shm_unlink(shmName);
+    state = openShmState(shmName, shmFd);
+    return state != nullptr;
   }
 
   inline ProcessLockHandle * processLockAcquire(const char * shmName, int timeoutMs, const char *& outError) noexcept {
@@ -277,17 +262,16 @@ namespace fast_fs_hash {
 
     const pid_t myPid = getpid();
 
-    // Fast path — uncontended
     if (pthread_mutex_trylock(&state->mutex) == 0) [[likely]] {
       goto acquired;
     }
-    if (tryRecoverStaleLock(state)) {
+    if (tryRecoverStaleLock(shmName, state, shmFd)) {
       if (pthread_mutex_trylock(&state->mutex) == 0) [[likely]] {
         goto acquired;
       }
     }
     if (timeoutMs == 0) {
-      closeShmState(state, shmFd, shmName);
+      closeShmState(state, shmFd);
       outError = "ProcessLock: lock not available";
       return nullptr;
     }
@@ -307,7 +291,7 @@ namespace fast_fs_hash {
         if (pthread_mutex_trylock(&state->mutex) == 0) [[likely]] {
           goto acquired;
         }
-        if (tryRecoverStaleLock(state)) {
+        if (tryRecoverStaleLock(shmName, state, shmFd)) {
           if (pthread_mutex_trylock(&state->mutex) == 0) [[likely]] {
             goto acquired;
           }
@@ -318,7 +302,7 @@ namespace fast_fs_hash {
           clock_gettime(CLOCK_MONOTONIC, &now);
           const int64_t elapsedMs = (now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) / 1000000;
           if (elapsedMs >= timeoutMs) {
-            closeShmState(state, shmFd, shmName);
+            closeShmState(state, shmFd);
             outError = "ProcessLock: timeout waiting for lock";
             return nullptr;
           }
@@ -332,7 +316,7 @@ namespace fast_fs_hash {
     if (!handle) [[unlikely]] {
       state->ownerPid.store(0, std::memory_order_release);
       pthread_mutex_unlock(&state->mutex);
-      closeShmState(state, shmFd, shmName);
+      closeShmState(state, shmFd);
       outError = "ProcessLock: allocation failed";
       return nullptr;
     }
@@ -349,7 +333,15 @@ namespace fast_fs_hash {
     auto * state = handle->state;
     state->ownerPid.store(0, std::memory_order_release);
     pthread_mutex_unlock(&state->mutex);
-    closeShmState(state, handle->shmFd, handle->shmName);
+
+    // Best-effort cleanup: if no one else is waiting, unlink the shm segment.
+    // This prevents unbounded growth of /dev/shm entries.
+    if (pthread_mutex_trylock(&state->mutex) == 0) {
+      pthread_mutex_unlock(&state->mutex);
+      shm_unlink(handle->shmName);
+    }
+
+    closeShmState(state, handle->shmFd);
     free(handle);
   }
 
