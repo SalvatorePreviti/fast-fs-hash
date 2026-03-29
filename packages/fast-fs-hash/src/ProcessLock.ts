@@ -86,6 +86,19 @@ export class ProcessLock implements IKeyedLock<string> {
     return this.#promise;
   }
 
+  /**
+   * Directory for lock files (FreeBSD, Windows). Set to override the default (os.tmpdir).
+   * On Linux/macOS, locks use POSIX shared memory — this property has no effect.
+   * Can also be set via the `FAST_FS_HASH_LOCK_DIR` environment variable.
+   */
+  public static set lockDir(dir: string) {
+    process.env.FAST_FS_HASH_LOCK_DIR = dir;
+  }
+
+  public static get lockDir(): string {
+    return process.env.FAST_FS_HASH_LOCK_DIR ?? require("node:os").tmpdir();
+  }
+
   /** Number of lock keys currently held in this process. */
   public static get count(): number {
     return _map.size;

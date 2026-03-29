@@ -361,9 +361,18 @@ Both `KeyedLock` and `ProcessLock` implement the same `IKeyedLock` interface.
 | ---------------- | -------------------------- | --------------------------------------------------------- |
 | **Scope**        | Single process (in-memory) | Cross-process (OS-level)                                  |
 | **Key type**     | Any value (`unknown`)      | `string` (hashed to OS identifier)                        |
-| **Mechanism**    | Promise chaining           | POSIX shared memory mutex / Windows named mutex           |
+| **Mechanism**    | Promise chaining           | Platform-specific (see below)                             |
 | **Crash safety** | N/A (in-process)           | Automatic — stale locks from dead processes are recovered |
-| **Overhead**     | Zero (no syscalls)         | ~20µs per acquire (shm_open, mmap, mutex)                 |
+| **Overhead**     | Zero (no syscalls)         | ~20µs per acquire                                         |
+
+**ProcessLock platform backends:**
+
+- **Linux**: POSIX shared memory + robust `pthread_mutex` (`PTHREAD_MUTEX_ROBUST` — kernel handles crash recovery)
+- **macOS**: POSIX shared memory + `pthread_mutex` (PID-based crash recovery)
+- **FreeBSD**: `flock()` on lock file in temp directory (crash-safe — OS releases on exit)
+- **Windows**: `LockFileEx()` on lock file in `%TEMP%` (crash-safe — OS releases on exit)
+
+On FreeBSD/Windows, set `ProcessLock.lockDir` or the `FAST_FS_HASH_LOCK_DIR` env var to override the lock file directory.
 
 ### KeyedLock — In-process locking
 
@@ -426,6 +435,8 @@ try { ... } finally { lock.release(); }
 | `lock.promise`       | ✓                              | ✓                                    | Resolves when released. `undefined` if not held |
 | `Lock.count`         | ✓                              | ✓                                    | Number of keys held                             |
 | `Lock.isLocked(key)` | In-process only                | Cross-process check                  | Whether a key is locked                         |
+
+| `ProcessLock.lockDir` | —                              | Get/set lock file directory          | FreeBSD/Windows only (default: `os.tmpdir()`)   |
 
 ProcessLock options: `{ timeout?: number }` — `-1` = wait forever (default), `0` = try once, `>0` = wait up to N ms
 

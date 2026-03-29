@@ -1,11 +1,11 @@
 {
   "_description": "SHA-256 hashes of build artifacts and source code. Regenerated on every build.",
-  "generatedAt": "2026-03-29T15:51:26.561Z",
+  "generatedAt": "2026-03-29T16:44:10.189Z",
   "distArtifacts": {
     "index.cjs": {
-      "sha256": "eee662a2e7c9131abbb088dc015d11cfd0d99bc3f53e7aeee868c6ac879f9acd",
-      "bytes": 46831,
-      "lines": 1225
+      "sha256": "543496c66421e11f30e3219e5d47f96854f1ad53ef663fe0ee8dad25680188d6",
+      "bytes": 47259,
+      "lines": 1236
     },
     "index.d.cts": {
       "sha256": "97e1818573679b5d3d697406abd3e5f1e9cd00da1f2783ab236912180462f5be",
@@ -13,9 +13,9 @@
       "lines": 2
     },
     "index.d.ts": {
-      "sha256": "f975f2746bff597d174038d2aef1227b60f1c8ed4734f95e93febb5c09d3394c",
-      "bytes": 29377,
-      "lines": 624
+      "sha256": "d88b787c6ddefe5880ba16638d7c56b7f655c83f0c60b524a68ef0e61228d378",
+      "bytes": 29720,
+      "lines": 631
     },
     "index.mjs": {
       "sha256": "d06dd1be74d4df4853ee5f04b63ce9c66eb0c73e1edc1c7ae86b981d80517819",
@@ -38,9 +38,9 @@
         "lines": 126
       },
       "ProcessLock.ts": {
-        "sha256": "bc1a24600ac6bdc78e84e0680551cbd13eddaa9eb733bf88edc654834dfc91f8",
-        "bytes": 5385,
-        "lines": 188
+        "sha256": "8ce543e9e6fed551ef11ed030a0abe872696cd73a29c6d64c0c4ecdcbd2261ec",
+        "bytes": 5862,
+        "lines": 201
       },
       "XxHash128Stream.ts": {
         "sha256": "9de34f9ede78a4b176d7b50005c7cb34d8416ad810039894eda9839395244587",
