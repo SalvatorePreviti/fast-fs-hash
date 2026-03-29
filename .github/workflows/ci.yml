@@ -193,10 +193,18 @@ jobs:
         include:
           - target: linux-x64-musl
           - target: linux-arm64-musl
+            use-qemu: true
+            docker-platform: linux/arm64
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
+
+      - name: Set up QEMU
+        if: ${{ matrix.use-qemu }}
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
 
       - name: Download artifact
         uses: actions/download-artifact@v4
@@ -206,7 +214,7 @@ jobs:
 
       - name: Test inside Alpine (native via simulated install)
         run: |
-          docker run --rm \
+          docker run --rm ${{ matrix.docker-platform && format('--platform {0}', matrix.docker-platform) || '' }} \
             -e CI=true \
             -e FAST_FS_HASH_NO_NATIVE=fatal \
             -v "$PWD:/workspace" -w /workspace node:22-alpine sh -c '

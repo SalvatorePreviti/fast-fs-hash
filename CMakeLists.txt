@@ -198,11 +198,16 @@ else()
         )
     endforeach()
 
-    # LTO (applied to all targets including static libs)
-    check_cxx_compiler_flag("-flto=thin" HAS_THIN_LTO)
-    if(HAS_THIN_LTO)
-        set(FSH_LTO_FLAG -flto=thin)
-    else()
+    # LTO (applied to all targets including static libs).
+    # Prefer thin LTO on Apple (Clang), regular LTO elsewhere (musl linker
+    # may not support LLVM thin-LTO bitcode relocations).
+    if(APPLE)
+        check_cxx_compiler_flag("-flto=thin" HAS_THIN_LTO)
+        if(HAS_THIN_LTO)
+            set(FSH_LTO_FLAG -flto=thin)
+        endif()
+    endif()
+    if(NOT FSH_LTO_FLAG)
         check_cxx_compiler_flag("-flto" HAS_LTO)
         if(HAS_LTO)
             set(FSH_LTO_FLAG -flto)
