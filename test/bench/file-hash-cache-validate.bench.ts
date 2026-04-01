@@ -41,8 +41,7 @@ describe("FileHashCache — no change", async () => {
   bench(
     "native  no change",
     async () => {
-      await using ctx = await FileHashCache.open(benchCp, RAW_DATA_DIR, files);
-      return ctx;
+      await using _ctx = await FileHashCache.open(benchCp, RAW_DATA_DIR, files);
     },
     { warmupIterations: 1, throws: true }
   );
