@@ -19,7 +19,7 @@ setupFixtures("digest-files");
 const BUF = 131072;
 const READ_BUF = 131072;
 
-// ─── Known xxHash3-128 digests (seed 0,0) ─────────────────────────────
+//  - Known xxHash3-128 digests (seed 0,0)
 
 const H_EMPTY = "99aa06d3014798d86001c324468d497f";
 
@@ -41,7 +41,7 @@ const H_SEQ_TO_300S1_400S2 = "843259e5c80977a3f01319c5930d2a67"; // makeBuffer(3
 describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
   const { digestFilesSequential, digestFilesSequentialTo, digestFilesParallel, digestFilesParallelTo } = backend;
 
-  // ─── digestFilesSequential ────────────────────────────────────────────
+  //  - digestFilesSequential
 
   describe("digestFilesSequential", () => {
     it("empty array → digest of empty data", async () => {
@@ -116,7 +116,7 @@ describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
     });
   });
 
-  // ─── digestFilesSequentialTo ──────────────────────────────────────────
+  //  - digestFilesSequentialTo
 
   describe("digestFilesSequentialTo", () => {
     it("empty array → writes empty-data digest", async () => {
@@ -147,7 +147,7 @@ describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
     });
   });
 
-  // ─── digestFilesParallel ──────────────────────────────────────────────
+  //  - digestFilesParallel
 
   describe("digestFilesParallel", () => {
     it("empty array → digest of empty data", async () => {
@@ -220,7 +220,7 @@ describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
     });
   });
 
-  // ─── digestFilesParallelTo ────────────────────────────────────────────
+  //  - digestFilesParallelTo
 
   describe("digestFilesParallelTo", () => {
     it("writes at offset 0", async () => {

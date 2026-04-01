@@ -10,11 +10,11 @@
 import { describe, expect, it } from "vitest";
 import { ALL_BACKENDS, hex, makeBuffer, setupFixtures, writeFixture } from "./_helpers_new";
 
-// ─── Fixtures ─────────────────────────────────────────────────────────
+//  - Fixtures
 
 setupFixtures("digest-functions");
 
-// ─── Known xxHash3-128 digests (seed 0,0) ─────────────────────────────
+//  - Known xxHash3-128 digests (seed 0,0)
 
 const H_EMPTY = "99aa06d3014798d86001c324468d497f";
 const H_1BYTE_42 = "14c9ae9594c463c479d03016b7aeed0d";

@@ -65,7 +65,7 @@ namespace fast_fs_hash {
    *   Accepts pre-converted UTF-16 paths (via WPath) or raw UTF-8.
    *
    * Read/write factories (cache files):
-   *   open_read(), open_write(), open_locked().
+   *   open_locked().
    *
    * Locking:
    *   open_locked() opens/creates the file and acquires an exclusive
@@ -127,8 +127,6 @@ namespace fast_fs_hash {
       this->fd = -1;
       return f;
     }
-
-    // ── Locking ────────────────────────────────────────────────────────
 
     /**
      * Open-or-create a cache file and acquire an exclusive LockFileEx lock.
@@ -277,8 +275,7 @@ namespace fast_fs_hash {
         return false;
       }
       OVERLAPPED ov{};
-      const bool gotLock =
-        LockFileEx(hFile, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov) != FALSE;
+      const bool gotLock = LockFileEx(hFile, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov) != FALSE;
       if (gotLock) {
         OVERLAPPED ov2{};
         UnlockFileEx(hFile, 0, 1, 0, &ov2);
@@ -286,11 +283,6 @@ namespace fast_fs_hash {
       CloseHandle(hFile);
       return !gotLock;
     }
-
-    // ── Read/Write ─────────────────────────────────────────────────────
-
-    /** No-op on Windows — FILE_FLAG_SEQUENTIAL_SCAN is set at open time. */
-    FSH_FORCE_INLINE void hint_sequential() noexcept {}
 
     /**
      * Read up to len bytes into buf. Returns bytes read (> 0), 0 on EOF, or -1 on error.
@@ -334,27 +326,6 @@ namespace fast_fs_hash {
       return sz.QuadPart;
     }
 
-    /** Read len bytes from file_offset into dest (positional read). Returns bytes read or -1. */
-    inline int64_t pread_at(uint8_t * dest, size_t file_offset, size_t len) const noexcept {
-      HANDLE h = this->get_handle();
-      if (h == INVALID_HANDLE_VALUE) [[unlikely]]
-        return -1;
-      size_t total = 0;
-      while (total < len) {
-        const uint64_t off = file_offset + total;
-        OVERLAPPED ov{};
-        ov.Offset = static_cast<DWORD>(off);
-        ov.OffsetHigh = static_cast<DWORD>(off >> 32);
-        const DWORD chunk = static_cast<DWORD>((len - total > 0x7FFFFFFFu) ? 0x7FFFFFFFu : len - total);
-        DWORD bytes_read = 0;
-        if (!ReadFile(h, dest + total, chunk, &bytes_read, &ov)) [[unlikely]]
-          return total > 0 ? static_cast<int64_t>(total) : -1;
-        if (bytes_read == 0) break;
-        total += bytes_read;
-      }
-      return static_cast<int64_t>(total);
-    }
-
     /** Write all bytes. Returns true on success. */
     inline bool write_all(const uint8_t * data, size_t len) noexcept {
       HANDLE h = this->get_handle();
@@ -385,6 +356,16 @@ namespace fast_fs_hash {
       return SetEndOfFile(h) != FALSE;
     }
 
+    /** Pre-allocate space. Best-effort, failure is ignored. */
+    inline void preallocate(size_t len) noexcept {
+      HANDLE h = this->get_handle();
+      if (h == INVALID_HANDLE_VALUE) [[unlikely]]
+        return;
+      FILE_ALLOCATION_INFO alloc;
+      alloc.AllocationSize.QuadPart = static_cast<LONGLONG>(len);
+      ::SetFileInformationByHandle(h, FileAllocationInfo, &alloc, sizeof(alloc));
+    }
+
     /** Seek to a position from the beginning of the file. Returns true on success. */
     inline bool seek(size_t offset) noexcept {
       HANDLE h = this->get_handle();
@@ -395,57 +376,8 @@ namespace fast_fs_hash {
       return SetFilePointerEx(h, li, nullptr, FILE_BEGIN) != FALSE;
     }
 
-    /** Flush file data to disk. Returns true on success. */
-    inline bool fsync_data() noexcept {
-      HANDLE h = this->get_handle();
-      if (h == INVALID_HANDLE_VALUE) [[unlikely]]
-        return false;
-      return FlushFileBuffers(h) != FALSE;
-    }
-
-    // ── Static factories ───────────────────────────────────────────────
-
-    /** Open a file for reading. */
-    static inline FfshFile open_read(const char * path) noexcept {
-      FfshFile f;
-      f.fd = open_rd(path);
-      return f;
-    }
-
-    /** Open a file for writing (with mkdir on ENOENT). */
-    static inline FfshFile open_write(const char * path) noexcept {
-      FfshFile f;
-      f.fd = open_wr_mkdir(path);
-      return f;
-    }
-
-    /** pread on an unowned fd (no close on destruct). */
-    static inline int64_t pread_fd(int raw_fd, uint8_t * dest, size_t file_offset, size_t len) noexcept {
-      if (raw_fd < 0) [[unlikely]]
-        return -1;
-      HANDLE h = reinterpret_cast<HANDLE>(_get_osfhandle(raw_fd));
-      if (h == INVALID_HANDLE_VALUE) [[unlikely]]
-        return -1;
-      size_t total = 0;
-      while (total < len) {
-        const uint64_t off = file_offset + total;
-        OVERLAPPED ov{};
-        ov.Offset = static_cast<DWORD>(off);
-        ov.OffsetHigh = static_cast<DWORD>(off >> 32);
-        const DWORD chunk = static_cast<DWORD>((len - total > 0x7FFFFFFFu) ? 0x7FFFFFFFu : len - total);
-        DWORD bytes_read = 0;
-        if (!ReadFile(h, dest + total, chunk, &bytes_read, &ov)) [[unlikely]]
-          return total > 0 ? static_cast<int64_t>(total) : -1;
-        if (bytes_read == 0) break;
-        total += bytes_read;
-      }
-      return static_cast<int64_t>(total);
-    }
-
     /** Close a raw fd. */
     static inline void close_fd(int f) noexcept { ::_close(f); }
-
-    // ── Stat helpers ──────────────────────────────────────────────────────
 
     /** stat using a pre-converted UTF-16 path, writing raw fields into CacheEntry. */
     static FSH_FORCE_INLINE bool stat_into(const wchar_t * wpath, CacheEntry & entry) noexcept {
@@ -549,29 +481,6 @@ namespace fast_fs_hash {
       return f;
     }
 
-    static inline int open_wr(const char * path) noexcept {
-      wchar_t wbuf[512];
-      wchar_t * heap = nullptr;
-      const int wlen = utf8_to_wide(path, wbuf, 512, &heap);
-      if (wlen <= 0) return -1;
-      HANDLE h = CreateFileW(
-        heap ? heap : wbuf,
-        GENERIC_WRITE,
-        FILE_SHARE_READ | FILE_SHARE_DELETE,
-        nullptr,
-        CREATE_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL,
-        nullptr);
-      free(heap);
-      if (h == INVALID_HANDLE_VALUE) return -1;
-      const int f = _open_osfhandle(reinterpret_cast<intptr_t>(h), _O_WRONLY | _O_BINARY);
-      if (f < 0) {
-        CloseHandle(h);
-        return -1;
-      }
-      return f;
-    }
-
     /** Open/create a file with GENERIC_READ|GENERIC_WRITE for locking — returns raw HANDLE. */
     static FSH_NO_INLINE HANDLE open_rw_handle_(const wchar_t * wpath) noexcept {
       return CreateFileW(
@@ -624,43 +533,6 @@ namespace fast_fs_hash {
         mkdirW_(wpath, sep);
       }
       return open_rw_handle_(wpath);
-    }
-
-    static inline int mkdir_p(const char * path, size_t len) noexcept {
-      char dir_buf[FSH_MAX_PATH];
-      if (len >= sizeof(dir_buf)) return -1;
-      memcpy(dir_buf, path, len);
-      dir_buf[len] = '\0';
-      wchar_t wbuf[512];
-      wchar_t * heap = nullptr;
-      const int wlen = utf8_to_wide(dir_buf, wbuf, 512, &heap);
-      if (wlen <= 0) return -1;
-      wchar_t * wp = heap ? heap : wbuf;
-      for (int i = 1; i < wlen - 1; ++i) {
-        if (wp[i] == L'\\' || wp[i] == L'/') {
-          const wchar_t saved = wp[i];
-          wp[i] = L'\0';
-          CreateDirectoryW(wp, nullptr);
-          wp[i] = saved;
-        }
-      }
-      const BOOL ok = CreateDirectoryW(wp, nullptr);
-      free(heap);
-      return (ok || GetLastError() == ERROR_ALREADY_EXISTS) ? 0 : -1;
-    }
-
-    static inline int open_wr_mkdir(const char * path) noexcept {
-      int f = open_wr(path);
-      if (f >= 0 || GetLastError() != ERROR_PATH_NOT_FOUND) [[likely]]
-        return f;
-      const size_t len = strlen(path);
-      size_t sep = len;
-      while (sep > 0 && path[sep - 1] != '/' && path[sep - 1] != '\\')
-        --sep;
-      if (sep > 1 && mkdir_p(path, sep - 1) == 0) {
-        f = open_wr(path);
-      }
-      return f;
     }
 
     static FSH_FORCE_INLINE bool stat_query_(
@@ -774,8 +646,7 @@ namespace fast_fs_hash {
     }
 
    private:
-    static FSH_FORCE_INLINE void hash_open_file_(
-      FfshFile & rf, Hash128 & dest, unsigned char * rbuf, size_t rbs) noexcept {
+    static FSH_FORCE_INLINE void hash_open_file_(FfshFile & rf, Hash128 & dest, unsigned char * rbuf, size_t rbs) noexcept {
       const int64_t n = rf.read_at_most(rbuf, rbs);
       if (n < 0) [[unlikely]] {
         dest.set_zero();
@@ -786,7 +657,6 @@ namespace fast_fs_hash {
         dest.from_xxh128(XXH3_128bits(rbuf, bytes));
         return;
       }
-      rf.hint_sequential();
       XXH3_state_t state;
       XXH3_128bits_reset(&state);
       XXH3_128bits_update(&state, rbuf, rbs);

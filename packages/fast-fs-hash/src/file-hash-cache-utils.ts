@@ -8,8 +8,6 @@
 import { CACHE_MAX_USER_DATA_SIZE } from "./file-hash-cache-format";
 import { findCommonRootPath, pathResolve } from "./utils";
 
-// ── Fingerprint validation ────────────────────────────────────
-
 export function setFingerprint(value: Uint8Array | null | undefined): Uint8Array | null {
   if (value !== null && value !== undefined) {
     if (!(value instanceof Uint8Array) || value.length !== 16) {
@@ -19,8 +17,6 @@ export function setFingerprint(value: Uint8Array | null | undefined): Uint8Array
   }
   return null;
 }
-
-// ── User data validation ──────────────────────────────────────
 
 export function validateUserData(userData: readonly Uint8Array[] | null | undefined): void {
   if (userData) {
@@ -36,8 +32,6 @@ export function validateUserData(userData: readonly Uint8Array[] | null | undefi
     }
   }
 }
-
-// ── Root path resolution ──────────────────────────────────────
 
 function resolveDir(p: string): string {
   const r = pathResolve(p);

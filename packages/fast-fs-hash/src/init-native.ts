@@ -8,8 +8,6 @@
 import { resolve } from "node:path";
 import { DIST_DIR } from "./utils";
 
-// ─── Binding type ─────────────────────────────────────────────────────
-
 /** Shape of the native binding export. */
 export interface BindingExportNative {
   digestBufferTo(input: Uint8Array, out: Uint8Array, outOffset?: number): Uint8Array;
@@ -100,8 +98,6 @@ export interface BindingExportNative {
   lz4CompressBound(inputSize: number): number;
   getCpuFeatures(): { avx2: boolean; avx512: boolean };
 }
-
-// ─── Load binding ─────────────────────────────────────────────────────
 
 function loadBinding(): BindingExportNative {
   const { platform, arch } = process;

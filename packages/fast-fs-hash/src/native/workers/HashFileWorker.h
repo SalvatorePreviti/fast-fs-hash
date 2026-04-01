@@ -60,7 +60,6 @@ class HashFileWorker final : public fast_fs_hash::AddonWorker {
         reinterpret_cast<XXH128_canonical_t *>(this->digest_), XXH3_128bits(rbuf, bytes));
     } else {
       // Large file — streaming.
-      fh.hint_sequential();
       XXH3_state_t state;
       XXH3_128bits_reset(&state);
       XXH3_128bits_update(&state, rbuf, bytes);

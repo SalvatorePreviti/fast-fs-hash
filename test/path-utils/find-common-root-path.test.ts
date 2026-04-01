@@ -2,7 +2,7 @@ import { findCommonRootPath } from "fast-fs-hash";
 import { describe, expect, it } from "vitest";
 
 describe("findCommonRootPath", () => {
-  // ── Basic cases ───────────────────────────────────────────────────
+  //  - Basic cases
 
   it("returns empty string for empty input", () => {
     expect(findCommonRootPath([])).toBe("");
@@ -24,7 +24,7 @@ describe("findCommonRootPath", () => {
     expect(findCommonRootPath(["/foo.ts"])).toBe("/");
   });
 
-  // ── Common prefix merging ────────────────────────────────────────
+  //  - Common prefix merging
 
   it("finds common parent of files in the same directory", () => {
     expect(findCommonRootPath(["/a/b/c.ts", "/a/b/d.ts"])).toBe("/a/b");
@@ -44,7 +44,7 @@ describe("findCommonRootPath", () => {
     ).toBe("/usr/local/lib");
   });
 
-  // ── No common root ───────────────────────────────────────────────
+  //  - No common root
 
   it("returns empty string for relative paths with no common prefix", () => {
     expect(findCommonRootPath(["foo/a.ts", "bar/b.ts"])).toBe("");
@@ -58,7 +58,7 @@ describe("findCommonRootPath", () => {
     expect(findCommonRootPath(["a.ts"])).toBe("");
   });
 
-  // ── Relative paths with common prefix ─────────────────────────────
+  //  - Relative paths with common prefix
 
   it("finds common prefix among relative paths", () => {
     expect(findCommonRootPath(["src/a.ts", "src/b.ts"])).toBe("src");
@@ -68,7 +68,7 @@ describe("findCommonRootPath", () => {
     expect(findCommonRootPath(["src/lib/a.ts", "src/lib/b.ts", "src/utils/c.ts"])).toBe("src");
   });
 
-  // ── Iterables ─────────────────────────────────────────────────────
+  //  - Iterables
 
   it("accepts a Set", () => {
     expect(findCommonRootPath(new Set(["/a/b/c.ts", "/a/b/d.ts"]))).toBe("/a/b");
@@ -82,14 +82,14 @@ describe("findCommonRootPath", () => {
     expect(findCommonRootPath(gen())).toBe("/x/y");
   });
 
-  // ── Early termination ─────────────────────────────────────────────
+  //  - Early termination
 
   it("returns empty string immediately when prefix is exhausted", () => {
     // Third entry shares nothing with the first two → early exit.
     expect(findCommonRootPath(["/a/b/c.ts", "/a/b/d.ts", "z.ts"])).toBe("");
   });
 
-  // ── Segment-boundary correctness ──────────────────────────────────
+  //  - Segment-boundary correctness
 
   it("does not match partial segment names", () => {
     // "/abc" and "/abd" have a common CHAR prefix of "/ab" but NOT a
@@ -102,7 +102,7 @@ describe("findCommonRootPath", () => {
     expect(findCommonRootPath(["/a/b/", "/a/c.ts"])).toBe("/a");
   });
 
-  // ── baseRoot argument ─────────────────────────────────────────────
+  //  - baseRoot argument
 
   it("baseRoot prevents the result from being deeper than the base", () => {
     // Without baseRoot: common root is /project/src
@@ -135,7 +135,7 @@ describe("findCommonRootPath", () => {
     expect(findCommonRootPath(["/project/src/a.ts", "/project/src/b.ts"], "/project/")).toBe("/project");
   });
 
-  // ── allowedRoot argument ──────────────────────────────────────────
+  //  - allowedRoot argument
 
   it("allowedRoot filters out files outside the boundary", () => {
     // Only /project/src/a.ts is under /project/src

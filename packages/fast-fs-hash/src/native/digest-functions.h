@@ -31,8 +31,6 @@ namespace digest_functions {
     return true;
   }
 
-  // ─── Synchronous digest functions (seed=0, optional outOffset) ──────────
-
   /** digestBufferTo(buf, out, outOffset?) → out */
   static Napi::Value digestBufferTo(const Napi::CallbackInfo & info) {
     napi_env env = info.Env();

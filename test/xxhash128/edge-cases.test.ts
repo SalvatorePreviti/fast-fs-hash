@@ -326,7 +326,7 @@ describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
     });
   });
 
-  // ─── Exported functions are the same as XxHash128Stream static methods ───
+  //  - Exported functions are the same as XxHash128Stream static methods
 
   describe("exported digest functions match XxHash128Stream static methods", () => {
     it("all digest functions are identical to XxHash128Stream properties", () => {

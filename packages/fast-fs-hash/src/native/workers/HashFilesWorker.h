@@ -22,8 +22,6 @@ namespace fast_fs_hash {
    * lives only on this frame, not on the hot-path stack.
    */
   FSH_NO_INLINE inline void hashLargeFile(unsigned char * rbuf, size_t initial_bytes, FfshFile & file, uint8_t * dest) {
-    file.hint_sequential();  // worth the syscall only when multiple reads follow
-
     XXH3_state_t state;
     XXH3_128bits_reset(&state);
     XXH3_128bits_update(&state, rbuf, initial_bytes);

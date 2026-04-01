@@ -1,6 +1,6 @@
 {
   "_description": "SHA-256 hashes of build artifacts and source code. Regenerated on every build.",
-  "generatedAt": "2026-04-01T14:30:14.896Z",
+  "generatedAt": "2026-04-01T15:33:02.094Z",
   "distArtifacts": {
     "index.cjs": {
       "sha256": "f54905904661a6ff9f288d5edc2391b0064e45e04fd62ee642e25d845e2b371b",
@@ -28,14 +28,14 @@
     "files": 22,
     "ts": {
       "FileHashCache.ts": {
-        "sha256": "91f6c2b17577bdacc14b8235518d25509c2e813f1448f44a491cbc78ded1e0d5",
-        "bytes": 14018,
-        "lines": 390
+        "sha256": "2db9c0ab2bfe952f8bf6f9dbade2b00ba5962dc51cd6fa3eba581b64e16dfa23",
+        "bytes": 13439,
+        "lines": 384
       },
       "XxHash128Stream.ts": {
-        "sha256": "395c927a76320959a65e02ec37d694eb2f8f9fa234bde93ac74b3179f2bf6c7e",
-        "bytes": 10710,
-        "lines": 324
+        "sha256": "387b2288984e9fcc34235f9357fe02bb79a457d7ffc1a9fcd76e6729d75e9336",
+        "bytes": 10531,
+        "lines": 322
       },
       "file-hash-cache-format.ts": {
         "sha256": "44f290a5e633bfcad6ba97020d0dabda1cef4dd6e5f3146ff8c73590ae32c4cf",
@@ -43,9 +43,9 @@
         "lines": 73
       },
       "file-hash-cache-utils.ts": {
-        "sha256": "075b00a69faaedc4cc86c60552765fd7e6643ea8311ad5394862332607f1d750",
-        "bytes": 2181,
-        "lines": 62
+        "sha256": "347bee595e775443721556c0ef4f989e3715a9ca7579d4882e1d1fb69f3b7d4d",
+        "bytes": 1744,
+        "lines": 56
       },
       "functions.ts": {
         "sha256": "580939f5ecab5b6bac35885f2901ff4041ea526b60da49add44caca16ad05d79",
@@ -58,9 +58,9 @@
         "lines": 203
       },
       "init-native.ts": {
-        "sha256": "ed3d2ff78505319ad023eb91020c4d2ea533b3b8fec39aa4bed58306847e15c9",
-        "bytes": 6768,
-        "lines": 202
+        "sha256": "9408b6aeecef36266418883c9f529bfbe46636a5378e6c46dcae064034e5f080",
+        "bytes": 6394,
+        "lines": 198
       },
       "public-types.ts": {
         "sha256": "06f3448ac445b26ee547c3f3ec7d502424eb75bc5659b7335d1baf60dcd36564",
@@ -68,8 +68,8 @@
         "lines": 58
       },
       "utils.ts": {
-        "sha256": "ef744e684857923a2ccff3d8dcccee4f880c383f90d8c85ccaa034d8a0252c54",
-        "bytes": 13368,
+        "sha256": "dd84ca0265af01814043b97fc67cf1a35df4a7e08a33d5f99024142a85b0f787",
+        "bytes": 13034,
         "lines": 375
       }
     },
@@ -85,9 +85,9 @@
         "lines": 90
       },
       "digest-functions.h": {
-        "sha256": "ab4ba265a7b130253ecd76035348f4d0f6fb817dbb6951c4b6a714900a7009e0",
-        "bytes": 7832,
-        "lines": 205
+        "sha256": "47aeb85216771a25a5fe0ade02f8212b4daf76468cfa613cef4e92033b6a1fca",
+        "bytes": 7727,
+        "lines": 203
       },
       "includes.h": {
         "sha256": "c0a449ec627b97892035bb930b2940b79853cbec4d13831f3b94e33a21829d61",
@@ -100,14 +100,14 @@
         "lines": 413
       },
       "napi-helpers.h": {
-        "sha256": "bab393a00522a692fcaf2f52728645d9f13f89049e0d63b59dbd8fb3c8b4cc10",
-        "bytes": 4491,
-        "lines": 127
+        "sha256": "dc6bff4f165a8723103615f1651293507e0ee312af120f4d7810f84a5d2a48c2",
+        "bytes": 3802,
+        "lines": 111
       },
       "stream-functions.h": {
-        "sha256": "2ff10ef801f9f050b8499a0912b4604287cce48bb64f7f70da730b2808237e98",
-        "bytes": 11010,
-        "lines": 284
+        "sha256": "eebaf7f732939c0a804fbb5dab89222cd0eada934152342370d7428a1db41695",
+        "bytes": 11037,
+        "lines": 288
       }
     },
     "xxhash": {
@@ -139,8 +139,8 @@
     },
     "cmake": {
       "CMakeLists.txt": {
-        "sha256": "7a09d736543cd461d1cb5b5c3533a73685e365bcb8166c2d24ba32b520c055fc",
-        "bytes": 10857,
+        "sha256": "52fde62f05849039219b3e3f590ffeec1ece90dc0a527d15e2a4fc3a1a714cd6",
+        "bytes": 10360,
         "lines": 265
       }
     }

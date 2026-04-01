@@ -58,7 +58,7 @@ add_library(lz4 STATIC "${CMAKE_CURRENT_SOURCE_DIR}/deps/lz4/lz4.c")
 target_include_directories(lz4 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/deps/lz4")
 set_target_properties(lz4 PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-# ─── Determine actual TARGET architecture ───────────────────────────────
+# Determine actual TARGET architecture
 #
 # CMAKE_SYSTEM_PROCESSOR reports the HOST architecture on Windows when
 # cross-compiling with Visual Studio generators (e.g. building ARM64 on an
@@ -104,7 +104,7 @@ include_directories(${NATIVE_SRC_DIR}/workers)
 include_directories(${NATIVE_SRC_DIR}/file-hash-cache)
 include_directories(${NATIVE_SRC_DIR}/file-hash-cache/workers)
 
-# ─── Addon build function ──────────────────────────────────────────────
+# Addon build function
 # Creates a .node shared library target with the given suffix and arch flags.
 # On x64, called 3 times (baseline, avx2, avx512). On other archs, called once.
 
@@ -130,7 +130,7 @@ function(fsh_add_addon SUFFIX ARCH_FLAGS)
     endif()
 endfunction()
 
-# ─── Create addon targets ─────────────────────────────────────────────
+# Create addon targets
 
 if(FSH_TARGET_ARCH MATCHES "x86_64|AMD64|amd64|x64" AND NOT MSVC)
     # x64 GCC/Clang: 3 variants with increasing ISA levels
@@ -147,7 +147,7 @@ else()
     fsh_add_addon(""       "")
 endif()
 
-# ─── High-performance build configuration ─────────────────────────────
+# High-performance build configuration
 #
 # Optimization flags applied to all addon targets + static libraries.
 # Uses a function so x64 multi-variant builds all get the same base flags.

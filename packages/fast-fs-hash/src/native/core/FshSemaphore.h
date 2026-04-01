@@ -21,8 +21,6 @@
 
 namespace fast_fs_hash {
 
-  // ── CPU spin hint ───────────────────────────────────────────────
-
   FSH_FORCE_INLINE void cpu_pause() noexcept {
 #if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
 #  ifdef _MSC_VER
@@ -38,8 +36,6 @@ namespace fast_fs_hash {
 #  endif
 #endif
   }
-
-  // ── Platform semaphore ──────────────────────────────────────────
 
   class Semaphore : NonCopyable {
    public:

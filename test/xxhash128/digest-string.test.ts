@@ -33,7 +33,7 @@ const FIRST_TIER2 = TIER1_MAX + 1; // 43691
 const TIER2_MAX = BUF - 100; // 130972
 const FIRST_TIER3 = TIER2_MAX + 1; // 130973
 
-// ─── Known xxHash3-128 digests (seed 0,0) ─────────────────────────────
+//  - Known xxHash3-128 digests (seed 0,0)
 
 const H_EMPTY = "99aa06d3014798d86001c324468d497f";
 const H_HELLO_WORLD = "df8d09e93f874900a99b8775cc15b6c7";
@@ -86,12 +86,12 @@ const H_MIXED1 = "ae1ed1d9e6589964ad6bb786fcd94764";
 const H_MIXED2 = "ca49a451a1fb3a29cf30e2f3a02dd38b";
 const H_MIXED3 = "bacc3917f3a5c8e7423f5dce9838dfe0";
 
-// ─── All backends ─────────────────────────────────────────────────────
+//  - All backends
 
 describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
   const { digestString, digestStringTo } = backend;
 
-  // ─── digestString basic ───────────────────────────────────────────────
+  //  - digestString basic
 
   describe("digestString", () => {
     it("empty string", () => {
@@ -129,7 +129,7 @@ describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
     });
   });
 
-  // ─── Tier 1: guaranteed safe (len * 3 <= BUF_SIZE) ───────────────────
+  //  - Tier 1: guaranteed safe (len * 3 <= BUF_SIZE)
 
   describe("tier 1: guaranteed safe (len * 3 <= BUF_SIZE)", () => {
     it(`ASCII string at tier 1 max (${TIER1_MAX} chars)`, () => {
@@ -157,7 +157,7 @@ describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
     });
   });
 
-  // ─── Tier 1→2 boundary (len * 3 crosses BUF_SIZE) ────────────────────
+  //  - Tier 1→2 boundary (len * 3 crosses BUF_SIZE)
 
   describe("tier 1→2 boundary", () => {
     it(`ASCII string at ${FIRST_TIER2} chars (first tier 2 length)`, () => {
@@ -173,7 +173,7 @@ describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
     });
   });
 
-  // ─── Tier 2: optimistic (len <= BUF_SIZE - 100) ──────────────────────
+  //  - Tier 2: optimistic (len <= BUF_SIZE - 100)
 
   describe("tier 2: optimistic (len <= BUF_SIZE - 100)", () => {
     it(`ASCII string at tier 2 max (${TIER2_MAX} chars)`, () => {
@@ -212,7 +212,7 @@ describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
     });
   });
 
-  // ─── Tier 2→3 boundary (len > BUF_SIZE - 100) ────────────────────────
+  //  - Tier 2→3 boundary (len > BUF_SIZE - 100)
 
   describe("tier 2→3 boundary (fallback)", () => {
     it(`ASCII string at ${FIRST_TIER3} chars (first fallback length)`, () => {
@@ -228,7 +228,7 @@ describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
     });
   });
 
-  // ─── Tier 3: fallback (large strings) ────────────────────────────────
+  //  - Tier 3: fallback (large strings)
 
   describe("tier 3: fallback (large strings)", () => {
     it("ASCII string 2× BUF_SIZE", () => {
@@ -262,7 +262,7 @@ describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
     });
   });
 
-  // ─── Mixed content ────────────────────────────────────────────────────
+  //  - Mixed content
 
   describe("mixed UTF-8 content", () => {
     it("mixed ASCII + 2-byte + 3-byte chars", () => {
@@ -282,7 +282,7 @@ describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
     });
   });
 
-  // ─── digestStringTo ───────────────────────────────────────────────────
+  //  - digestStringTo
 
   describe("digestStringTo", () => {
     it("writes at offset 0", () => {

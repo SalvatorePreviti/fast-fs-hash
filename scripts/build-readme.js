@@ -14,11 +14,7 @@ import { elapsed, getPublishDirs, logInfo, logOk, ROOT_DIR, SyncTracker } from "
 const t0 = performance.now();
 const SHARED_FILES = ["README.md", "LICENSE", "NOTICES.md"];
 
-// ─── Main ───────────────────────────────────────────────────────────────
-
 const readmeContent = fs.readFileSync(path.resolve(ROOT_DIR, "README.md"), "utf8");
-
-// ─── Sync to packages ───────────────────────────────────────────────────
 
 /** Notice prepended to README.md in platform-specific binary packages. */
 function platformReadmeNotice(pkgName) {

@@ -20,7 +20,7 @@ setupFixtures("digest-file");
 const BUF = 131072;
 const READ_BUF = 131072;
 
-// ─── Known xxHash3-128 digests (seed 0,0) ─────────────────────────────
+//  - Known xxHash3-128 digests (seed 0,0)
 
 const H_EMPTY = "99aa06d3014798d86001c324468d497f";
 const H_0x42 = "9d1b9bc4078a3e7274d3766ca02423f3";
@@ -50,7 +50,7 @@ const H_13 = "ae92e123e9472408bd795526190266c0";
 describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
   const { digestFile, digestFileTo } = backend;
 
-  // ─── digestFile ───────────────────────────────────────────────────────
+  //  - digestFile
 
   describe("digestFile", () => {
     it("empty file", async () => {
@@ -172,7 +172,7 @@ describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
     });
   });
 
-  // ─── digestFileTo ─────────────────────────────────────────────────────
+  //  - digestFileTo
 
   describe("digestFileTo", () => {
     it("writes digest at offset 0", async () => {

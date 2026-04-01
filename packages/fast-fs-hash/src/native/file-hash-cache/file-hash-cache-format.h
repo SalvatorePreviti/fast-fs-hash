@@ -45,17 +45,17 @@
 
 namespace fast_fs_hash {
 
-  // ── On-disk file entry (48 bytes, 16-byte aligned stride) ──────────────
+  // On-disk file entry (48 bytes, 16-byte aligned stride)
   //
   // High 2 bits of `ino` encode per-file state in memory (see cache-constants.h).
   // stat_into() always clears these bits, so on-disk data is clean.
 
   struct CacheEntry {
-    uint64_t ino;              //  0: inode number (high 2 bits = state in memory)
-    uint64_t mtimeNs;          //  8: modification time (nanoseconds since epoch)
-    uint64_t ctimeNs;          // 16: change time (nanoseconds since epoch)
-    uint64_t size;             // 24: file size (full u64)
-    Hash128 contentHash;       // 32: xxHash3-128 of file contents
+    uint64_t ino;  //  0: inode number (high 2 bits = state in memory)
+    uint64_t mtimeNs;  //  8: modification time (nanoseconds since epoch)
+    uint64_t ctimeNs;  // 16: change time (nanoseconds since epoch)
+    uint64_t size;  // 24: file size (full u64)
+    Hash128 contentHash;  // 32: xxHash3-128 of file contents
 
     static constexpr size_t STRIDE = 48;
     static constexpr size_t PATH_END_SIZE = 4;
@@ -84,57 +84,44 @@ namespace fast_fs_hash {
   static_assert(offsetof(CacheEntry, size) == 24);
   static_assert(offsetof(CacheEntry, contentHash) == 32);
 
-  // ── On-disk header (80 bytes, all fields little-endian) ───────────────
-
   struct CacheHeader {
-    uint32_t magic;              //  0: 'F','S','H',0x00 = 0x00485346
-    uint32_t version;            //  4: user cache version
-    uint32_t fileCount;          //  8: number of entries
-    uint32_t udItemCount;        // 12: number of user data items (0 = none)
-    Hash128 fingerprint;         // 16: 16-byte xxHash3-128 (or all-zero)
-    double userValue0;           // 32: f64 LE, user-defined
-    double userValue1;           // 40: f64 LE, user-defined
-    double userValue2;           // 48: f64 LE, user-defined
-    double userValue3;           // 56: f64 LE, user-defined
-    uint32_t pathsLen;           // 64: byte length of packed paths section
-    uint32_t udPayloadsLen;      // 68: total byte length of user data payloads
-    uint32_t status;             // 72: CacheStatus (in-memory only, 0 on disk)
-    int32_t fileHandle;          // 76: FfshFileHandle (in-memory only, -1 on disk)
+    uint32_t magic;  //  0: 'F','S','H',0x00 = 0x00485346
+    uint32_t version;  //  4: user cache version
+    uint32_t fileCount;  //  8: number of entries
+    uint32_t udItemCount;  // 12: number of user data items (0 = none)
+    Hash128 fingerprint;  // 16: 16-byte xxHash3-128 (or all-zero)
+    double userValue0;  // 32: f64 LE, user-defined
+    double userValue1;  // 40: f64 LE, user-defined
+    double userValue2;  // 48: f64 LE, user-defined
+    double userValue3;  // 56: f64 LE, user-defined
+    uint32_t pathsLen;  // 64: byte length of packed paths section
+    uint32_t udPayloadsLen;  // 68: total byte length of user data payloads
+    uint32_t status;  // 72: CacheStatus (in-memory only, 0 on disk)
+    int32_t fileHandle;  // 76: FfshFileHandle (in-memory only, -1 on disk)
 
     /** Store a file handle (int32_t fd, -1 = invalid). */
-    FSH_FORCE_INLINE void setFileHandle(int32_t h) noexcept {
-      this->fileHandle = h;
-    }
+    FSH_FORCE_INLINE void setFileHandle(int32_t h) noexcept { this->fileHandle = h; }
 
     /** Recover the file handle (int32_t fd, -1 = invalid). */
-    FSH_FORCE_INLINE int32_t getFileHandle() const noexcept {
-      return this->fileHandle;
-    }
+    FSH_FORCE_INLINE int32_t getFileHandle() const noexcept { return this->fileHandle; }
 
     static constexpr size_t SIZE = 80;
     static constexpr uint32_t MAGIC = 0x00485346u;
 
     /** Byte length of the decompressed body (entries+udDir+pathEnds+paths+udPayloads). */
     FSH_FORCE_INLINE size_t bodySize() const noexcept {
-      return static_cast<size_t>(this->fileCount) * (CacheEntry::STRIDE + CacheEntry::PATH_END_SIZE)
-        + static_cast<size_t>(this->udItemCount) * 4
-        + this->pathsLen
-        + this->udPayloadsLen;
+      return static_cast<size_t>(this->fileCount) * (CacheEntry::STRIDE + CacheEntry::PATH_END_SIZE) +
+        static_cast<size_t>(this->udItemCount) * 4 + this->pathsLen + this->udPayloadsLen;
     }
 
     /** Full dataBuf length: header + body. */
-    FSH_FORCE_INLINE size_t totalSize() const noexcept {
-      return SIZE + this->bodySize();
-    }
+    FSH_FORCE_INLINE size_t totalSize() const noexcept { return SIZE + this->bodySize(); }
 
     /** Validate header fields are within safe limits. */
     FSH_FORCE_INLINE bool validateLimits() const noexcept {
-      return this->magic == MAGIC
-        && this->fileCount <= CACHE_MAX_FILE_COUNT
-        && this->pathsLen <= CACHE_MAX_PATHS_LEN
-        && this->udItemCount <= CACHE_MAX_FILE_COUNT
-        && this->udPayloadsLen <= CACHE_MAX_UD_PAYLOADS
-        && this->bodySize() <= CACHE_MAX_BODY_SIZE;
+      return this->magic == MAGIC && this->fileCount <= CACHE_MAX_FILE_COUNT && this->pathsLen <= CACHE_MAX_PATHS_LEN &&
+        this->udItemCount <= CACHE_MAX_FILE_COUNT && this->udPayloadsLen <= CACHE_MAX_UD_PAYLOADS &&
+        this->bodySize() <= CACHE_MAX_BODY_SIZE;
     }
 
     /** Validate packed-paths: monotonically increasing offsets, within bounds, no traversal. */
@@ -156,39 +143,26 @@ namespace fast_fs_hash {
   static_assert(offsetof(CacheHeader, status) == 72);
   static_assert(offsetof(CacheHeader, fileHandle) == 76);
 
-  // ── CacheStatus values ────────────────────────────────────────────────
-
   enum class CacheStatus : uint32_t {
-    UP_TO_DATE   = 0,
-    CHANGED      = 1,
-    STALE        = 2,
-    MISSING      = 3,
-    STATS_DIRTY  = 4,
+    UP_TO_DATE = 0,
+    CHANGED = 1,
+    STALE = 2,
+    MISSING = 3,
+    STATS_DIRTY = 4,
   };
 
-  static_assert(CacheHeader::SIZE % 16 == 0,
-    "header must be 16-byte aligned for CacheEntry u64/Hash128 fields");
-
-  // ── User data slice (POD, no ownership) ─────────────────────────────
+  static_assert(CacheHeader::SIZE % 16 == 0, "header must be 16-byte aligned for CacheEntry u64/Hash128 fields");
 
   struct UserDataSlice {
     const uint8_t * ptr = nullptr;
     size_t len = 0;
   };
 
-  // ── Buffer layout helpers ─────────────────────────────────────────────
+  FSH_FORCE_INLINE CacheHeader * headerOf(uint8_t * buf) { return reinterpret_cast<CacheHeader *>(buf); }
 
-  FSH_FORCE_INLINE CacheHeader * headerOf(uint8_t * buf) {
-    return reinterpret_cast<CacheHeader *>(buf);
-  }
+  FSH_FORCE_INLINE const CacheHeader * headerOf(const uint8_t * buf) { return reinterpret_cast<const CacheHeader *>(buf); }
 
-  FSH_FORCE_INLINE const CacheHeader * headerOf(const uint8_t * buf) {
-    return reinterpret_cast<const CacheHeader *>(buf);
-  }
-
-  FSH_FORCE_INLINE CacheEntry * entriesOf(uint8_t * buf) {
-    return reinterpret_cast<CacheEntry *>(buf + CacheHeader::SIZE);
-  }
+  FSH_FORCE_INLINE CacheEntry * entriesOf(uint8_t * buf) { return reinterpret_cast<CacheEntry *>(buf + CacheHeader::SIZE); }
 
   FSH_FORCE_INLINE const CacheEntry * entriesOf(const uint8_t * buf) {
     return reinterpret_cast<const CacheEntry *>(buf + CacheHeader::SIZE);
@@ -219,14 +193,14 @@ namespace fast_fs_hash {
   }
 
   FSH_FORCE_INLINE uint8_t * udPayloadsOf(uint8_t * buf, size_t fileCount, size_t udItemCount, size_t pathsLen) {
-    return buf + CacheHeader::SIZE + fileCount * (CacheEntry::STRIDE + CacheEntry::PATH_END_SIZE) + udItemCount * 4 + pathsLen;
+    return buf + CacheHeader::SIZE + fileCount * (CacheEntry::STRIDE + CacheEntry::PATH_END_SIZE) + udItemCount * 4 +
+      pathsLen;
   }
 
   FSH_FORCE_INLINE const uint8_t * udPayloadsOf(const uint8_t * buf, size_t fileCount, size_t udItemCount, size_t pathsLen) {
-    return buf + CacheHeader::SIZE + fileCount * (CacheEntry::STRIDE + CacheEntry::PATH_END_SIZE) + udItemCount * 4 + pathsLen;
+    return buf + CacheHeader::SIZE + fileCount * (CacheEntry::STRIDE + CacheEntry::PATH_END_SIZE) + udItemCount * 4 +
+      pathsLen;
   }
-
-  // ── CacheHeader out-of-line method (needs pathEndsOf / pathsOf) ────────
 
   inline bool CacheHeader::packedPathsValid(const uint8_t * buf) const noexcept {
     const uint32_t fc = this->fileCount;

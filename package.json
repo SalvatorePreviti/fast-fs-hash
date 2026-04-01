@@ -32,14 +32,14 @@
     "docs": "npx typedoc"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.9",
+    "@biomejs/biome": "^2.4.10",
     "@types/node": "^25.5.0",
     "ansis": "^4.2.0",
     "cmake-js": "^8.0.0",
     "lefthook": "^2.1.4",
     "node-addon-api": "^8.7.0",
     "prettier": "^3.8.1",
-    "rolldown": "^1.0.0-rc.9",
+    "rolldown": "^1.0.0-rc.13",
     "rollup-plugin-dts": "^6.4.1",
     "tsx": "^4.21.0",
     "typedoc": "^0.28.18",

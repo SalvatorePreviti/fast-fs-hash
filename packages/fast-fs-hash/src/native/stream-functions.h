@@ -21,31 +21,24 @@ namespace stream_functions {
 
   static constexpr size_t STATE_ALIGNMENT = 64;
 
-  /** Magic tag placed before XXH3_state_t to validate the pointer. */
+  /** Magic tag placed AFTER XXH3_state_t to validate the pointer. */
   static constexpr uint64_t STATE_MAGIC = 0x5858'4833'7374'6174ULL;  // "XXH3stat"
 
   /**
    * Tagged state layout (64-byte aligned):
-   *   [0..7]   magic tag (STATE_MAGIC)
-   *   [64..]   XXH3_state_t (starts at next 64-byte boundary)
+   *   [0..]                     XXH3_state_t (64-byte aligned for SIMD)
+   *   [sizeof(XXH3_state_t)..]  magic tag (STATE_MAGIC)
    *
-   * Total allocation: 64 + round_up(sizeof(XXH3_state_t), 64)
+   * Total allocation: sizeof(XXH3_state_t) + 8, 64-byte aligned.
+   * State is at offset 0 — perfect alignment with no wasted padding.
    */
-  struct TaggedState {
-    uint64_t magic;
-    // Padding to next 64-byte boundary is implicit in the allocation size.
-    // XXH3_state_t lives at (this + STATE_ALIGNMENT).
-  };
+  static constexpr size_t TOTAL_STATE_ALLOC = sizeof(XXH3_state_t) + sizeof(uint64_t);
 
-  static FSH_FORCE_INLINE XXH3_state_t * stateFromTag(TaggedState * tag) {
-    return reinterpret_cast<XXH3_state_t *>(reinterpret_cast<uint8_t *>(tag) + STATE_ALIGNMENT);
+  static FSH_FORCE_INLINE uint64_t * magicOf(void * p) noexcept {
+    return reinterpret_cast<uint64_t *>(static_cast<uint8_t *>(p) + sizeof(XXH3_state_t));
   }
 
-  static void freeTaggedState(Napi::Env, TaggedState * p) { aligned_free(p); }
-
-  /** Rounded-up state size and total allocation for tagged state. */
-  static constexpr size_t ALIGNED_STATE_SIZE = (sizeof(XXH3_state_t) + STATE_ALIGNMENT - 1) & ~(STATE_ALIGNMENT - 1);
-  static constexpr size_t TOTAL_STATE_ALLOC = STATE_ALIGNMENT + ALIGNED_STATE_SIZE;
+  static void freeState(Napi::Env, void * p) { aligned_free(p); }
 
   /**
    * Extract and validate XXH3_state_t* from a napi_value (expected External).
@@ -54,12 +47,12 @@ namespace stream_functions {
   static FSH_FORCE_INLINE XXH3_state_t * getState(napi_env env, napi_value val) {
     void * ptr = nullptr;
     if (napi_get_value_external(env, val, &ptr) != napi_ok || !ptr ||
-        reinterpret_cast<TaggedState *>(ptr)->magic != STATE_MAGIC) [[unlikely]] {
+        *magicOf(ptr) != STATE_MAGIC) [[unlikely]] {
       Napi::TypeError::New(env, "Invalid stream state: expected object from streamAllocState()")
         .ThrowAsJavaScriptException();
       return nullptr;
     }
-    return stateFromTag(reinterpret_cast<TaggedState *>(ptr));
+    return static_cast<XXH3_state_t *>(ptr);
   }
 
   /**
@@ -70,26 +63,25 @@ namespace stream_functions {
   static FSH_FORCE_INLINE uint8_t * getStateRawPtr(napi_env env, napi_value val) {
     void * ptr = nullptr;
     if (napi_get_value_external(env, val, &ptr) != napi_ok || !ptr ||
-        reinterpret_cast<TaggedState *>(ptr)->magic != STATE_MAGIC) [[unlikely]] {
+        *magicOf(ptr) != STATE_MAGIC) [[unlikely]] {
       Napi::TypeError::New(env, "Invalid stream state: expected object from streamAllocState()")
         .ThrowAsJavaScriptException();
       return nullptr;
     }
-    return reinterpret_cast<uint8_t *>(stateFromTag(reinterpret_cast<TaggedState *>(ptr)));
+    return static_cast<uint8_t *>(ptr);
   }
 
   /** streamAllocState(seedLow, seedHigh) → External (tagged, 64-byte aligned) */
   static Napi::Value streamAllocState(const Napi::CallbackInfo & info) {
     auto env = info.Env();
 
-    auto * tag = reinterpret_cast<TaggedState *>(aligned_malloc(STATE_ALIGNMENT, TOTAL_STATE_ALLOC));
-    if (!tag) [[unlikely]] {
+    auto * state = static_cast<XXH3_state_t *>(aligned_malloc(STATE_ALIGNMENT, TOTAL_STATE_ALLOC));
+    if (!state) [[unlikely]] {
       Napi::Error::New(env, "streamAllocState: out of memory").ThrowAsJavaScriptException();
       return Napi::Value(env, nullptr);
     }
 
-    tag->magic = STATE_MAGIC;
-    auto * state = stateFromTag(tag);
+    *magicOf(state) = STATE_MAGIC;
 
     uint32_t lo = 0, hi = 0;
     napi_get_value_uint32(env, info[0], &lo);
@@ -98,7 +90,7 @@ namespace stream_functions {
 
     XXH3_128bits_reset_withSeed(state, seed);
 
-    return Napi::External<TaggedState>::New(env, tag, freeTaggedState);
+    return Napi::External<void>::New(env, state, freeState);
   }
 
   /** streamReset(state, seedLow, seedHigh) → void */
@@ -163,7 +155,19 @@ namespace stream_functions {
     napi_env env = info.Env();
     auto * state = getState(env, info[0]);
     if (!state) [[unlikely]] return Napi::Value(env, nullptr);
+
+    // Fast path: try small buffer only (covers vast majority of strings).
     char small_buf[STRING_SMALL_BUF];
+    size_t written = 0;
+    napi_get_value_string_utf8(env, info[1], small_buf, STRING_SMALL_BUF, &written);
+    if (written < STRING_SMALL_BUF - 5) [[likely]] {
+      if (written > 0) {
+        XXH3_128bits_update(state, reinterpret_cast<const uint8_t *>(small_buf), written);
+      }
+      return Napi::Env(env).Undefined();
+    }
+
+    // Slow path: large string — use fast_encode_string with large_buf on stack.
     char large_buf[STRING_LARGE_BUF];
     const char * data;
     const size_t len = fast_encode_string(env, info[1], small_buf, large_buf, data);

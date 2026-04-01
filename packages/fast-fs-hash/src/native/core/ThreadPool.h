@@ -55,32 +55,44 @@ namespace fast_fs_hash {
       return hw;
     }
 
-    static inline int compute_threads(int concurrency, size_t work_count,
-                                      int max_threads, size_t min_per_thread) noexcept {
+    static inline int compute_threads(int concurrency, size_t work_count, int max_threads, size_t min_per_thread) noexcept {
       int hw = static_cast<int>(hardware_concurrency());
-      if (hw < 2) [[unlikely]] { hw = 2; }
+      if (hw < 2) [[unlikely]] {
+        hw = 2;
+      }
       int tc = concurrency > 0 ? concurrency : hw;
-      if (tc > max_threads) { tc = max_threads; }
-      if (tc > MAX_WORKERS) [[unlikely]] { tc = MAX_WORKERS; }
+      if (tc > max_threads) {
+        tc = max_threads;
+      }
+      if (tc > MAX_WORKERS) [[unlikely]] {
+        tc = MAX_WORKERS;
+      }
       int by_work = static_cast<int>((work_count + min_per_thread - 1) / min_per_thread);
-      if (tc > by_work) { tc = by_work; }
-      if (tc < 1) [[unlikely]] { tc = 1; }
+      if (tc > by_work) {
+        tc = by_work;
+      }
+      if (tc < 1) [[unlikely]] {
+        tc = 1;
+      }
       return tc;
     }
 
     /** Type-safe submit: returns a Job handle for expand(). */
     template <typename T>
-    Job * submit(int count, void (*fn)(T *), T * arg,
-                void (*on_done)(T *), T * done_arg) noexcept {
-      return this->submit(count,
-        reinterpret_cast<void (*)(void *)>(fn), static_cast<void *>(arg),
-        reinterpret_cast<void (*)(void *)>(on_done), static_cast<void *>(done_arg));
+    Job * submit(int count, void (*fn)(T *), T * arg, void (*on_done)(T *), T * done_arg) noexcept {
+      return this->submit(
+        count,
+        reinterpret_cast<void (*)(void *)>(fn),
+        static_cast<void *>(arg),
+        reinterpret_cast<void (*)(void *)>(on_done),
+        static_cast<void *>(done_arg));
     }
 
-    Job * submit(int count, void (*fn)(void *), void * arg,
-                void (*on_done)(void *), void * done_arg) noexcept {
+    Job * submit(int count, void (*fn)(void *), void * arg, void (*on_done)(void *), void * done_arg) noexcept {
       if (count <= 0) [[unlikely]] {
-        if (on_done) { on_done(done_arg); }
+        if (on_done) {
+          on_done(done_arg);
+        }
         return nullptr;
       }
       this->ensure_threads_(count);
@@ -104,7 +116,9 @@ namespace fast_fs_hash {
     /** Add more threads to a running job. Thread-safe — callable from pool threads.
      *  Clamped to min(MAX_WORKERS, hardware_concurrency()). Returns count added. */
     int expand(Job * job, int additional) noexcept {
-      if (!job || additional <= 0) { return 0; }
+      if (!job || additional <= 0) {
+        return 0;
+      }
       auto * group = reinterpret_cast<ForkGroup *>(job);
       const int maxSlots = max_threads_();
 
@@ -135,7 +149,9 @@ namespace fast_fs_hash {
     }
 
     void shutdown() noexcept {
-      if (this->shutdown_.load(std::memory_order_relaxed)) { return; }
+      if (this->shutdown_.load(std::memory_order_relaxed)) {
+        return;
+      }
       this->shutdown_.store(true, std::memory_order_release);
 
       std::lock_guard<std::mutex> lock(this->mu_);
@@ -154,14 +170,9 @@ namespace fast_fs_hash {
       this->thread_count_ = 0;
     }
 
-    FSH_FORCE_INLINE bool is_shutdown() const noexcept {
-      return this->shutdown_.load(std::memory_order_relaxed);
-    }
+    FSH_FORCE_INLINE bool is_shutdown() const noexcept { return this->shutdown_.load(std::memory_order_relaxed); }
 
    private:
-
-    // ── Fork group ──
-
     struct ForkGroup;
 
     struct ForkTask : Task {
@@ -182,8 +193,6 @@ namespace fast_fs_hash {
 
     static constexpr int MAX_FORK_GROUPS = 8;
 
-    // ── State ──
-
     alignas(64) std::atomic<Task *> queue_head_{nullptr};
     alignas(64) Semaphore wake_;
     alignas(64) std::mutex mu_;
@@ -199,20 +208,20 @@ namespace fast_fs_hash {
     static FSH_FORCE_INLINE int max_threads_() noexcept {
       static const int v = [] {
         int hw = static_cast<int>(hardware_concurrency());
-        if (hw < 2) [[unlikely]] { hw = 2; }
+        if (hw < 2) [[unlikely]] {
+          hw = 2;
+        }
         return hw < MAX_WORKERS ? hw : MAX_WORKERS;
       }();
       return v;
     }
 
-    // ── Lock-free LIFO task queue ──
-
     void push_task_(Task * task) noexcept {
       Task * head = this->queue_head_.load(std::memory_order_relaxed);
       for (;;) {
         task->next_ = head;
-        if (this->queue_head_.compare_exchange_weak(head, task,
-            std::memory_order_release, std::memory_order_relaxed)) [[likely]] {
+        if (this->queue_head_.compare_exchange_weak(head, task, std::memory_order_release, std::memory_order_relaxed))
+          [[likely]] {
           return;
         }
         cpu_pause();
@@ -222,8 +231,7 @@ namespace fast_fs_hash {
     Task * pop_task_() noexcept {
       Task * head = this->queue_head_.load(std::memory_order_acquire);
       while (head) {
-        if (this->queue_head_.compare_exchange_weak(head, head->next_,
-            std::memory_order_acq_rel)) [[likely]] {
+        if (this->queue_head_.compare_exchange_weak(head, head->next_, std::memory_order_acq_rel)) [[likely]] {
           return head;
         }
         cpu_pause();
@@ -237,14 +245,11 @@ namespace fast_fs_hash {
       }
     }
 
-    // ── Fork group allocation ──
-
     ForkGroup * alloc_fork_group_() noexcept {
       for (;;) {
         for (int i = 0; i < MAX_FORK_GROUPS; ++i) {
           bool expected = false;
-          if (this->groups_[i].in_use.compare_exchange_strong(expected, true,
-              std::memory_order_acquire)) {
+          if (this->groups_[i].in_use.compare_exchange_strong(expected, true, std::memory_order_acquire)) {
             return &this->groups_[i];
           }
         }
@@ -252,23 +257,25 @@ namespace fast_fs_hash {
       }
     }
 
-    static void release_fork_group_(ForkGroup * group) noexcept {
-      group->in_use.store(false, std::memory_order_release);
-    }
-
-    // ── Thread management ──
+    static void release_fork_group_(ForkGroup * group) noexcept { group->in_use.store(false, std::memory_order_release); }
 
     FSH_FORCE_INLINE void ensure_threads_(int needed) noexcept {
-      if (this->thread_count_ >= needed) [[likely]] { return; }
+      if (this->thread_count_ >= needed) [[likely]] {
+        return;
+      }
       this->grow_(needed);
     }
 
     FSH_NO_INLINE void grow_(int needed) noexcept {
-      if (this->shutdown_.load(std::memory_order_acquire)) { return; }
+      if (this->shutdown_.load(std::memory_order_acquire)) {
+        return;
+      }
 
       std::lock_guard<std::mutex> lock(this->mu_);
       int target = needed < max_threads_() ? needed : max_threads_();
-      if (this->thread_count_ >= target) { return; }
+      if (this->thread_count_ >= target) {
+        return;
+      }
 
 #ifndef _WIN32
       pthread_attr_t attr;
@@ -278,12 +285,15 @@ namespace fast_fs_hash {
 
       while (this->thread_count_ < target) {
 #ifdef _WIN32
-        uintptr_t h = _beginthreadex(nullptr, static_cast<unsigned>(THREAD_STACK_SIZE),
-          thread_entry_, this, 0, nullptr);
-        if (!h) [[unlikely]] { break; }
+        uintptr_t h = _beginthreadex(nullptr, static_cast<unsigned>(THREAD_STACK_SIZE), thread_entry_, this, 0, nullptr);
+        if (!h) [[unlikely]] {
+          break;
+        }
         this->handles_[this->thread_count_] = reinterpret_cast<HANDLE>(h);
 #else
-        if (pthread_create(&this->threads_[this->thread_count_], &attr, thread_entry_, this) != 0) [[unlikely]] { break; }
+        if (pthread_create(&this->threads_[this->thread_count_], &attr, thread_entry_, this) != 0) [[unlikely]] {
+          break;
+        }
 #endif
         this->thread_count_++;
       }
@@ -293,8 +303,6 @@ namespace fast_fs_hash {
 #endif
     }
 
-    // ── Worker loop ──
-
     static FSH_NO_INLINE void worker_loop_(ThreadPool * pool) noexcept {
       for (;;) {
         Task * task = pool->pop_task_();
@@ -303,14 +311,20 @@ namespace fast_fs_hash {
           continue;
         }
 
-        if (pool->shutdown_.load(std::memory_order_acquire)) [[unlikely]] { return; }
+        if (pool->shutdown_.load(std::memory_order_acquire)) [[unlikely]] {
+          return;
+        }
 
         if (!pool->wake_.wait_for_ms(IDLE_TIMEOUT_MS)) [[unlikely]] {
-          if (pool->shutdown_.load(std::memory_order_acquire)) [[unlikely]] { return; }
+          if (pool->shutdown_.load(std::memory_order_acquire)) [[unlikely]] {
+            return;
+          }
           continue;
         }
 
-        if (pool->shutdown_.load(std::memory_order_acquire)) [[unlikely]] { return; }
+        if (pool->shutdown_.load(std::memory_order_acquire)) [[unlikely]] {
+          return;
+        }
       }
     }
 
@@ -334,7 +348,9 @@ namespace fast_fs_hash {
       auto done_fn = g->done_fn;
       auto done_arg = g->done_arg;
       release_fork_group_(g);
-      if (done_fn) { done_fn(done_arg); }
+      if (done_fn) {
+        done_fn(done_arg);
+      }
     }
   }
 

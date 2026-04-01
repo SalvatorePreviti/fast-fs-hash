@@ -26,7 +26,7 @@ setupFixtures("stream");
 const BUF = 131072;
 const READ_BUF = 131072;
 
-// ─── Known xxHash3-128 digests (seed 0,0) ─────────────────────────────
+//  - Known xxHash3-128 digests (seed 0,0)
 
 const H_EMPTY = "99aa06d3014798d86001c324468d497f";
 const H_1BYTE_42 = "14c9ae9594c463c479d03016b7aeed0d";
@@ -43,7 +43,7 @@ const H_917391 = "87fc88d3eef31bfa70568c69183231d0";
 describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
   const { XxHash128Stream, digestBuffer, digestBufferRange, digestString, digestFile, digestFilesSequential } = backend;
 
-  // ─── Constructor ──────────────────────────────────────────────────────
+  //  - Constructor
 
   describe("constructor", () => {
     it("default settings", () => {
@@ -59,7 +59,7 @@ describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
     });
   });
 
-  // ─── addBuffer ────────────────────────────────────────────────────────
+  //  - addBuffer
 
   describe("addBuffer", () => {
     it("empty buffer → same as empty digest", () => {
@@ -169,7 +169,7 @@ describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
     });
   });
 
-  // ─── addBufferRange ───────────────────────────────────────────────────
+  //  - addBufferRange
 
   describe("addBufferRange", () => {
     it("full range matches addBuffer", () => {
@@ -210,7 +210,7 @@ describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
     });
   });
 
-  // ─── addString ────────────────────────────────────────────────────────
+  //  - addString
 
   describe("addString", () => {
     it("empty string → empty digest", () => {
@@ -259,7 +259,7 @@ describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
     });
   });
 
-  // ─── addFile ──────────────────────────────────────────────────────────
+  //  - addFile
 
   describe("addFile", () => {
     it("empty file → empty digest", async () => {
@@ -329,7 +329,7 @@ describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
     });
   });
 
-  // ─── addFiles ─────────────────────────────────────────────────────────
+  //  - addFiles
 
   describe("addFiles", () => {
     it("empty array → empty digest", async () => {
@@ -405,7 +405,7 @@ describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
     });
   });
 
-  // ─── addFilesParallel ─────────────────────────────────────────────────
+  //  - addFilesParallel
 
   describe("addFilesParallel", () => {
     it("empty array → empty digest", async () => {
@@ -515,7 +515,7 @@ describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
     });
   });
 
-  // ─── digest / digestTo ────────────────────────────────────────────────
+  //  - digest / digestTo
 
   describe("digest", () => {
     it("returns a Buffer", () => {
@@ -577,7 +577,7 @@ describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
     });
   });
 
-  // ─── reset ────────────────────────────────────────────────────────────
+  //  - reset
 
   describe("reset", () => {
     it("returns to empty digest", () => {
@@ -617,7 +617,7 @@ describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
     });
   });
 
-  // ─── Seeded streams ───────────────────────────────────────────────────
+  //  - Seeded streams
 
   describe("seeded streams", () => {
     it("seed affects digest", () => {
@@ -658,7 +658,7 @@ describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
     });
   });
 
-  // ─── Two independent streams ──────────────────────────────────────────
+  //  - Two independent streams
 
   describe("independent streams", () => {
     it("two streams do not interfere", () => {
@@ -681,7 +681,7 @@ describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
     });
   });
 
-  // ─── clone() ─────────────────────────────────────────────────────────
+  //  - clone()
 
   describe("clone", () => {
     it("cloned stream produces same digest", () => {
@@ -724,7 +724,7 @@ describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
     });
   });
 
-  // ─── static hash() ──────────────────────────────────────────────────
+  //  - static hash()
 
   describe("static hash", () => {
     it("hash(buffer) matches digestBuffer", () => {
@@ -745,7 +745,7 @@ describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
     });
   });
 
-  // ─── Odd byte counts with files ─────────────────────────────────────────
+  //  - Odd byte counts with files
 
   describe("odd byte count files", () => {
     it("917391-byte file matches digestFile", async () => {

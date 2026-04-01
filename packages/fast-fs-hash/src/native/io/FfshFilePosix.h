@@ -23,7 +23,7 @@ namespace fast_fs_hash {
    *   Supports openat() for dir-fd-relative access.
    *
    * Read/write factories (cache files):
-   *   open_read(), open_write(), open_locked().
+   *   open_locked().
    *
    * Locking:
    *   open_locked() opens/creates the file and acquires an exclusive
@@ -36,10 +36,11 @@ namespace fast_fs_hash {
    public:
     int fd = -1;
 
-    // ── Read-only constructors (for hashing hot path) ──────────────────
-
     /** Open by absolute path (UTF-8) for sequential reading. */
-    explicit FfshFile(const char * path) noexcept { this->fd = open_rd(path); }
+    explicit FfshFile(const char * path) noexcept {
+      this->fd = open_rd(path);
+      hint_sequential_if_open_();
+    }
 
     /** Open relative to a directory fd via openat().
      *  Avoids a second full path resolution when the file has already been
@@ -53,9 +54,8 @@ namespace fast_fs_hash {
 #  else
       this->fd = ::openat(dir_fd, rel_path, O_RDONLY | O_CLOEXEC);
 #  endif
+      hint_sequential_if_open_();
     }
-
-    // ── Default + move constructors ─────────────────────────────────────
 
     FfshFile() noexcept = default;
 
@@ -81,8 +81,6 @@ namespace fast_fs_hash {
     /** Returns true if the file was opened successfully. */
     FSH_FORCE_INLINE explicit operator bool() const noexcept { return this->fd >= 0; }
 
-    // ── Lifecycle ──────────────────────────────────────────────────────
-
     /** Close the fd. Safe to call multiple times. */
     inline void close() noexcept {
       if (this->fd >= 0) {
@@ -97,8 +95,6 @@ namespace fast_fs_hash {
       this->fd = -1;
       return f;
     }
-
-    // ── Locking ────────────────────────────────────────────────────────
 
     /**
      * Open-or-create a cache file and acquire an exclusive fcntl lock.
@@ -156,8 +152,7 @@ namespace fast_fs_hash {
 
           struct timespec now;
           clock_gettime(CLOCK_MONOTONIC, &now);
-          const int64_t elapsedMs =
-            (now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) / 1000000;
+          const int64_t elapsedMs = (now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) / 1000000;
           if (elapsedMs >= static_cast<int64_t>(timeoutMs)) [[unlikely]] {
             f.close();
             outError = "CacheLock: timeout waiting for cache lock";
@@ -198,10 +193,10 @@ namespace fast_fs_hash {
       }
       const int fd = static_cast<int>(handle);
       struct flock fl{};
-      fl.l_type   = F_UNLCK;
+      fl.l_type = F_UNLCK;
       fl.l_whence = SEEK_SET;
-      fl.l_start  = 0;
-      fl.l_len    = 1;
+      fl.l_start = 0;
+      fl.l_len = 1;
       ::fcntl(fd, F_SETLK, &fl);
       ::close(fd);
     }
@@ -216,10 +211,10 @@ namespace fast_fs_hash {
         return false;
       }
       struct flock fl{};
-      fl.l_type   = F_WRLCK;
+      fl.l_type = F_WRLCK;
       fl.l_whence = SEEK_SET;
-      fl.l_start  = 0;
-      fl.l_len    = 1;
+      fl.l_start = 0;
+      fl.l_len = 1;
       const int rc = ::fcntl(fd, F_GETLK, &fl);
       ::close(fd);
       if (rc != 0) [[unlikely]] {
@@ -227,19 +222,6 @@ namespace fast_fs_hash {
       }
       return fl.l_type != F_UNLCK;
     }
-
-    // ── Advise the OS about read patterns ──────────────────────────────
-
-    /** Advise the OS that we'll read this file sequentially. */
-    FSH_FORCE_INLINE void hint_sequential() noexcept {
-#  if defined(__APPLE__) && defined(F_RDAHEAD)
-      fcntl(this->fd, F_RDAHEAD, 1);
-#  elif defined(POSIX_FADV_SEQUENTIAL)
-      posix_fadvise(this->fd, 0, 0, POSIX_FADV_SEQUENTIAL);
-#  endif
-    }
-
-    // ── Read methods ───────────────────────────────────────────────────
 
     /**
      * Read up to len bytes into buf. Returns bytes read (> 0), 0 on EOF, or -1 on error.
@@ -282,25 +264,6 @@ namespace fast_fs_hash {
       return static_cast<int64_t>(st.st_size);
     }
 
-    /** Read len bytes from file_offset into dest (positional read). Returns bytes read or -1. */
-    inline int64_t pread_at(uint8_t * dest, size_t file_offset, size_t len) const noexcept {
-      size_t total = 0;
-      while (total < len) {
-        const ssize_t n = ::pread(this->fd, dest + total, len - total, static_cast<off_t>(file_offset + total));
-        if (n > 0) [[likely]] {
-          total += static_cast<size_t>(n);
-          continue;
-        }
-        if (n == 0) break;
-        if (errno == EINTR) [[unlikely]]
-          continue;
-        return total > 0 ? static_cast<int64_t>(total) : -1;
-      }
-      return static_cast<int64_t>(total);
-    }
-
-    // ── Write methods ──────────────────────────────────────────────────
-
     /** Write all bytes. Returns true on success. */
     inline bool write_all(const uint8_t * data, size_t len) noexcept {
       size_t total = 0;
@@ -318,79 +281,32 @@ namespace fast_fs_hash {
     }
 
     /** Truncate the file to the given length. Returns true on success. */
-    inline bool truncate(size_t len) noexcept {
-      return ::ftruncate(this->fd, static_cast<off_t>(len)) == 0;
-    }
+    inline bool truncate(size_t len) noexcept { return ::ftruncate(this->fd, static_cast<off_t>(len)) == 0; }
 
-    /** Seek to a position from the beginning of the file. Returns true on success. */
-    inline bool seek(size_t offset) noexcept {
-      return ::lseek(this->fd, static_cast<off_t>(offset), SEEK_SET) >= 0;
-    }
-
-    /** Flush file data to disk. Returns true on success. */
-    inline bool fsync_data() noexcept {
-#  if defined(__APPLE__)
-      return ::fcntl(this->fd, F_FULLFSYNC) == 0 || ::fsync(this->fd) == 0;
+    /** Pre-allocate contiguous space. Best-effort, failure is ignored. */
+    inline void preallocate(size_t len) noexcept {
+#  if defined(__APPLE__) && defined(F_PREALLOCATE)
+      fstore_t fst{};
+      fst.fst_flags = F_ALLOCATECONTIG;  // try contiguous first
+      fst.fst_posmode = F_PEOFPOSMODE;
+      fst.fst_length = static_cast<off_t>(len);
+      if (::fcntl(this->fd, F_PREALLOCATE, &fst) != 0) {
+        fst.fst_flags = F_ALLOCATEALL;  // fall back to non-contiguous
+        ::fcntl(this->fd, F_PREALLOCATE, &fst);
+      }
 #  elif defined(__linux__)
-      return ::fdatasync(this->fd) == 0;
-#  else
-      return ::fsync(this->fd) == 0;
+      ::posix_fallocate(this->fd, 0, static_cast<off_t>(len));
 #  endif
     }
 
-    // ── Static factories ───────────────────────────────────────────────
-
-    /** Open a file for reading. */
-    static inline FfshFile open_read(const char * path) noexcept {
-      FfshFile f;
-      f.fd = open_rd(path);
-      return f;
-    }
-
-    /** Open a file for writing (with mkdir on ENOENT). */
-    static inline FfshFile open_write(const char * path) noexcept {
-      FfshFile f;
-      f.fd = open_wr_mkdir(path);
-      return f;
-    }
-
-    // ── Static helpers ──────────────────────────────────────────────────
-
-    /** pread on an unowned fd (no close on destruct). */
-    static inline int64_t pread_fd(int raw_fd, uint8_t * dest, size_t file_offset, size_t len) noexcept {
-      size_t total = 0;
-      while (total < len) {
-        const ssize_t n = ::pread(raw_fd, dest + total, len - total, static_cast<off_t>(file_offset + total));
-        if (n > 0) [[likely]] {
-          total += static_cast<size_t>(n);
-          continue;
-        }
-        if (n == 0) break;
-        if (errno == EINTR) [[unlikely]]
-          continue;
-        return total > 0 ? static_cast<int64_t>(total) : -1;
-      }
-      return static_cast<int64_t>(total);
-    }
+    /** Seek to a position from the beginning of the file. Returns true on success. */
+    inline bool seek(size_t offset) noexcept { return ::lseek(this->fd, static_cast<off_t>(offset), SEEK_SET) >= 0; }
 
     /** Close a raw fd. */
     static inline void close_fd(int f) noexcept { ::close(f); }
 
-    // ── Stat helpers ──────────────────────────────────────────────────────
-
-    /** stat a file and write raw stat fields into a CacheEntry. Returns false on error. */
-    static FSH_FORCE_INLINE bool stat_into(const char * path, CacheEntry & entry) noexcept {
-      struct stat st;
-      if (::stat(path, &st) != 0) [[unlikely]] {
-        entry.clearStat();
-        return false;
-      }
-      return stat_from_struct_(st, entry);
-    }
-
     /** fstatat: stat relative to a directory fd. Falls back to stat() when dir_fd < 0. */
-    static FSH_FORCE_INLINE bool stat_into_at(
-      int dir_fd, const char * path, CacheEntry & entry) noexcept {
+    static FSH_FORCE_INLINE bool stat_into_at(int dir_fd, const char * path, CacheEntry & entry) noexcept {
       struct stat st;
       if (dir_fd >= 0) {
         if (::fstatat(dir_fd, path, &st, 0) != 0) [[unlikely]] {
@@ -417,15 +333,24 @@ namespace fast_fs_hash {
     }
 
    private:
-    // ── fcntl lock helper ──────────────────────────────────────────────
+    /** Hint sequential access immediately after open (read-only constructors). */
+    FSH_FORCE_INLINE void hint_sequential_if_open_() noexcept {
+      if (this->fd < 0) [[unlikely]]
+        return;
+#  if defined(__APPLE__) && defined(F_RDAHEAD)
+      ::fcntl(this->fd, F_RDAHEAD, 1);
+#  elif defined(POSIX_FADV_SEQUENTIAL)
+      ::posix_fadvise(this->fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+#  endif
+    }
 
     /** Apply or try an exclusive fcntl lock on byte 0 of fd. */
     static FSH_FORCE_INLINE int fcntl_lock_(int fd, int cmd) noexcept {
       struct flock fl{};
-      fl.l_type   = F_WRLCK;
+      fl.l_type = F_WRLCK;
       fl.l_whence = SEEK_SET;
-      fl.l_start  = 0;
-      fl.l_len    = 1;
+      fl.l_start = 0;
+      fl.l_len = 1;
       for (;;) {
         const int rc = ::fcntl(fd, cmd, &fl);
         if (rc == 0) [[likely]] {
@@ -437,8 +362,6 @@ namespace fast_fs_hash {
         return -1;
       }
     }
-
-    // ── Platform file operations ───────────────────────────────────────
 
     static inline int open_rd(const char * path) noexcept {
 #  ifdef __linux__
@@ -452,13 +375,7 @@ namespace fast_fs_hash {
 #  endif
     }
 
-    static inline int open_wr(const char * path) noexcept {
-      return ::open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
-    }
-
-    static inline int open_rw(const char * path) noexcept {
-      return ::open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
-    }
+    static inline int open_rw(const char * path) noexcept { return ::open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0666); }
 
     static inline int mkdir_p(const char * path, size_t len) noexcept {
       char buf[FSH_MAX_PATH];
@@ -475,20 +392,6 @@ namespace fast_fs_hash {
       return (::mkdir(buf, 0777) == 0 || errno == EEXIST) ? 0 : -1;
     }
 
-    static inline int open_wr_mkdir(const char * path) noexcept {
-      int f = open_wr(path);
-      if (f >= 0 || errno != ENOENT) [[likely]]
-        return f;
-      const size_t len = strlen(path);
-      size_t sep = len;
-      while (sep > 0 && path[sep - 1] != '/')
-        --sep;
-      if (sep > 1 && mkdir_p(path, sep - 1) == 0) {
-        f = open_wr(path);
-      }
-      return f;
-    }
-
     static inline int open_rw_mkdir(const char * path) noexcept {
       int f = open_rw(path);
       if (f >= 0 || errno != ENOENT) [[likely]]
@@ -503,10 +406,7 @@ namespace fast_fs_hash {
       return f;
     }
 
-    // ── Stat internal helper ───────────────────────────────────────────
-
-    static FSH_FORCE_INLINE bool stat_from_struct_(
-      const struct stat & st, CacheEntry & entry) noexcept {
+    static FSH_FORCE_INLINE bool stat_from_struct_(const struct stat & st, CacheEntry & entry) noexcept {
 #  if defined(__APPLE__)
       const uint64_t mtimeNs =
         static_cast<uint64_t>(st.st_mtimespec.tv_sec) * 1000000000ULL + static_cast<uint64_t>(st.st_mtimespec.tv_nsec);
@@ -519,12 +419,11 @@ namespace fast_fs_hash {
         static_cast<uint64_t>(st.st_ctim.tv_sec) * 1000000000ULL + static_cast<uint64_t>(st.st_ctim.tv_nsec);
 #  endif
 
-      entry.writeStat(static_cast<uint64_t>(st.st_ino) & INO_VALUE_MASK, mtimeNs, ctimeNs, static_cast<uint64_t>(st.st_size));
+      entry.writeStat(
+        static_cast<uint64_t>(st.st_ino) & INO_VALUE_MASK, mtimeNs, ctimeNs, static_cast<uint64_t>(st.st_size));
       return true;
     }
   };
-
-  // ── DirFd: RAII directory file descriptor ─────────────────────────────
 
   /** RAII directory fd for fstatat()/openat() — avoids repeated kernel path
    *  resolution of the root prefix. Skipped for small file counts where the
@@ -541,8 +440,6 @@ namespace fast_fs_hash {
       }
     }
   };
-
-  // ── PathResolver: per-thread path resolution context (POSIX) ──────────
 
   struct PathResolver : NonCopyable {
     char path_buf[FSH_MAX_PATH];
@@ -601,13 +498,21 @@ namespace fast_fs_hash {
         dest.set_zero();
         return false;
       }
+#  if defined(__APPLE__) && defined(F_RDADVISE)
+      // Kick off kernel readahead for large files while we set up hashing.
+      if (entry.size > rbs) {
+        struct radvisory ra;
+        ra.ra_offset = 0;
+        ra.ra_count = static_cast<int>(entry.size <= INT_MAX ? entry.size : INT_MAX);
+        ::fcntl(rf.fd, F_RDADVISE, &ra);
+      }
+#  endif
       hash_open_file_(rf, dest, rbuf, rbs);
       return true;
     }
 
    private:
-    static FSH_FORCE_INLINE void hash_open_file_(
-      FfshFile & rf, Hash128 & dest, unsigned char * rbuf, size_t rbs) noexcept {
+    static FSH_FORCE_INLINE void hash_open_file_(FfshFile & rf, Hash128 & dest, unsigned char * rbuf, size_t rbs) noexcept {
       const int64_t n = rf.read_at_most(rbuf, rbs);
       if (n < 0) [[unlikely]] {
         dest.set_zero();
@@ -618,7 +523,6 @@ namespace fast_fs_hash {
         dest.from_xxh128(XXH3_128bits(rbuf, bytes));
         return;
       }
-      rf.hint_sequential();
       XXH3_state_t state;
       XXH3_128bits_reset(&state);
       XXH3_128bits_update(&state, rbuf, rbs);

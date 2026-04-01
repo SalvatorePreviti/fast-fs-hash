@@ -20,8 +20,6 @@ const t0 = performance.now();
 
 mkdirSync(DIST_DIR, { recursive: true });
 
-// ─── Step 1: CJS bundle ─────────────────────────────────────────────────
-
 async function buildBundle() {
   const s = performance.now();
   const { build } = await import("rolldown");
@@ -48,8 +46,6 @@ async function buildBundle() {
 
   logOk(`index.cjs bundle (${elapsed(s)})`);
 }
-
-// ─── ESM wrapper (thin re-export from CJS) ──────────────────────────────
 
 function generateESMWrapper() {
   const s = performance.now();
@@ -111,8 +107,6 @@ function generateESMWrapper() {
   logOk(`ESM wrapper (${elapsed(s)})`);
 }
 
-// ─── Type declarations ────────────────────────────────────────────────────
-
 async function generateTypeDeclarations() {
   const s = performance.now();
 
@@ -148,8 +142,6 @@ async function generateTypeDeclarations() {
 
   logOk(`Type declarations (${elapsed(s)})`);
 }
-
-// ─── Run ──────────────────────────────────────────────────────────────────
 
 logTitle("Building TypeScript...");
 

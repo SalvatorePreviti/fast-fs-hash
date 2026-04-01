@@ -10,7 +10,7 @@ import path from "node:path";
 import { FileHashCache } from "fast-fs-hash";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-// ─── Fixture setup ────────────────────────────────────────────────────
+//  - Fixture setup
 
 const TEST_DIR = path.resolve(import.meta.dirname, "tmp/fhc-change");
 const FIXTURE_DIR = path.join(TEST_DIR, "fixtures");
@@ -34,7 +34,7 @@ async function withCache<T>(args: OpenArgs, run: (ctx: FileHashCache) => Promise
   return await run(ctx);
 }
 
-// ─── Tests ────────────────────────────────────────────────────────────
+//  - Tests
 
 beforeAll(() => {
   rmSync(TEST_DIR, { recursive: true, force: true });
@@ -51,7 +51,7 @@ afterAll(() => {
 });
 
 describe("FileHashCache change detection [native]", () => {
-  // ── Version / fingerprint ─────────────────────────────────────────
+  //  - Version / fingerprint
 
   describe("version and fingerprint", () => {
     it("detects version mismatch", async () => {
@@ -94,7 +94,7 @@ describe("FileHashCache change detection [native]", () => {
     });
   });
 
-  // ── File content / metadata changes ───────────────────────────────
+  //  - File content / metadata changes
 
   describe("file changes", () => {
     it("detects file content change", async () => {
@@ -187,7 +187,7 @@ describe("FileHashCache change detection [native]", () => {
     });
   });
 
-  // ── File list changes ─────────────────────────────────────────────
+  //  - File list changes
 
   describe("file list changes", () => {
     it("detects added file", async () => {
@@ -256,6 +256,31 @@ describe("FileHashCache change detection [native]", () => {
       expect(status).toBe("upToDate");
     });
 
+    it("truncates cache file on disk when file list shrinks", async () => {
+      const { statSync } = await import("node:fs");
+      const cp = cachePath("trunc-shrink");
+      const files3 = [fixtureFile("a.txt"), fixtureFile("b.txt"), fixtureFile("c.txt")];
+      const files1 = [fixtureFile("a.txt")];
+
+      // Write with 3 files
+      await withCache([cp, FIXTURE_DIR, files3, 1], async (ctx) => {
+        await ctx.write();
+      });
+      const sizeWith3 = statSync(cp).size;
+
+      // Overwrite with 1 file — must truncate
+      await withCache([cp, FIXTURE_DIR, files3, 1], async (ctx) => {
+        await ctx.write({ files: files1, rootPath: FIXTURE_DIR });
+      });
+      const sizeWith1 = statSync(cp).size;
+
+      expect(sizeWith1).toBeLessThan(sizeWith3);
+
+      // Verify the smaller file is still valid
+      const status = await withCache([cp, FIXTURE_DIR, files1, 1], (ctx) => ctx.status);
+      expect(status).toBe("upToDate");
+    });
+
     it("handles 3 files round-trip", async () => {
       const cp = cachePath("multi");
       const files = [fixtureFile("a.txt"), fixtureFile("b.txt"), fixtureFile("c.txt")];
@@ -281,7 +306,7 @@ describe("FileHashCache change detection [native]", () => {
     });
   });
 
-  // ── Edge cases ────────────────────────────────────────────────────
+  //  - Edge cases
 
   describe("edge cases", () => {
     it("corrupted cache file (bad magic)", async () => {
@@ -335,7 +360,7 @@ describe("FileHashCache change detection [native]", () => {
     });
   });
 
-  // ── Scattered multi-file changes ──────────────────────────────────
+  //  - Scattered multi-file changes
 
   describe("scattered multi-file changes", () => {
     it("open+write correctly hashes all changed files (not just first detected)", async () => {

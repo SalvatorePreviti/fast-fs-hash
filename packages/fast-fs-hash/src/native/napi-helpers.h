@@ -72,7 +72,7 @@ static FSH_FORCE_INLINE void cleanup_string_buf(const char * data, const char * 
  *
  * Optimized: uses only an 8 KB stack buffer. If the string fits (vast majority),
  * one N-API call + one xxhash call — no large_buf, no heap. For strings > 8 KB,
- * falls back to streaming xxhash in 8 KB chunks — still no heap allocation.
+ * queries real length then re-encodes into a large stack or heap buffer.
  */
 FSH_NO_INLINE static XXH128_hash_t fast_hash_string(napi_env env, napi_value str_val, uint64_t seed) {
   char buf[STRING_SMALL_BUF];
@@ -80,42 +80,26 @@ FSH_NO_INLINE static XXH128_hash_t fast_hash_string(napi_env env, napi_value str
   napi_get_value_string_utf8(env, str_val, buf, STRING_SMALL_BUF, &written);
 
   if (written < STRING_SMALL_BUF - 5) [[likely]] {
-    // Fast path: string fits in buffer — single-shot hash
     return XXH3_128bits_withSeed(reinterpret_cast<const uint8_t *>(buf), written, seed);
   }
 
-  // Check real length
+  // Small buffer was full — query real length and re-encode into a buffer that fits.
   size_t utf8_len = 0;
   napi_get_value_string_utf8(env, str_val, nullptr, 0, &utf8_len);
 
   if (utf8_len == written) {
-    // Fit exactly — single-shot hash
     return XXH3_128bits_withSeed(reinterpret_cast<const uint8_t *>(buf), written, seed);
   }
 
-  // String > 8 KB — streaming hash in chunks. No heap allocation.
-  XXH3_state_t state;
-  XXH3_128bits_reset_withSeed(&state, seed);
-  // Feed the first chunk we already have
-  XXH3_128bits_update(&state, reinterpret_cast<const uint8_t *>(buf), written);
-
-  // Re-encode remaining chunks
-  size_t remaining = utf8_len - written;
-  // We need to re-encode the full string from an offset. N-API doesn't support
-  // partial encoding, so we re-encode the full string into a large or heap buffer.
-  // This is the rare path (strings > 8 KB).
-  if (remaining < STRING_LARGE_BUF) {
+  if (utf8_len < STRING_LARGE_BUF) [[likely]] {
     char large_buf[STRING_LARGE_BUF];
     napi_get_value_string_utf8(env, str_val, large_buf, utf8_len + 1, &written);
-    // We already hashed the first chunk — but re-encoding changes boundaries.
-    // Safest: just hash the full re-encoded buffer.
     return XXH3_128bits_withSeed(reinterpret_cast<const uint8_t *>(large_buf), written, seed);
   }
 
-  // Very large string — heap
   auto * heap = static_cast<char *>(malloc(utf8_len + 1));
   if (!heap) [[unlikely]] {
-    return XXH3_128bits_digest(&state);
+    return XXH3_128bits_withSeed(reinterpret_cast<const uint8_t *>(buf), written, seed);
   }
   napi_get_value_string_utf8(env, str_val, heap, utf8_len + 1, &written);
   auto result = XXH3_128bits_withSeed(reinterpret_cast<const uint8_t *>(heap), written, seed);

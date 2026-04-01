@@ -35,7 +35,7 @@ _Note: Unfortunately this package will not help you naming things — if you don
 
 <!-- BENCH_ENV:START -->
 
-> Node.js v24.14.1, Vitest 4.x — Apple M4 Max, macOS 25.4.0 (arm64)
+> Node.js v24.14.1, Vitest 4.x — Apple M4 Max, macOS 25.4.0 (arm64), with anti-virus.
 >
 > _Results vary by hardware, file sizes, and OS cache state._
 
@@ -90,10 +90,10 @@ changed stat are re-hashed. This makes cache validation **O(n × stat)** instead
 
 | Scenario           | Mean                | Hz         | Files/s           | Throughput |
 | ------------------ | ------------------- | ---------- | ----------------- | ---------- |
-| no change          | 0.7 ms (690.2 µs)   | 1 449 op/s | 1 021 469 files/s | —          |
-| 1 file changed     | 1.1 ms (1 140.8 µs) | 877 op/s   | 618 009 files/s   | —          |
-| many files changed | 2.6 ms (2 574.1 µs) | 388 op/s   | 273 881 files/s   | 9.6 GB/s   |
-| no existing cache  | 8.0 ms (7 955.4 µs) | 126 op/s   | 88 619 files/s    | 3.1 GB/s   |
+| no change          | 0.7 ms (669.6 µs)   | 1 493 op/s | 1 052 799 files/s | —          |
+| 1 file changed     | 1.1 ms (1 062.8 µs) | 941 op/s   | 663 352 files/s   | —          |
+| many files changed | 2.5 ms (2 500.2 µs) | 400 op/s   | 281 978 files/s   | 9.9 GB/s   |
+| no existing cache  | 7.6 ms (7 601.0 µs) | 132 op/s   | 92 750 files/s    | 3.2 GB/s   |
 
 <!-- FHC_BENCHMARKS:END -->
 
@@ -213,22 +213,22 @@ hood, but they are fully usable on their own.
 
 | Scenario             | Mean              | Hz          | Throughput | Relative        |
 | -------------------- | ----------------- | ----------- | ---------- | --------------- |
-| native               | 0.04 ms (42.5 µs) | 23 555 op/s | 4.6 GB/s   | **6.5× faster** |
-| Node.js crypto (md5) | 0.3 ms (276.2 µs) | 3 621 op/s  | 714 MB/s   | baseline        |
+| native               | 0.04 ms (41.4 µs) | 24 171 op/s | 4.8 GB/s   | **6.6× faster** |
+| Node.js crypto (md5) | 0.3 ms (274.0 µs) | 3 650 op/s  | 720 MB/s   | baseline        |
 
 **medium file (~49.9 KB):**
 
 | Scenario             | Mean              | Hz          | Throughput | Relative        |
 | -------------------- | ----------------- | ----------- | ---------- | --------------- |
-| native               | 0.03 ms (26.5 µs) | 37 704 op/s | 1.9 GB/s   | **4.2× faster** |
-| Node.js crypto (md5) | 0.1 ms (110.2 µs) | 9 074 op/s  | 453 MB/s   | baseline        |
+| native               | 0.03 ms (26.6 µs) | 37 532 op/s | 1.9 GB/s   | **4.1× faster** |
+| Node.js crypto (md5) | 0.1 ms (110.3 µs) | 9 064 op/s  | 452 MB/s   | baseline        |
 
 **small file (~1.0 KB):**
 
 | Scenario             | Mean              | Hz          | Relative        |
 | -------------------- | ----------------- | ----------- | --------------- |
-| native               | 0.03 ms (28.2 µs) | 35 449 op/s | **2.1× faster** |
-| Node.js crypto (md5) | 0.06 ms (58.1 µs) | 17 201 op/s | baseline        |
+| native               | 0.03 ms (25.8 µs) | 38 737 op/s | **2.2× faster** |
+| Node.js crypto (md5) | 0.06 ms (57.5 µs) | 17 379 op/s | baseline        |
 
 <!-- HASHFILE_BENCHMARKS:END -->
 
@@ -238,8 +238,8 @@ hood, but they are fully usable on their own.
 
 | Scenario             | Mean                  | Hz       | Throughput | Relative        |
 | -------------------- | --------------------- | -------- | ---------- | --------------- |
-| native               | 7.3 ms (7 276.5 µs)   | 137 op/s | 3.4 GB/s   | **4.9× faster** |
-| Node.js crypto (md5) | 35.8 ms (35 849.6 µs) | 28 op/s  | 689 MB/s   | baseline        |
+| native               | 7.1 ms (7 098.6 µs)   | 141 op/s | 3.5 GB/s   | **5.0× faster** |
+| Node.js crypto (md5) | 35.7 ms (35 728.0 µs) | 28 op/s  | 691 MB/s   | baseline        |
 
 <!-- BENCHMARKS:END -->
 
@@ -251,15 +251,15 @@ hood, but they are fully usable on their own.
 
 | Scenario           | Mean              | Hz           | Throughput | Relative         |
 | ------------------ | ----------------- | ------------ | ---------- | ---------------- |
-| native XXH3-128    | 0.001 ms (1.4 µs) | 723 540 op/s | 47.4 GB/s  | **48.3× faster** |
-| Node.js crypto md5 | 0.07 ms (66.7 µs) | 14 993 op/s  | 983 MB/s   | baseline         |
+| native XXH3-128    | 0.001 ms (1.4 µs) | 713 816 op/s | 46.8 GB/s  | **47.4× faster** |
+| Node.js crypto md5 | 0.07 ms (66.4 µs) | 15 050 op/s  | 986 MB/s   | baseline         |
 
 **1 MB buffer:**
 
 | Scenario           | Mean                | Hz          | Throughput | Relative         |
 | ------------------ | ------------------- | ----------- | ---------- | ---------------- |
-| native XXH3-128    | 0.02 ms (21.5 µs)   | 46 510 op/s | 48.8 GB/s  | **49.2× faster** |
-| Node.js crypto md5 | 1.1 ms (1 057.7 µs) | 945 op/s    | 991 MB/s   | baseline         |
+| native XXH3-128    | 0.02 ms (21.9 µs)   | 45 728 op/s | 47.9 GB/s  | **48.7× faster** |
+| Node.js crypto md5 | 1.1 ms (1 064.0 µs) | 940 op/s    | 986 MB/s   | baseline         |
 
 <!-- HASH_BUFFER_BENCHMARKS:END -->
 
@@ -333,29 +333,29 @@ compressed data and pass it to the decompression function.
 
 | Scenario                | Ratio | Mean              | Hz           | Throughput | Relative        |
 | ----------------------- | ----- | ----------------- | ------------ | ---------- | --------------- |
-| native LZ4              | 0.7%  | 0.004 ms (3.5 µs) | 285 046 op/s | 18.7 GB/s  | **7.0× faster** |
-| Node.js deflate level=1 | 1.0%  | 0.02 ms (24.7 µs) | 40 499 op/s  | 2.7 GB/s   | baseline        |
+| native LZ4              | 0.7%  | 0.003 ms (3.4 µs) | 290 747 op/s | 19.1 GB/s  | **7.4× faster** |
+| Node.js deflate level=1 | 1.0%  | 0.03 ms (25.3 µs) | 39 485 op/s  | 2.6 GB/s   | baseline        |
 
 **decompress 64 KB:**
 
 | Scenario        | Mean              | Hz           | Throughput | Relative        |
 | --------------- | ----------------- | ------------ | ---------- | --------------- |
-| native LZ4      | 0.003 ms (2.8 µs) | 355 313 op/s | 23.3 GB/s  | **3.7× faster** |
-| Node.js deflate | 0.01 ms (10.5 µs) | 95 492 op/s  | 6.3 GB/s   | baseline        |
+| native LZ4      | 0.003 ms (2.7 µs) | 371 158 op/s | 24.3 GB/s  | **3.6× faster** |
+| Node.js deflate | 0.010 ms (9.7 µs) | 103 289 op/s | 6.8 GB/s   | baseline        |
 
 **compress 1 MB:**
 
 | Scenario                | Ratio | Mean              | Hz          | Throughput | Relative        |
 | ----------------------- | ----- | ----------------- | ----------- | ---------- | --------------- |
-| native LZ4              | 0.4%  | 0.03 ms (33.9 µs) | 29 487 op/s | 30.9 GB/s  | **9.9× faster** |
-| Node.js deflate level=1 | 0.7%  | 0.3 ms (334.4 µs) | 2 991 op/s  | 3.1 GB/s   | baseline        |
+| native LZ4              | 0.4%  | 0.03 ms (34.7 µs) | 28 845 op/s | 30.2 GB/s  | **9.8× faster** |
+| Node.js deflate level=1 | 0.7%  | 0.3 ms (341.4 µs) | 2 929 op/s  | 3.1 GB/s   | baseline        |
 
 **decompress 1 MB:**
 
 | Scenario        | Mean              | Hz          | Throughput | Relative        |
 | --------------- | ----------------- | ----------- | ---------- | --------------- |
-| native LZ4      | 0.03 ms (33.2 µs) | 30 132 op/s | 31.6 GB/s  | **3.0× faster** |
-| Node.js deflate | 0.10 ms (98.1 µs) | 10 195 op/s | 10.7 GB/s  | baseline        |
+| native LZ4      | 0.03 ms (30.4 µs) | 32 895 op/s | 34.5 GB/s  | **3.3× faster** |
+| Node.js deflate | 0.1 ms (101.0 µs) | 9 905 op/s  | 10.4 GB/s  | baseline        |
 
 <!-- LZ4_BENCHMARKS:END -->
 

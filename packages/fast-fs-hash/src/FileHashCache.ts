@@ -28,8 +28,6 @@ import { resolveRoot, setFingerprint, validateUserData } from "./file-hash-cache
 import { binding } from "./init-native";
 import { encodeNormalizedPaths, normalizeFilePaths, pathResolve } from "./utils";
 
-// ─── Types ────────────────────────────────────────────────────────────
-
 /**
  * Cache status.
  *
@@ -52,8 +50,6 @@ export interface FileHashCacheWriteOptions {
   fingerprint?: Uint8Array | null;
   userData?: readonly Uint8Array[] | null;
 }
-
-// ─── Internals ────────────────────────────────────────────────────────
 
 const STATUS_MAP: readonly CacheStatus[] = ["upToDate", "changed", "stale", "missing", "statsDirty"];
 
@@ -111,8 +107,6 @@ function readAllUserData(
   }
   return result;
 }
-
-// ─── FileHashCache ────────────────────────────────────────────────────
 
 /**
  * A file hash cache with an exclusive OS-level lock on the cache file.

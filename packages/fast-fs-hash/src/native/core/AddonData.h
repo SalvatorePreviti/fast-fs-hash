@@ -36,10 +36,18 @@ namespace fast_fs_hash {
       this->heldFileHandles.insert(h);
     }
 
-    /** Unregister a held file handle (called on explicit close). */
-    void unregisterHeldFileHandle(FfshFileHandle h) noexcept {
-      std::lock_guard<std::mutex> guard(this->heldFileHandlesMutex);
-      this->heldFileHandles.erase(h);
+    /** Unregister and close a held file handle. Thread-safe.
+     *  Erase under mutex (fast), close outside (avoids blocking other registrations). */
+    void closeHeldFileHandle(FfshFileHandle h) noexcept {
+      if (h == FFSH_FILE_HANDLE_INVALID) [[unlikely]] return;
+      bool found;
+      {
+        std::lock_guard<std::mutex> guard(this->heldFileHandlesMutex);
+        found = this->heldFileHandles.erase(h) > 0;
+      }
+      if (found) {
+        FfshFile::release_file_handle(h);
+      }
     }
 
     static FSH_FORCE_INLINE AddonData * get(napi_env env) noexcept {

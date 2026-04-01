@@ -24,7 +24,7 @@ setupFixtures("verify-files");
 const BUF = 131072;
 const READ_BUF = 131072;
 
-// ─── Known xxHash3-128 digests (seed 0,0) ─────────────────────────────
+//  - Known xxHash3-128 digests (seed 0,0)
 
 /** makeBuffer(100, 0) */
 const H_100 = "da95ef16fd9566f329b20ba5f03ec01e";
@@ -100,7 +100,7 @@ function hashBuf(h: string): Buffer {
   return Buffer.from(h, "hex");
 }
 
-// ─── verifyFilesParallel ──────────────────────────────────────────────
+//  - verifyFilesParallel
 
 describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
   const { digestFile } = backend;

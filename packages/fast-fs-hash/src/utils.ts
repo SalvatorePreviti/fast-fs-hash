@@ -75,7 +75,7 @@ function _toRelativePathNoStrip(rootPath: string, rlen: number, filePath: string
     return null;
   }
 
-  // ── Fast path ─────────────────────────────────────────────────────
+  // Fast path
   // When the file is an absolute path that directly starts with
   // rootPath + '/' and the remaining portion contains no unresolved
   // segments ( /./ , /../ , // ), we can produce the relative path
@@ -94,7 +94,7 @@ function _toRelativePathNoStrip(rootPath: string, rlen: number, filePath: string
     }
   }
 
-  // ── Slow path ─────────────────────────────────────────────────────
+  // Slow path
   // Handles relative inputs, paths with . or .. segments, Windows
   // drive-letter differences, and any other edge case.
 

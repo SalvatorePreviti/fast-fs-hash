@@ -147,9 +147,8 @@ namespace fast_fs_hash {
     }
     auto * addon = AddonData::get(env);
     if (addon) [[likely]] {
-      addon->unregisterHeldFileHandle(handle);
+      addon->closeHeldFileHandle(handle);
     }
-    FfshFile::release_file_handle(handle);
     return env.Undefined();
   }
 

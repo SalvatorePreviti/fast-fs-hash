@@ -299,7 +299,7 @@ const osLabel = getOsLabel();
 //  - Consolidated benchmark environment header
 
 const benchEnvSection = [
-  `> ${nodeVersion}, ${vitestVersion} — ${cpuModel}, ${osLabel}`,
+  `> ${nodeVersion}, ${vitestVersion} — ${cpuModel}, ${osLabel}, with anti-virus.`,
   ">",
   `> _Results vary by hardware, file sizes, and OS cache state._`,
 ];

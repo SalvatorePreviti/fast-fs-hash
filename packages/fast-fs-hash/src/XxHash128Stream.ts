@@ -191,8 +191,6 @@ export class XxHash128Stream {
     return copy;
   }
 
-  // ─── Static methods ─────────────────────────────────────────────────
-
   /**
    * One-shot: hash a buffer or string and return the 128-bit digest.
    *

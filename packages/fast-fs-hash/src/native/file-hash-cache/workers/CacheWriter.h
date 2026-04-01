@@ -280,13 +280,14 @@ namespace fast_fs_hash {
     }
 
     void compressAndWrite_(CacheHeader * hdr, const uint8_t * body, size_t bodyLen) noexcept {
+      // Always close the fd on this pool thread — saves a main-thread syscall.
+      const FfshFileHandle lh = hdr->getFileHandle();
+      hdr->setFileHandle(FFSH_FILE_HANDLE_INVALID);
+
       if (bodyLen > CACHE_MAX_BODY_SIZE || bodyLen > static_cast<size_t>(LZ4_MAX_INPUT_SIZE)) [[unlikely]] {
+        this->addon->closeHeldFileHandle(lh);
         return;
       }
-
-      // Read the lock handle from the in-memory header — do NOT zero it there,
-      // so that subsequent write() calls on the same open can still use the fd.
-      const FfshFileHandle lh = hdr->getFileHandle();
 
       // Prepare the in-memory header fields that must be clean on disk
       hdr->magic = CacheHeader::MAGIC;
@@ -297,13 +298,13 @@ namespace fast_fs_hash {
       const size_t totalFileSize = CacheHeader::SIZE + static_cast<size_t>(maxCompressed);
       OwnedBuf<> outBuf = OwnedBuf<>::alloc(totalFileSize);
       if (!outBuf) [[unlikely]] {
+        this->addon->closeHeldFileHandle(lh);
         return;
       }
 
       // Copy header to disk buffer, then reset the in-memory-only fields in the copy
       memcpy(outBuf.ptr, hdr, CacheHeader::SIZE);
-      auto * diskHdr = headerOf(outBuf.ptr);
-      diskHdr->fileHandle = FFSH_FILE_HANDLE_INVALID;
+      headerOf(outBuf.ptr)->fileHandle = FFSH_FILE_HANDLE_INVALID;
 
       const int compressedSize = LZ4_compress_fast(
         reinterpret_cast<const char *>(body),
@@ -313,26 +314,25 @@ namespace fast_fs_hash {
         2);
 
       if (compressedSize <= 0) [[unlikely]] {
+        this->addon->closeHeldFileHandle(lh);
         return;
       }
 
       const size_t actualFileSize = CacheHeader::SIZE + static_cast<size_t>(compressedSize);
 
-      // Write directly to the locked fd: seek to 0, write, truncate, fsync
+      // Write directly to the locked fd: seek to 0, write, truncate
       FfshFile out = FfshFile::from_file_handle(lh);
       if (!out) [[unlikely]] {
-        return;
+        return;  // lh was -1, nothing to close
       }
 
-      bool ok = out.seek(0) && out.write_all(outBuf.ptr, actualFileSize) && out.truncate(actualFileSize);
+      out.preallocate(actualFileSize);
+      this->writeSuccess_ = out.seek(0) && out.write_all(outBuf.ptr, actualFileSize) && out.truncate(actualFileSize);
 
-      // Release FfshFile without closing — the lock handle is still owned by JS
+      // Release FfshFile ownership, then close via AddonData (unregister + close under mutex).
       out.release();
-
-      this->writeSuccess_ = ok;
+      this->addon->closeHeldFileHandle(lh);
     }
-
-    // ── Merge-join remap ─────────────────────────────────────────────
 
     static void remapEntries_(
       const uint8_t * FSH_RESTRICT oldData, uint32_t oldFc, uint8_t * FSH_RESTRICT newData, uint32_t newFc) noexcept {

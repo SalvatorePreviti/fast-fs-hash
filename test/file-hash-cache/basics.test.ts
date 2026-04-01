@@ -3,7 +3,7 @@ import path from "node:path";
 import { FileHashCache } from "fast-fs-hash";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-// ─── Fixture setup ────────────────────────────────────────────────────
+//  - Fixture setup
 
 const TEST_DIR = path.resolve(import.meta.dirname, "tmp/fhc-basics");
 const FIXTURE_DIR = path.join(TEST_DIR, "fixtures");
@@ -18,7 +18,7 @@ function fixtureFile(name: string): string {
   return path.join(FIXTURE_DIR, name);
 }
 
-// ─── Tests ────────────────────────────────────────────────────────────
+//  - Tests
 
 beforeAll(() => {
   rmSync(TEST_DIR, { recursive: true, force: true });
@@ -35,7 +35,7 @@ afterAll(() => {
 });
 
 describe("FileHashCache [native]", () => {
-  // ── check (open without write = validate only) ────────────────────
+  //  - check (open without write = validate only)
 
   describe("check (no write)", () => {
     it("returns 'missing' when no cache file exists", async () => {
@@ -110,7 +110,7 @@ describe("FileHashCache [native]", () => {
     });
   });
 
-  // ── update ────────────────────────────────────────────────────────
+  //  - update
 
   describe("update", () => {
     it("writes cache file on first run", async () => {
@@ -231,7 +231,7 @@ describe("FileHashCache [native]", () => {
     });
   });
 
-  // ── options ───────────────────────────────────────────────────
+  //  - options
 
   describe("options", () => {
     it("version is treated as u32", async () => {
@@ -288,7 +288,7 @@ describe("FileHashCache [native]", () => {
     });
   });
 
-  // ── userData (indexed array) ──────────────────────────────────────
+  //  - userData (indexed array)
 
   describe("userData", () => {
     it("writes multiple items and reads each back by index", async () => {
@@ -410,7 +410,7 @@ describe("FileHashCache [native]", () => {
     });
   });
 
-  // ── userData buffer tests ────────────────────────────────────────
+  //  - userData buffer tests
 
   describe("userData buffer items", () => {
     it("writes and reads a single buffer item", async () => {
@@ -637,7 +637,7 @@ describe("FileHashCache [native]", () => {
     });
   });
 
-  // ── write with new files ─────────────────────────────────────────
+  //  - write with new files
 
   describe("write with new files", () => {
     it("can change file list during write", async () => {
@@ -658,7 +658,7 @@ describe("FileHashCache [native]", () => {
     });
   });
 
-  // ── write preserves old user data ──────────────────────────────
+  //  - write preserves old user data
 
   describe("write preserves old user data", () => {
     it("writes cache and preserves old user data when no userData in write options", async () => {
@@ -718,7 +718,7 @@ describe("FileHashCache [native]", () => {
     });
   });
 
-  // ── no write (validate only, no write) ──────────────────────────
+  //  - no write (validate only, no write)
 
   describe("no write", () => {
     it("does not write cache when write() is never called", async () => {
@@ -770,7 +770,7 @@ describe("FileHashCache [native]", () => {
     });
   });
 
-  // ── reuse mode (files=null, reuse old file list) ───────────────
+  //  - reuse mode (files=null, reuse old file list)
 
   describe("reuse mode (files=null)", () => {
     it("reuses file list from old cache on disk", async () => {
@@ -852,7 +852,7 @@ describe("FileHashCache [native]", () => {
     });
   });
 
-  // ── user data preservation (undefined = keep old) ──────────────
+  //  - user data preservation (undefined = keep old)
 
   describe("user data preservation", () => {
     it("undefined userData keeps old user data", async () => {
@@ -895,7 +895,7 @@ describe("FileHashCache [native]", () => {
     });
   });
 
-  // ── context status property ────────────────────────────────────
+  //  - context status property
 
   describe("context status property", () => {
     it("status is 'missing' for missing cache", async () => {
@@ -954,7 +954,7 @@ describe("FileHashCache [native]", () => {
     });
   });
 
-  // ── reusability ───────────────────────────────────────────────────
+  //  - reusability
 
   describe("reusability", () => {
     it("multiple open calls yield consistent results", async () => {
@@ -979,7 +979,7 @@ describe("FileHashCache [native]", () => {
     });
   });
 
-  // ── concurrent open calls ───────────────────────────────────────
+  //  - concurrent open calls
 
   describe("concurrency", () => {
     it("sequential open+write calls on same path complete without error", async () => {
@@ -1002,7 +1002,7 @@ describe("FileHashCache [native]", () => {
     });
   });
 
-  // ── write with default options writes cache ──────────────────────
+  //  - write with default options writes cache
 
   describe("write with default options", () => {
     it("write() with no options writes the cache", async () => {
@@ -1024,7 +1024,7 @@ describe("FileHashCache [native]", () => {
     });
   });
 
-  // ── write with options ──────────────────────────────────────────
+  //  - write with options
 
   describe("write with options", () => {
     it("write({ userValue0: 123 }) sets user value", async () => {
@@ -1061,7 +1061,7 @@ describe("FileHashCache [native]", () => {
     });
   });
 
-  // ── context file accessors ──────────────────────────────────
+  //  - context file accessors
 
   describe("context file accessors", () => {
     it("ctx.files returns file paths from cache", async () => {
@@ -1097,7 +1097,7 @@ describe("FileHashCache [native]", () => {
     });
   });
 
-  // ── fingerprint update from write options ─────────────────────
+  //  - fingerprint update from write options
 
   describe("fingerprint update from write options", () => {
     it("updates fingerprint when write options specify one", async () => {
@@ -1125,7 +1125,7 @@ describe("FileHashCache [native]", () => {
     });
   });
 
-  // ── update file list preserves user data ────────────────────
+  //  - update file list preserves user data
 
   describe("update file list preserves user data", () => {
     it("changing files in write preserves user data when userData is undefined", async () => {
@@ -1353,7 +1353,7 @@ describe("FileHashCache [native]", () => {
     });
   });
 
-  // ── Regression: stat-match results preserved through write ──────────
+  //  - Regression: stat-match results preserved through write
 
   describe("stat-match preservation", () => {
     it("write with same files does not re-stat entries already validated by open", async () => {
@@ -1416,7 +1416,7 @@ describe("FileHashCache [native]", () => {
     });
   });
 
-  // ── lifecycle: disposed, close, write-closes-lock ──────────────────
+  //  - lifecycle: disposed, close, write-closes-lock
 
   describe("lifecycle", () => {
     it("disposed is false after open, true after close", async () => {

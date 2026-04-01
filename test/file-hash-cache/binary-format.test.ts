@@ -12,7 +12,7 @@ import { FileHashCache } from "fast-fs-hash";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { HEADER_SIZE, MAGIC } from "../../packages/fast-fs-hash/src/file-hash-cache-format";
 
-// ─── Fixture setup ────────────────────────────────────────────────────
+//  - Fixture setup
 
 const TEST_DIR = path.resolve(import.meta.dirname, "tmp/fhc-binary-format");
 const FIXTURE_DIR = path.join(TEST_DIR, "fixtures");
@@ -34,7 +34,7 @@ function fixtureFile(name: string): string {
   return path.join(FIXTURE_DIR, name);
 }
 
-// ─── Tests ────────────────────────────────────────────────────────────
+//  - Tests
 
 beforeAll(() => {
   rmSync(TEST_DIR, { recursive: true, force: true });
@@ -51,7 +51,7 @@ afterAll(() => {
 });
 
 describe("FileHashCache binary format [native]", () => {
-  // ── On-disk format ──────────────────────────────────────────────────
+  //  - On-disk format
 
   describe("on-disk format", () => {
     it("writes correct magic in header", async () => {
@@ -91,7 +91,7 @@ describe("FileHashCache binary format [native]", () => {
     });
   });
 
-  // ── In-memory format via context ──────────────────────────────────
+  //  - In-memory format via context
 
   describe("in-memory format via context", () => {
     it("exposes correct file count for single file", async () => {
@@ -139,7 +139,7 @@ describe("FileHashCache binary format [native]", () => {
     });
   });
 
-  // ── Re-validate with separate opens ────────────────────────────
+  //  - Re-validate with separate opens
 
   describe("re-validate with separate opens", () => {
     it("can open and re-validate twice", async () => {
@@ -161,7 +161,7 @@ describe("FileHashCache binary format [native]", () => {
     });
   });
 
-  // ── Fingerprint validation ─────────────────────────────────────────
+  //  - Fingerprint validation
 
   describe("fingerprint validation", () => {
     it("throws on wrong-length Uint8Array", async () => {

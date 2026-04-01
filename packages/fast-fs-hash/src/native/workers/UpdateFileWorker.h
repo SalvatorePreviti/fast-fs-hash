@@ -48,7 +48,6 @@ class UpdateFileWorker final : public fast_fs_hash::AddonWorker {
     auto * state = reinterpret_cast<XXH3_state_t *>(this->state_ptr_);
     alignas(64) uint8_t rbuf[fast_fs_hash::READ_BUFFER_SIZE];
 
-    // First read — defer hint_sequential until we know the file is large.
     const int64_t n0 = fh.read(rbuf, fast_fs_hash::READ_BUFFER_SIZE);
     if (n0 < 0) [[unlikely]] {
       if (this->throw_on_error_) {
@@ -65,8 +64,6 @@ class UpdateFileWorker final : public fast_fs_hash::AddonWorker {
     XXH3_128bits_update(state, rbuf, static_cast<size_t>(n0));
 
     if (static_cast<size_t>(n0) == fast_fs_hash::READ_BUFFER_SIZE) {
-      // File is large — hint sequential for remaining reads.
-      fh.hint_sequential();
       for (;;) {
         const int64_t n = fh.read(rbuf, fast_fs_hash::READ_BUFFER_SIZE);
         if (n < 0) [[unlikely]] {

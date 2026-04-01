@@ -11,7 +11,7 @@ import path from "node:path";
 import { FileHashCache } from "fast-fs-hash";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-// ─── Fixture setup ────────────────────────────────────────────────────
+//  - Fixture setup
 
 const TEST_DIR = path.resolve(import.meta.dirname, "tmp/fhc-auto-root");
 const FIX_A = path.join(TEST_DIR, "project-a");
@@ -30,7 +30,7 @@ async function withCache<T>(args: OpenArgs, run: (ctx: FileHashCache) => Promise
   return await run(ctx);
 }
 
-// ─── Tests ────────────────────────────────────────────────────────────
+//  - Tests
 
 beforeAll(() => {
   rmSync(TEST_DIR, { recursive: true, force: true });

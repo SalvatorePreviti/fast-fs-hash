@@ -8,7 +8,7 @@ namespace fast_fs_hash {
   /**
    * RAII wrapper for a malloc'd buffer with tracked length.
    * Move-only. Automatically frees on destruction.
-   * Supports realloc and release (transfer ownership out).
+   * Supports release (transfer ownership out).
    *
    * Template parameter T is the element type (default: uint8_t).
    * Length is in elements, not bytes.
@@ -76,25 +76,6 @@ namespace fast_fs_hash {
     }
 
     FSH_FORCE_INLINE explicit operator bool() const noexcept { return this->ptr != nullptr; }
-
-    /** Size in bytes. */
-    FSH_FORCE_INLINE size_t byte_size() const noexcept { return this->len * sizeof(T); }
-
-    /** Grow or shrink the buffer via realloc. Returns false on OOM (original buffer preserved). */
-    inline bool realloc(size_t new_count) noexcept {
-      if constexpr (sizeof(T) > 1) {
-        if (new_count > SIZE_MAX / sizeof(T)) [[unlikely]] {
-          return false;
-        }
-      }
-      auto * p = static_cast<T *>(::realloc(this->ptr, new_count * sizeof(T)));
-      if (!p && new_count > 0) {
-        return false;
-      }
-      this->ptr = p;
-      this->len = new_count;
-      return true;
-    }
 
     /** Release ownership — caller must free(). */
     inline T * release() noexcept {
