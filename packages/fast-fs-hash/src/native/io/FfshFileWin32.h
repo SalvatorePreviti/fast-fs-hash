@@ -11,9 +11,9 @@
 
 namespace fast_fs_hash {
 
-  /** Opaque lock token — raw HANDLE cast to uint64_t. 0 = invalid. */
-  using CacheLockHandle = uint64_t;
-  static constexpr CacheLockHandle CACHE_LOCK_INVALID = 0;
+  /** Opaque file handle token — the CRT fd itself. -1 = invalid. */
+  using FfshFileHandle = int32_t;
+  static constexpr FfshFileHandle FFSH_FILE_HANDLE_INVALID = -1;
 
   /**
    * WPath — Windows-only RAII UTF-8 → UTF-16 path converter.
@@ -227,47 +227,30 @@ namespace fast_fs_hash {
       return f;
     }
 
-    /** Convert this FfshFile to a CacheLockHandle. Releases ownership. */
-    FSH_FORCE_INLINE CacheLockHandle to_lock_handle() noexcept {
-      if (this->fd < 0) [[unlikely]] {
-        return CACHE_LOCK_INVALID;
-      }
-      HANDLE h = reinterpret_cast<HANDLE>(_get_osfhandle(this->fd));
-      if (h == INVALID_HANDLE_VALUE) [[unlikely]] {
-        return CACHE_LOCK_INVALID;
-      }
-      // Detach the CRT fd without closing the underlying HANDLE
-      // We need to keep the HANDLE alive, so don't close the fd normally
-      const CacheLockHandle lh = static_cast<CacheLockHandle>(reinterpret_cast<uintptr_t>(h));
-      // Mark fd as released — but on Windows we can't just set fd=-1 because
-      // _get_osfhandle already gave us the HANDLE. We close the CRT fd wrapper
-      // but the HANDLE stays owned by the lock handle.
-      // Actually, on Windows we should NOT close the CRT fd because that would
-      // close the underlying HANDLE. Instead, just transfer the fd value out.
+    /** Convert this FfshFile to a FfshFileHandle (the fd itself). Releases ownership. */
+    FSH_FORCE_INLINE FfshFileHandle to_file_handle() noexcept {
+      const FfshFileHandle h = static_cast<FfshFileHandle>(this->fd);
       this->fd = -1;
-      return lh;
+      return h;
     }
 
-    /** Create an FfshFile from a CacheLockHandle. Takes ownership. */
-    static FSH_FORCE_INLINE FfshFile from_lock_handle(CacheLockHandle handle) noexcept {
+    /** Create an FfshFile from a FfshFileHandle. Takes ownership. */
+    static FSH_FORCE_INLINE FfshFile from_file_handle(FfshFileHandle handle) noexcept {
       FfshFile f;
-      if (handle != CACHE_LOCK_INVALID) [[likely]] {
-        HANDLE h = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(handle));
-        f.fd = _open_osfhandle(reinterpret_cast<intptr_t>(h), _O_RDWR | _O_BINARY);
-        // If _open_osfhandle fails, the HANDLE leaks — shouldn't happen in practice
+      if (handle != FFSH_FILE_HANDLE_INVALID) [[likely]] {
+        f.fd = static_cast<int>(handle);
       }
       return f;
     }
 
-    /** Release a CacheLockHandle (unlock + close). */
-    static inline void release_lock_handle(CacheLockHandle handle) noexcept {
-      if (handle == CACHE_LOCK_INVALID) [[unlikely]] {
+    /** Release a FfshFileHandle (unlock + close the CRT fd, which releases the underlying HANDLE + lock). */
+    static inline void release_file_handle(FfshFileHandle handle) noexcept {
+      if (handle == FFSH_FILE_HANDLE_INVALID) [[unlikely]] {
         return;
       }
-      HANDLE hFile = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(handle));
-      OVERLAPPED ov{};
-      UnlockFileEx(hFile, 0, 1, 0, &ov);
-      CloseHandle(hFile);
+      // _close on a CRT fd created via _open_osfhandle closes the underlying HANDLE,
+      // which also releases the LockFileEx byte-range lock.
+      ::_close(static_cast<int>(handle));
     }
 
     /** Non-blocking check: returns true if the file is currently locked by another holder. */

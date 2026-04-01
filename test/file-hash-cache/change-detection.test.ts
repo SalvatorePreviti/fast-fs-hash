@@ -27,6 +27,13 @@ function fixtureFile(name: string): string {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+type OpenArgs = Parameters<typeof FileHashCache.open>;
+
+async function withCache<T>(args: OpenArgs, run: (ctx: FileHashCache) => Promise<T> | T): Promise<T> {
+  await using ctx = await FileHashCache.open(...args);
+  return await run(ctx);
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────
 
 beforeAll(() => {
@@ -51,11 +58,12 @@ describe("FileHashCache change detection [native]", () => {
       const cp = cachePath("ver");
       const files = [fixtureFile("a.txt")];
 
-      const ctx1 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      await ctx1.write();
+      await withCache([cp, FIXTURE_DIR, files, 1], async (ctx1) => {
+        await ctx1.write();
+      });
 
-      const ctx2 = await FileHashCache.open(cp, FIXTURE_DIR, files, 2);
-      expect(ctx2.status).toBe("stale");
+      const status = await withCache([cp, FIXTURE_DIR, files, 2], (ctx2) => ctx2.status);
+      expect(status).toBe("stale");
     });
 
     it("same fingerprint is upToDate", async () => {
@@ -63,11 +71,12 @@ describe("FileHashCache change detection [native]", () => {
       const files = [fixtureFile("a.txt")];
       const fp = new Uint8Array(16).fill(0xab);
 
-      const ctx1 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1, fp);
-      await ctx1.write();
+      await withCache([cp, FIXTURE_DIR, files, 1, fp], async (ctx1) => {
+        await ctx1.write();
+      });
 
-      const ctx2 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1, fp);
-      expect(ctx2.status).toBe("upToDate");
+      const status = await withCache([cp, FIXTURE_DIR, files, 1, fp], (ctx2) => ctx2.status);
+      expect(status).toBe("upToDate");
     });
 
     it("different fingerprint is stale", async () => {
@@ -76,11 +85,12 @@ describe("FileHashCache change detection [native]", () => {
       const fp1 = new Uint8Array(16).fill(0x11);
       const fp2 = new Uint8Array(16).fill(0x22);
 
-      const ctx1 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1, fp1);
-      await ctx1.write();
+      await withCache([cp, FIXTURE_DIR, files, 1, fp1], async (ctx1) => {
+        await ctx1.write();
+      });
 
-      const ctx2 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1, fp2);
-      expect(ctx2.status).toBe("stale");
+      const status = await withCache([cp, FIXTURE_DIR, files, 1, fp2], (ctx2) => ctx2.status);
+      expect(status).toBe("stale");
     });
   });
 
@@ -93,14 +103,15 @@ describe("FileHashCache change detection [native]", () => {
       writeFileSync(mutable, "original content");
       const files = [mutable];
 
-      const ctx1 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      await ctx1.write();
+      await withCache([cp, FIXTURE_DIR, files, 1], async (ctx1) => {
+        await ctx1.write();
+      });
 
       await sleep(50);
       writeFileSync(mutable, "modified content");
 
-      const ctx2 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      expect(ctx2.status).toBe("changed");
+      const status = await withCache([cp, FIXTURE_DIR, files, 1], (ctx2) => ctx2.status);
+      expect(status).toBe("changed");
     });
 
     it("detects file size change", async () => {
@@ -109,14 +120,15 @@ describe("FileHashCache change detection [native]", () => {
       writeFileSync(mutable, "short");
       const files = [mutable];
 
-      const ctx1 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      await ctx1.write();
+      await withCache([cp, FIXTURE_DIR, files, 1], async (ctx1) => {
+        await ctx1.write();
+      });
 
       await sleep(50);
       writeFileSync(mutable, "much longer content here!!!");
 
-      const ctx2 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      expect(ctx2.status).toBe("changed");
+      const status = await withCache([cp, FIXTURE_DIR, files, 1], (ctx2) => ctx2.status);
+      expect(status).toBe("changed");
     });
 
     it("same content after metadata change round-trips correctly", async () => {
@@ -125,8 +137,9 @@ describe("FileHashCache change detection [native]", () => {
       writeFileSync(mutable, "stable content here");
       const files = [mutable];
 
-      const ctx1 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      await ctx1.write();
+      await withCache([cp, FIXTURE_DIR, files, 1], async (ctx1) => {
+        await ctx1.write();
+      });
 
       // Rewrite with identical content — metadata changes, hash same.
       await sleep(50);
@@ -135,15 +148,18 @@ describe("FileHashCache change detection [native]", () => {
       // Native does stat+size+rehash optimization -> "statsDirty" (stat changed, content same).
       // Stat change detected -> "changed".
       // Either is acceptable — the important thing is no error and a valid cache.
-      const ctx2 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      expect(["statsDirty", "changed"]).toContain(ctx2.status);
-      if (ctx2.status !== "upToDate") {
-        await ctx2.write();
-      }
+      const status = await withCache([cp, FIXTURE_DIR, files, 1], async (ctx2) => {
+        expect(["statsDirty", "changed"]).toContain(ctx2.status);
+        if (ctx2.status !== "upToDate") {
+          await ctx2.write();
+        }
+        return ctx2.status;
+      });
+      expect(["statsDirty", "changed"]).toContain(status);
 
       // After update, re-checking should be upToDate (stat hash now matches)
-      const ctx3 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      expect(ctx3.status).toBe("upToDate");
+      const status2 = await withCache([cp, FIXTURE_DIR, files, 1], (ctx3) => ctx3.status);
+      expect(status2).toBe("upToDate");
     });
 
     it("detects deleted file", async () => {
@@ -152,21 +168,22 @@ describe("FileHashCache change detection [native]", () => {
       writeFileSync(mutable, "soon to be gone");
       const files = [mutable];
 
-      const ctx1 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      await ctx1.write();
+      await withCache([cp, FIXTURE_DIR, files, 1], async (ctx1) => {
+        await ctx1.write();
+      });
 
       rmSync(mutable, { force: true });
 
-      const ctx2 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      expect(ctx2.status).toBe("changed");
+      const status = await withCache([cp, FIXTURE_DIR, files, 1], (ctx2) => ctx2.status);
+      expect(status).toBe("changed");
     });
 
     it("non-existent file in file list does not throw", async () => {
       const cp = cachePath("nofile");
       const files = [fixtureFile("no-such-file.txt")];
 
-      const ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      expect(ctx.status).not.toBe("upToDate");
+      const status = await withCache([cp, FIXTURE_DIR, files, 1], (ctx) => ctx.status);
+      expect(status).not.toBe("upToDate");
     });
   });
 
@@ -178,11 +195,12 @@ describe("FileHashCache change detection [native]", () => {
       const files1 = [fixtureFile("a.txt")];
       const files2 = [fixtureFile("a.txt"), fixtureFile("b.txt")];
 
-      const ctx1 = await FileHashCache.open(cp, FIXTURE_DIR, files1, 1);
-      await ctx1.write();
+      await withCache([cp, FIXTURE_DIR, files1, 1], async (ctx1) => {
+        await ctx1.write();
+      });
 
-      const ctx2 = await FileHashCache.open(cp, FIXTURE_DIR, files2, 1);
-      expect(ctx2.status).not.toBe("upToDate");
+      const status = await withCache([cp, FIXTURE_DIR, files2, 1], (ctx2) => ctx2.status);
+      expect(status).not.toBe("upToDate");
     });
 
     it("detects removed file via changed file list in write", async () => {
@@ -190,19 +208,21 @@ describe("FileHashCache change detection [native]", () => {
       const files1 = [fixtureFile("a.txt"), fixtureFile("b.txt")];
       const files2 = [fixtureFile("a.txt")];
 
-      const ctx1 = await FileHashCache.open(cp, FIXTURE_DIR, files1, 1);
-      await ctx1.write();
+      await withCache([cp, FIXTURE_DIR, files1, 1], async (ctx1) => {
+        await ctx1.write();
+      });
 
       // Write changes file list from 2 files to 1
-      const ctx2 = await FileHashCache.open(cp, FIXTURE_DIR, files1, 1);
-      await ctx2.write({ files: files2, rootPath: FIXTURE_DIR });
+      await withCache([cp, FIXTURE_DIR, files1, 1], async (ctx2) => {
+        await ctx2.write({ files: files2, rootPath: FIXTURE_DIR });
+      });
 
       // Verify the updated cache only has 1 file
-      const ctx3 = await FileHashCache.open(cp, FIXTURE_DIR, files2, 1);
-      expect(ctx3.status).toBe("upToDate");
+      const status1 = await withCache([cp, FIXTURE_DIR, files2, 1], (ctx3) => ctx3.status);
+      expect(status1).toBe("upToDate");
       // files1 should no longer match
-      const ctx4 = await FileHashCache.open(cp, FIXTURE_DIR, files1, 1);
-      expect(ctx4.status).not.toBe("upToDate");
+      const status2 = await withCache([cp, FIXTURE_DIR, files1, 1], (ctx4) => ctx4.status);
+      expect(status2).not.toBe("upToDate");
     });
 
     it("write can change file list and produce valid cache", async () => {
@@ -210,12 +230,13 @@ describe("FileHashCache change detection [native]", () => {
       const files1 = [fixtureFile("a.txt")];
       const files2 = [fixtureFile("a.txt"), fixtureFile("b.txt"), fixtureFile("c.txt")];
 
-      const ctx1 = await FileHashCache.open(cp, FIXTURE_DIR, files1, 1);
-      await ctx1.write({ files: files2, rootPath: FIXTURE_DIR });
+      await withCache([cp, FIXTURE_DIR, files1, 1], async (ctx1) => {
+        await ctx1.write({ files: files2, rootPath: FIXTURE_DIR });
+      });
 
       // Verify expanded file list
-      const ctx2 = await FileHashCache.open(cp, FIXTURE_DIR, files2, 1);
-      expect(ctx2.status).toBe("upToDate");
+      const status = await withCache([cp, FIXTURE_DIR, files2, 1], (ctx2) => ctx2.status);
+      expect(status).toBe("upToDate");
     });
 
     it("write can shrink file list and produce valid cache", async () => {
@@ -223,36 +244,40 @@ describe("FileHashCache change detection [native]", () => {
       const files1 = [fixtureFile("a.txt"), fixtureFile("b.txt"), fixtureFile("c.txt")];
       const files2 = [fixtureFile("a.txt")];
 
-      const ctx1 = await FileHashCache.open(cp, FIXTURE_DIR, files1, 1);
-      await ctx1.write();
+      await withCache([cp, FIXTURE_DIR, files1, 1], async (ctx1) => {
+        await ctx1.write();
+      });
 
-      const ctx2 = await FileHashCache.open(cp, FIXTURE_DIR, files1, 1);
-      await ctx2.write({ files: files2, rootPath: FIXTURE_DIR });
+      await withCache([cp, FIXTURE_DIR, files1, 1], async (ctx2) => {
+        await ctx2.write({ files: files2, rootPath: FIXTURE_DIR });
+      });
 
-      const ctx3 = await FileHashCache.open(cp, FIXTURE_DIR, files2, 1);
-      expect(ctx3.status).toBe("upToDate");
+      const status = await withCache([cp, FIXTURE_DIR, files2, 1], (ctx3) => ctx3.status);
+      expect(status).toBe("upToDate");
     });
 
     it("handles 3 files round-trip", async () => {
       const cp = cachePath("multi");
       const files = [fixtureFile("a.txt"), fixtureFile("b.txt"), fixtureFile("c.txt")];
 
-      const ctx1 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      await ctx1.write();
+      await withCache([cp, FIXTURE_DIR, files, 1], async (ctx1) => {
+        await ctx1.write();
+      });
 
-      const ctx2 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      expect(ctx2.status).toBe("upToDate");
+      const status = await withCache([cp, FIXTURE_DIR, files, 1], (ctx2) => ctx2.status);
+      expect(status).toBe("upToDate");
     });
 
     it("empty file list round-trip", async () => {
       const cp = cachePath("empty");
 
-      const ctx1 = await FileHashCache.open(cp, FIXTURE_DIR, [], 1);
-      await ctx1.write();
+      await withCache([cp, FIXTURE_DIR, [], 1], async (ctx1) => {
+        await ctx1.write();
+      });
 
-      const ctx2 = await FileHashCache.open(cp, FIXTURE_DIR, [], 1);
+      const ctx2Status = await withCache([cp, FIXTURE_DIR, [], 1], (ctx2) => ctx2.status);
       // Empty file list behavior varies by backend — all non-error statuses are valid
-      expect(["upToDate", "missing", "changed"]).toContain(ctx2.status);
+      expect(["upToDate", "missing", "changed"]).toContain(ctx2Status);
     });
   });
 
@@ -263,24 +288,24 @@ describe("FileHashCache change detection [native]", () => {
       const cp = cachePath("corrupt");
       writeFileSync(cp, Buffer.alloc(64, 0xff));
 
-      const ctx = await FileHashCache.open(cp, FIXTURE_DIR, [fixtureFile("a.txt")], 1);
-      expect(ctx.status).not.toBe("upToDate");
+      const status = await withCache([cp, FIXTURE_DIR, [fixtureFile("a.txt")], 1], (ctx) => ctx.status);
+      expect(status).not.toBe("upToDate");
     });
 
     it("truncated cache file", async () => {
       const cp = cachePath("trunc");
       writeFileSync(cp, Buffer.alloc(32));
 
-      const ctx = await FileHashCache.open(cp, FIXTURE_DIR, [fixtureFile("a.txt")], 1);
-      expect(ctx.status).not.toBe("upToDate");
+      const status = await withCache([cp, FIXTURE_DIR, [fixtureFile("a.txt")], 1], (ctx) => ctx.status);
+      expect(status).not.toBe("upToDate");
     });
 
     it("empty cache file (0 bytes)", async () => {
       const cp = cachePath("empty-file");
       writeFileSync(cp, Buffer.alloc(0));
 
-      const ctx = await FileHashCache.open(cp, FIXTURE_DIR, [fixtureFile("a.txt")], 1);
-      expect(ctx.status).not.toBe("upToDate");
+      const status = await withCache([cp, FIXTURE_DIR, [fixtureFile("a.txt")], 1], (ctx) => ctx.status);
+      expect(status).not.toBe("upToDate");
     });
 
     it("rapid update cycles detect deterministic file mutation", async () => {
@@ -289,9 +314,10 @@ describe("FileHashCache change detection [native]", () => {
       writeFileSync(mutPath, "A".repeat(100));
       const files = [mutPath, fixtureFile("a.txt"), fixtureFile("b.txt")];
 
-      const ctx0 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      expect(ctx0.status).not.toBe("upToDate");
-      await ctx0.write();
+      await withCache([cp, FIXTURE_DIR, files, 1], async (ctx0) => {
+        expect(ctx0.status).not.toBe("upToDate");
+        await ctx0.write();
+      });
 
       for (let i = 0; i < 6; i++) {
         const body = Buffer.alloc(100, 0x78);
@@ -301,9 +327,10 @@ describe("FileHashCache change detection [native]", () => {
         const t = new Date(1700001000000 + i * 1000);
         utimesSync(mutPath, t, t);
 
-        const ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-        expect(ctx.status).not.toBe("upToDate");
-        await ctx.write();
+        await withCache([cp, FIXTURE_DIR, files, 1], async (ctx) => {
+          expect(ctx.status).not.toBe("upToDate");
+          await ctx.write();
+        });
       }
     });
   });
@@ -322,12 +349,13 @@ describe("FileHashCache change detection [native]", () => {
 
       // Write initial cache
       const cp = cachePath("scattered");
-      const ctx1 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      await ctx1.write();
+      await withCache([cp, FIXTURE_DIR, files, 1], async (ctx1) => {
+        await ctx1.write();
+      });
 
       // Verify up-to-date
-      const ctxCheck = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      expect(ctxCheck.status).toBe("upToDate");
+      const statusCheck = await withCache([cp, FIXTURE_DIR, files, 1], (ctxCheck) => ctxCheck.status);
+      expect(statusCheck).toBe("upToDate");
 
       // Mutate files at scattered positions (indices 2, 7, 13, 18) with explicit
       // timestamps so stat changes are guaranteed even on coarse-granularity fs.
@@ -340,14 +368,15 @@ describe("FileHashCache change detection [native]", () => {
       }
 
       // open+write should update ALL changed entries
-      const ctx2 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      expect(ctx2.status).not.toBe("upToDate");
-      await ctx2.write();
+      await withCache([cp, FIXTURE_DIR, files, 1], async (ctx2) => {
+        expect(ctx2.status).not.toBe("upToDate");
+        await ctx2.write();
+      });
 
       // Critical check: a subsequent open with no changes must be upToDate.
       // If the cache has stale entries (from incomplete processing), this fails.
-      const ctx3 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      expect(ctx3.status).toBe("upToDate");
+      const status = await withCache([cp, FIXTURE_DIR, files, 1], (ctx3) => ctx3.status);
+      expect(status).toBe("upToDate");
 
       // Clean up
       for (const name of fileNames) {

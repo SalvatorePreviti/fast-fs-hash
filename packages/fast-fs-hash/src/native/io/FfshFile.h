@@ -7,8 +7,8 @@
  *
  * Both platform headers define:
  *   - FfshFile: RAII file handle with read/write/lock/truncate/seek
- *   - CacheLockHandle: opaque lock token (uint64_t)
- *   - Static helpers: stat_into, is_locked, release_lock_handle
+ *   - FfshFileHandle: opaque lock token (uint64_t)
+ *   - Static helpers: stat_into, is_locked, release_file_handle
  *   - DirFd, PathResolver: per-thread path resolution context
  */
 

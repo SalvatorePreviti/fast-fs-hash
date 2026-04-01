@@ -9,12 +9,12 @@ namespace fast_fs_hash {
 
   /**
    * cacheOpen(encodedPaths, fileCount, cachePath, rootPath, version, fingerprint, timeoutMs)
-   *   → Promise<[BigInt<lockHandle>, Buffer<dataBuf>]>
+   *   → Promise<Buffer<dataBuf>>
    *
    * Acquires an exclusive lock on the cache file, then reads, validates
    * version/fingerprint/file list, and stat-matches entries.
-   * The resolved array index 0 is a BigInt encoding the CacheLockHandle.
-   * Index 1 is the dataBuf containing the cache state.
+   * Resolves with a single Buffer whose header (offset 76) holds the FfshFileHandle
+   * in-memory (-1 before any disk write).
    * Runs on a dedicated detached thread so blocking on lock acquisition
    * never stalls the compute pool.
    */
@@ -25,11 +25,10 @@ namespace fast_fs_hash {
     if (info.Length() < 7 || !info[0].IsTypedArray() || !info[2].IsString() || !info[3].IsString()) [[unlikely]] {
       auto buf = Napi::Buffer<uint8_t>::New(env, CacheHeader::SIZE);
       memset(buf.Data(), 0, CacheHeader::SIZE);
-      headerOf(buf.Data())->status = static_cast<uint32_t>(CacheStatus::MISSING);
-      auto arr = Napi::Array::New(env, 2);
-      arr.Set(0u, Napi::BigInt::New(env, static_cast<uint64_t>(0)));
-      arr.Set(1u, buf);
-      deferred.Resolve(arr);
+      auto * fallbackHdr = headerOf(buf.Data());
+      fallbackHdr->status = static_cast<uint32_t>(CacheStatus::MISSING);
+      fallbackHdr->fileHandle = FFSH_FILE_HANDLE_INVALID;
+      deferred.Resolve(buf);
       return deferred.Promise();
     }
 
@@ -76,17 +75,18 @@ namespace fast_fs_hash {
   }
 
   /**
-   * cacheWrite(dataBuf, encodedPaths, fileCount, cachePath, rootPath, userData, lockHandle)
+   * cacheWrite(dataBuf, encodedPaths, fileCount, cachePath, rootPath, userData)
    *   → Promise<number>
    *
    * Hashes any unresolved entries, LZ4-compresses, and writes directly to the
    * locked cache fd (seek + write + truncate, no atomic rename).
+   * The lock handle is read from dataBuf header offset 76.
    */
   inline Napi::Value bindCacheWrite(const Napi::CallbackInfo & info) {
     auto env = info.Env();
     auto deferred = Napi::Promise::Deferred::New(env);
 
-    if (info.Length() < 7 || !info[0].IsTypedArray()) [[unlikely]] {
+    if (info.Length() < 6 || !info[0].IsTypedArray()) [[unlikely]] {
       deferred.Resolve(Napi::Number::New(env, -1));
       return deferred.Promise();
     }
@@ -115,16 +115,7 @@ namespace fast_fs_hash {
       return env.Undefined();
     }
 
-    // Lock handle (BigInt) — required for writing to the locked fd
-    CacheLockHandle lockHandle = CACHE_LOCK_INVALID;
-    if (info.Length() > 6 && info[6].IsBigInt()) {
-      bool lossless = false;
-      lockHandle = info[6].As<Napi::BigInt>().Uint64Value(&lossless);
-      if (!lossless) [[unlikely]] {
-        lockHandle = CACHE_LOCK_INVALID;
-      }
-    }
-
+    // Lock handle is read from dataBuf header at offset 76 (in-memory field, -1 on disk)
     auto * worker = new CacheWriter(
       env,
       deferred,
@@ -137,29 +128,28 @@ namespace fast_fs_hash {
       fileCount,
       std::move(cachePath),
       std::move(rootPath),
-      std::move(ud),
-      lockHandle);
+      std::move(ud));
     worker->Queue();
     return deferred.Promise();
   }
 
-  /** cacheLockRelease(handleBigInt: bigint) → void */
+  /** cacheLockRelease(handle: number) → void — handle is an int32 fd. */
   inline Napi::Value bindCacheLockRelease(const Napi::CallbackInfo & info) {
     const auto env = info.Env();
-    if (info.Length() < 1 || !info[0].IsBigInt()) [[unlikely]] {
-      Napi::TypeError::New(env, "cacheLockRelease: expected BigInt handle").ThrowAsJavaScriptException();
+    if (info.Length() < 1 || !info[0].IsNumber()) [[unlikely]] {
+      Napi::TypeError::New(env, "cacheLockRelease: expected number handle").ThrowAsJavaScriptException();
       return env.Undefined();
     }
-    bool lossless = false;
-    const CacheLockHandle handle = info[0].As<Napi::BigInt>().Uint64Value(&lossless);
-    if (!lossless || handle == CACHE_LOCK_INVALID) [[unlikely]] {
+    int32_t handle = FFSH_FILE_HANDLE_INVALID;
+    napi_get_value_int32(env, info[0], &handle);
+    if (handle == FFSH_FILE_HANDLE_INVALID) [[unlikely]] {
       return env.Undefined();
     }
     auto * addon = AddonData::get(env);
     if (addon) [[likely]] {
-      addon->unregisterHeldCacheLock(handle);
+      addon->unregisterHeldFileHandle(handle);
     }
-    FfshFile::release_lock_handle(handle);
+    FfshFile::release_file_handle(handle);
     return env.Undefined();
   }
 

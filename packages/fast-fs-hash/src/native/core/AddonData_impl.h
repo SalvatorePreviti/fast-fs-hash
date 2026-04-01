@@ -63,13 +63,13 @@ namespace fast_fs_hash {
       head = next;
     }
 
-    // Release any cache locks still held by this env (e.g., worker thread terminated)
+    // Release any file handles still held by this env (e.g., worker thread terminated)
     {
-      std::lock_guard<std::mutex> guard(d->heldCacheLocksMutex);
-      for (CacheLockHandle h : d->heldCacheLocks) {
-        FfshFile::release_lock_handle(h);
+      std::lock_guard<std::mutex> guard(d->heldFileHandlesMutex);
+      for (FfshFileHandle h : d->heldFileHandles) {
+        FfshFile::release_file_handle(h);
       }
-      d->heldCacheLocks.clear();
+      d->heldFileHandles.clear();
     }
 
     d->cleanup_hook_ = hook;

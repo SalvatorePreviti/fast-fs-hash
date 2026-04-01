@@ -2,7 +2,8 @@
  * CacheOpen: acquires an exclusive lock on the cache file, then reads,
  * validates, and stat-matches entries using the locked fd.
  *
- * Always locks. Resolves with [BigInt<lockHandle>, Buffer<dataBuf>].
+ * Always locks. Resolves with Buffer<dataBuf>.
+ * The lock handle is embedded in the header at offset 76 (in-memory only).
  * The lock handle is registered with AddonData for crash-safe cleanup.
  *
  * Runs on a dedicated detached thread so blocking on lock acquisition
@@ -69,13 +70,12 @@ namespace fast_fs_hash {
       auto env = Napi::Env(this->env);
       Napi::HandleScope scope(env);
 
-      CacheLockHandle lockHandle = this->lockedFile_.to_lock_handle();
-      this->addon->registerHeldCacheLock(lockHandle);
+      FfshFileHandle fh = this->lockedFile_.to_file_handle();
+      this->addon->registerHeldFileHandle(fh);
 
-      auto arr = Napi::Array::New(env, 2);
-      arr.Set(0u, Napi::BigInt::New(env, lockHandle));
-      arr.Set(1u, this->makeDataBuf_(env));
-      this->deferred.Resolve(arr);
+      auto buf = this->makeDataBuf_(env);
+      headerOf(buf.Data())->setFileHandle(fh);
+      this->deferred.Resolve(buf);
     }
 
    private:
@@ -125,9 +125,12 @@ namespace fast_fs_hash {
       if (ptr) [[likely]] {
         return Napi::Buffer<uint8_t>::New(env, ptr, len, [](Napi::Env, uint8_t * p) { free(p); });
       }
+      // Fallback: return a zeroed header-only buffer with MISSING status
       auto buf = Napi::Buffer<uint8_t>::New(env, CacheHeader::SIZE);
       memset(buf.Data(), 0, CacheHeader::SIZE);
-      headerOf(buf.Data())->status = static_cast<uint32_t>(CacheStatus::MISSING);
+      auto * fallbackHdr = headerOf(buf.Data());
+      fallbackHdr->status = static_cast<uint32_t>(CacheStatus::MISSING);
+      fallbackHdr->fileHandle = FFSH_FILE_HANDLE_INVALID;
       return buf;
     }
 
@@ -136,6 +139,7 @@ namespace fast_fs_hash {
       hdr->magic = CacheHeader::MAGIC;
       hdr->version = this->version_;
       hdr->status = static_cast<uint32_t>(st);
+      hdr->fileHandle = FFSH_FILE_HANDLE_INVALID;
       if (this->hasFingerprint_) {
         hdr->fingerprint = this->fingerprint_;
       }

@@ -30,15 +30,19 @@ describe("FileHashCache — 1 file changed", async () => {
 
   // Warmup
   const warmupCp = cp(cacheDir, "warmup");
-  const warmupCtx = await FileHashCache.open(warmupCp, RAW_DATA_DIR, files);
-  await warmupCtx.write();
+  {
+    await using warmupCtx = await FileHashCache.open(warmupCp, RAW_DATA_DIR, files);
+    await warmupCtx.write();
+  }
 
   const benchCp = cp(cacheDir, "one-change");
   const stalePath = benchCp + ".stale";
 
   // Seed the cache
-  const seedCtx = await FileHashCache.open(benchCp, RAW_DATA_DIR, files);
-  await seedCtx.write();
+  {
+    await using seedCtx = await FileHashCache.open(benchCp, RAW_DATA_DIR, files);
+    await seedCtx.write();
+  }
 
   // Save stale snapshot, then mutate one file
   copyFileSync(benchCp, stalePath);
@@ -48,7 +52,7 @@ describe("FileHashCache — 1 file changed", async () => {
     "native  1 file changed",
     async () => {
       copyFileSync(stalePath, benchCp);
-      const ctx = await FileHashCache.open(benchCp, RAW_DATA_DIR, files);
+      await using ctx = await FileHashCache.open(benchCp, RAW_DATA_DIR, files);
       if (ctx.status === "upToDate") {
         throw new Error("should not be upToDate");
       }

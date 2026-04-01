@@ -127,6 +127,11 @@ from the old cache, preserving hashes for unchanged files.
 ```ts
 // Non-blocking try
 const cache = await FileHashCache.open(path, root, files, 1, null, 0);
+try {
+  // use cache here
+} finally {
+  cache.close();
+}
 
 // Check if locked without acquiring
 FileHashCache.isLocked(path); // → boolean

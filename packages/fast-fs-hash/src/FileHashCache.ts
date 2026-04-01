@@ -11,6 +11,7 @@
 import {
   ENTRY_STRIDE,
   H_FILE_COUNT,
+  H_FILE_HANDLE,
   H_FINGERPRINT_BYTE,
   H_PATHS_LEN,
   H_STATUS_BYTE,
@@ -130,8 +131,9 @@ function readAllUserData(
  * if (cache.status !== "upToDate") {
  *   // ... rebuild ...
  *   await cache.write({ userData: [outputManifest] });
+ *   // lock still held — write() never releases it
  * }
- * // lock released here
+ * // lock released here by `await using`
  * ```
  */
 export class FileHashCache {
@@ -165,7 +167,7 @@ export class FileHashCache {
   readonly #dataBuf: Buffer;
   readonly #encodedPaths: Buffer;
   #files: readonly string[] | null;
-  #lockHandle: bigint;
+  #closed: boolean;
 
   /** @internal */
   public constructor(
@@ -175,8 +177,7 @@ export class FileHashCache {
     fingerprint: Uint8Array | null,
     dataBuf: Buffer,
     encodedPaths: Buffer,
-    openFiles: readonly string[] | null,
-    lockHandle: bigint
+    openFiles: readonly string[] | null
   ) {
     this.#encodedPaths = encodedPaths;
     this.#files = openFiles ?? null;
@@ -185,7 +186,7 @@ export class FileHashCache {
     this.rootPath = rootPath;
     this.fingerprint = fingerprint;
     this.#dataBuf = dataBuf;
-    this.#lockHandle = lockHandle;
+    this.#closed = false;
 
     const hdrFc = dataBuf.readUInt32LE(H_FILE_COUNT);
     const pathsLen = dataBuf.readUInt32LE(H_PATHS_LEN);
@@ -210,7 +211,7 @@ export class FileHashCache {
 
   /** True once {@link close} has been called. Subsequent calls are no-ops. */
   public get disposed(): boolean {
-    return this.#lockHandle === 0n;
+    return this.#closed;
   }
 
   /** File paths (relative to rootPath, sorted). */
@@ -235,7 +236,8 @@ export class FileHashCache {
    *
    * Acquires an exclusive lock on the cache file, reads from disk, validates
    * version/fingerprint/file list, and if all match, stat-matches entries to
-   * detect changes. The lock is held until {@link close} is called.
+   * detect changes. The lock is held until {@link close} is called, or the
+   * returned instance is disposed via `using` / `await using`.
    *
    * Use `await using` for automatic cleanup:
    * ```ts
@@ -275,30 +277,32 @@ export class FileHashCache {
     const encoded = normalizedFiles ? encodeNormalizedPaths(normalizedFiles) : _emptyBuf;
     const fileCount = normalizedFiles ? normalizedFiles.length : 0;
 
-    const [lockHandle, dataBuf] = await cacheOpen(
-      encoded,
-      fileCount,
-      resolvedCachePath,
-      root,
-      ver,
-      fp,
-      timeoutMs ?? -1
-    );
+    const dataBuf = await cacheOpen(encoded, fileCount, resolvedCachePath, root, ver, fp, timeoutMs ?? -1);
 
-    return new FileHashCache(resolvedCachePath, ver, root, fp, dataBuf, encoded, normalizedFiles, lockHandle);
+    return new FileHashCache(resolvedCachePath, ver, root, fp, dataBuf, encoded, normalizedFiles);
   }
 
   /**
-   * Release the lock and mark this instance as disposed.
+   * Release the exclusive lock and mark this instance as disposed.
+   *
    * Safe to call multiple times — subsequent calls are no-ops.
+   *
+   * This is the **only** way to release the lock. {@link write} intentionally does
+   * not release it, because you may call `write` multiple times on a single open
+   * (e.g. flush updated stats, then later flush rebuilt hashes). Use `await using`
+   * for automatic release, or call `close()` explicitly in a `finally` block.
    */
   public close(): void {
-    const h = this.#lockHandle;
-    if (h === 0n) {
+    if (this.#closed) {
       return;
     }
-    this.#lockHandle = 0n;
-    binding.cacheLockRelease(h);
+    this.#closed = true;
+    const buf = this.#dataBuf;
+    const h = buf.readInt32LE(H_FILE_HANDLE);
+    buf.writeInt32LE(-1, H_FILE_HANDLE);
+    if (h !== -1) {
+      binding.cacheLockRelease(h);
+    }
   }
 
   /** Disposable — `using cache = ...` (synchronous close). */
@@ -326,6 +330,9 @@ export class FileHashCache {
    *
    * If `options.files` is provided, builds a new file list and remaps entries
    * from the current dataBuf (preserving hashes for unchanged files).
+   *
+   * **The lock is not released after write.** You may call `write` multiple times
+   * on a single open. Call {@link close} (or rely on `await using`) to release the lock.
    *
    * @returns `true` if the write succeeded, `false` on failure.
    */
@@ -359,16 +366,15 @@ export class FileHashCache {
 
     const resultFiles = opts.files;
     const root = this.rootPath;
-    const lockHandle = this.#lockHandle;
     let result: number;
     if (resultFiles) {
       const newRoot = resolveRoot(null, resultFiles, opts.rootPath ?? root);
       const newNormalized = normalizeFilePaths(newRoot, resultFiles);
       const newEncoded = encodeNormalizedPaths(newNormalized);
-      result = await cacheWrite(dataBuf, newEncoded, newNormalized.length, this.cachePath, newRoot, ud, lockHandle);
+      result = await cacheWrite(dataBuf, newEncoded, newNormalized.length, this.cachePath, newRoot, ud);
     } else {
       const encoded = this.#encodedPaths;
-      result = await cacheWrite(dataBuf, encoded, this.fileCount, this.cachePath, root, ud, lockHandle);
+      result = await cacheWrite(dataBuf, encoded, this.fileCount, this.cachePath, root, ud);
     }
     return result === 0;
   }

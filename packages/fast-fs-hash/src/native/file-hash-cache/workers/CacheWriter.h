@@ -36,8 +36,7 @@ namespace fast_fs_hash {
       uint32_t fileCount,
       std::string cachePath,
       std::string rootPath,
-      ParsedUserData && ud,
-      CacheLockHandle lockHandle) :
+      ParsedUserData && ud) :
       AddonWorker(env, deferred),
       cachePath_(std::move(cachePath)),
       rootPath_(std::move(rootPath)),
@@ -48,8 +47,7 @@ namespace fast_fs_hash {
       encodedPaths_(encodedPaths),
       encodedLen_(encodedLen),
       fileCount_(fileCount),
-      ud_(std::move(ud)),
-      lockHandle_(lockHandle) {}
+      ud_(std::move(ud)) {}
 
     void Execute() override {
       uint8_t * buf = this->dataBuf_;
@@ -97,9 +95,6 @@ namespace fast_fs_hash {
     uint32_t fileCount_;
     ParsedUserData ud_;
 
-    // Lock handle for writing directly to the locked fd
-    CacheLockHandle lockHandle_;
-
     // Remap output (owned, freed on destruction)
     OwnedBuf<> newBuf_;
 
@@ -138,6 +133,7 @@ namespace fast_fs_hash {
       newHdr->userValue1 = prevHdr->userValue1;
       newHdr->userValue2 = prevHdr->userValue2;
       newHdr->userValue3 = prevHdr->userValue3;
+      newHdr->setFileHandle(prevHdr->getFileHandle());
       newHdr->status = static_cast<uint32_t>(CacheStatus::CHANGED);
 
       // Merge-join: copy matched entries from old, stamp CACHE_S_HAS_OLD
@@ -288,9 +284,13 @@ namespace fast_fs_hash {
         return;
       }
 
+      // Read the lock handle from the in-memory header — do NOT zero it there,
+      // so that subsequent write() calls on the same open can still use the fd.
+      const FfshFileHandle lh = hdr->getFileHandle();
+
+      // Prepare the in-memory header fields that must be clean on disk
       hdr->magic = CacheHeader::MAGIC;
       hdr->status = 0;
-      hdr->_reserved_76 = 0;
 
       const int srcSize = static_cast<int>(bodyLen);
       const int maxCompressed = LZ4_compressBound(srcSize);
@@ -300,7 +300,10 @@ namespace fast_fs_hash {
         return;
       }
 
+      // Copy header to disk buffer, then reset the in-memory-only fields in the copy
       memcpy(outBuf.ptr, hdr, CacheHeader::SIZE);
+      auto * diskHdr = headerOf(outBuf.ptr);
+      diskHdr->fileHandle = FFSH_FILE_HANDLE_INVALID;
 
       const int compressedSize = LZ4_compress_fast(
         reinterpret_cast<const char *>(body),
@@ -316,7 +319,7 @@ namespace fast_fs_hash {
       const size_t actualFileSize = CacheHeader::SIZE + static_cast<size_t>(compressedSize);
 
       // Write directly to the locked fd: seek to 0, write, truncate, fsync
-      FfshFile out = FfshFile::from_lock_handle(this->lockHandle_);
+      FfshFile out = FfshFile::from_file_handle(lh);
       if (!out) [[unlikely]] {
         return;
       }

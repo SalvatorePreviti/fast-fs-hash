@@ -27,17 +27,22 @@ describe("FileHashCache — no change", async () => {
 
   // Seed
   const seedCp = cp(cacheDir, "seed");
-  const seedCtx = await FileHashCache.open(seedCp, RAW_DATA_DIR, files);
-  await seedCtx.write();
+  {
+    await using seedCtx = await FileHashCache.open(seedCp, RAW_DATA_DIR, files);
+    await seedCtx.write();
+  }
 
   const benchCp = cp(cacheDir, "unchanged");
-  const seedCtx2 = await FileHashCache.open(benchCp, RAW_DATA_DIR, files);
-  await seedCtx2.write();
+  {
+    await using seedCtx2 = await FileHashCache.open(benchCp, RAW_DATA_DIR, files);
+    await seedCtx2.write();
+  }
 
   bench(
     "native  no change",
     async () => {
-      await FileHashCache.open(benchCp, RAW_DATA_DIR, files);
+      await using ctx = await FileHashCache.open(benchCp, RAW_DATA_DIR, files);
+      return ctx;
     },
     { warmupIterations: 1, throws: true }
   );

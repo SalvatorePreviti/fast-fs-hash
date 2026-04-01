@@ -26,20 +26,20 @@ namespace fast_fs_hash {
     std::atomic<int> pending{0};
     napi_async_cleanup_hook_handle cleanup_hook_ = nullptr;
 
-    /** Held cache locks for this env — released on cleanup. Protected by heldCacheLocksMutex. */
-    std::mutex heldCacheLocksMutex;
-    std::unordered_set<CacheLockHandle> heldCacheLocks;
+    /** Held file handles for this env — released on cleanup. Protected by heldFileHandlesMutex. */
+    std::mutex heldFileHandlesMutex;
+    std::unordered_set<FfshFileHandle> heldFileHandles;
 
-    /** Register a held cache lock for cleanup on env teardown. */
-    void registerHeldCacheLock(CacheLockHandle h) noexcept {
-      std::lock_guard<std::mutex> guard(this->heldCacheLocksMutex);
-      this->heldCacheLocks.insert(h);
+    /** Register a held file handle for cleanup on env teardown. */
+    void registerHeldFileHandle(FfshFileHandle h) noexcept {
+      std::lock_guard<std::mutex> guard(this->heldFileHandlesMutex);
+      this->heldFileHandles.insert(h);
     }
 
-    /** Unregister a held cache lock (called on explicit close). */
-    void unregisterHeldCacheLock(CacheLockHandle h) noexcept {
-      std::lock_guard<std::mutex> guard(this->heldCacheLocksMutex);
-      this->heldCacheLocks.erase(h);
+    /** Unregister a held file handle (called on explicit close). */
+    void unregisterHeldFileHandle(FfshFileHandle h) noexcept {
+      std::lock_guard<std::mutex> guard(this->heldFileHandlesMutex);
+      this->heldFileHandles.erase(h);
     }
 
     static FSH_FORCE_INLINE AddonData * get(napi_env env) noexcept {

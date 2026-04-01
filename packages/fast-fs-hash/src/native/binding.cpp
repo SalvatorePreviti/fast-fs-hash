@@ -62,7 +62,7 @@ static Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("cacheOpen", Napi::Function::New(env, fast_fs_hash::bindCacheOpen));
   exports.Set("cacheWrite", Napi::Function::New(env, fast_fs_hash::bindCacheWrite));
 
-  // Cache lock release / query (handle is a BigInt from cacheOpen)
+  // Cache lock release / query (handle is an int32 fd in dataBuf header)
   exports.Set("cacheLockRelease", Napi::Function::New(env, fast_fs_hash::bindCacheLockRelease));
   exports.Set("cacheLockIsLocked", Napi::Function::New(env, fast_fs_hash::bindCacheLockIsLocked));
 

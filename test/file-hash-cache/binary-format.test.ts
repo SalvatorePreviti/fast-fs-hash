@@ -23,6 +23,13 @@ function cachePath(label = "test"): string {
   return path.join(CACHE_DIR, `${label}-${++cacheCounter}.cache`);
 }
 
+type OpenArgs = Parameters<typeof FileHashCache.open>;
+
+async function withCache<T>(args: OpenArgs, run: (ctx: FileHashCache) => Promise<T> | T): Promise<T> {
+  await using ctx = await FileHashCache.open(...args);
+  return await run(ctx);
+}
+
 function fixtureFile(name: string): string {
   return path.join(FIXTURE_DIR, name);
 }
@@ -49,11 +56,12 @@ describe("FileHashCache binary format [native]", () => {
   describe("on-disk format", () => {
     it("writes correct magic in header", async () => {
       const cp = cachePath("fmt");
-      const ctx = await FileHashCache.open(cp, FIXTURE_DIR, [fixtureFile("a.txt")], 99);
-      await ctx.write();
+      await withCache([cp, FIXTURE_DIR, [fixtureFile("a.txt")], 99], async (ctx) => {
+        await ctx.write();
+      });
 
       const data = readFileSync(cp);
-      // On-disk: [header:96][LZ4 body]
+      // On-disk: [header:80][LZ4 body]
       expect(data.length).toBeGreaterThan(HEADER_SIZE);
       expect(data.readUInt32LE(0)).toBe(MAGIC);
       // Version at byte 4 should be 99
@@ -65,8 +73,9 @@ describe("FileHashCache binary format [native]", () => {
     it("on-disk file has header + LZ4 body", async () => {
       const cp = cachePath("compressed");
       const files = [fixtureFile("a.txt"), fixtureFile("b.txt"), fixtureFile("c.txt")];
-      const ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      await ctx.write();
+      await withCache([cp, FIXTURE_DIR, files, 1], async (ctx) => {
+        await ctx.write();
+      });
 
       const data = readFileSync(cp);
       // File must be larger than just the header (has compressed body)
@@ -87,35 +96,46 @@ describe("FileHashCache binary format [native]", () => {
   describe("in-memory format via context", () => {
     it("exposes correct file count for single file", async () => {
       const cp = cachePath("ctx1");
-      const ctx = await FileHashCache.open(cp, FIXTURE_DIR, [fixtureFile("a.txt")], 42);
-      expect(ctx.fileCount).toBe(1);
-      await ctx.write();
+      const fileCount = await withCache([cp, FIXTURE_DIR, [fixtureFile("a.txt")], 42], async (ctx) => {
+        await ctx.write();
+        return ctx.fileCount;
+      });
+      expect(fileCount).toBe(1);
     });
 
     it("exposes correct file count for multiple files", async () => {
       const cp = cachePath("ctx2");
-      const ctx = await FileHashCache.open(cp, FIXTURE_DIR, [fixtureFile("a.txt"), fixtureFile("b.txt")], 1);
-      expect(ctx.fileCount).toBe(2);
-      await ctx.write();
+      const fileCount = await withCache(
+        [cp, FIXTURE_DIR, [fixtureFile("a.txt"), fixtureFile("b.txt")], 1],
+        async (ctx) => {
+          await ctx.write();
+          return ctx.fileCount;
+        }
+      );
+      expect(fileCount).toBe(2);
     });
 
     it("user values round-trip through write and re-read", async () => {
       const cp = cachePath("ctxuv");
       const files = [fixtureFile("a.txt")];
-      const ctx1 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      await ctx1.write({
-        userValue0: 0xdead,
-        userValue1: 0xbeef,
-        userValue2: 0xcafe,
-        userValue3: 0xbabe,
+      await withCache([cp, FIXTURE_DIR, files, 1], async (ctx1) => {
+        await ctx1.write({
+          userValue0: 0xdead,
+          userValue1: 0xbeef,
+          userValue2: 0xcafe,
+          userValue3: 0xbabe,
+        });
       });
 
       // Re-open and verify user values survived the round-trip
-      const ctx2 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      expect(ctx2.userValue0).toBe(0xdead);
-      expect(ctx2.userValue1).toBe(0xbeef);
-      expect(ctx2.userValue2).toBe(0xcafe);
-      expect(ctx2.userValue3).toBe(0xbabe);
+      const userValues = await withCache(
+        [cp, FIXTURE_DIR, files, 1],
+        (ctx2) => [ctx2.userValue0, ctx2.userValue1, ctx2.userValue2, ctx2.userValue3] as const
+      );
+      expect(userValues[0]).toBe(0xdead);
+      expect(userValues[1]).toBe(0xbeef);
+      expect(userValues[2]).toBe(0xcafe);
+      expect(userValues[3]).toBe(0xbabe);
     });
   });
 
@@ -127,16 +147,17 @@ describe("FileHashCache binary format [native]", () => {
       const files = [fixtureFile("a.txt")];
 
       // Create initial cache
-      const ctx1 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      await ctx1.write();
+      await withCache([cp, FIXTURE_DIR, files, 1], async (ctx1) => {
+        await ctx1.write();
+      });
 
       // First re-validate
-      const ctx2 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      expect(ctx2.status).toBe("upToDate");
+      const status1 = await withCache([cp, FIXTURE_DIR, files, 1], (ctx2) => ctx2.status);
+      expect(status1).toBe("upToDate");
 
       // Second re-validate
-      const ctx3 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      expect(ctx3.status).toBe("upToDate");
+      const status2 = await withCache([cp, FIXTURE_DIR, files, 1], (ctx3) => ctx3.status);
+      expect(status2).toBe("upToDate");
     });
   });
 
@@ -152,11 +173,12 @@ describe("FileHashCache binary format [native]", () => {
       const cp = cachePath("fp-zero");
       const files = [fixtureFile("a.txt")];
 
-      const ctx1 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      await ctx1.write();
+      await withCache([cp, FIXTURE_DIR, files, 1], async (ctx1) => {
+        await ctx1.write();
+      });
 
-      const ctx2 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      expect(ctx2.status).toBe("upToDate");
+      const status = await withCache([cp, FIXTURE_DIR, files, 1], (ctx2) => ctx2.status);
+      expect(status).toBe("upToDate");
     });
   });
 });

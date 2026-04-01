@@ -7,7 +7,7 @@
  * ### On-disk file format
  *
  * ```
- * [header:96 bytes, uncompressed][LZ4 compressed body]
+ * [header:80 bytes, uncompressed][LZ4 compressed body]
  * ```
  *
  * The header is always uncompressed — magic, version, fingerprint, and file count
@@ -16,7 +16,7 @@
  * [entries:n×48][udDir:m×4][pathEnds:n×4][paths:pathsLen][udPayloads]
  * ```
  *
- * In-memory dataBuf layout is identical: [header:96][body].
+ * In-memory dataBuf layout is identical: [header:80][body].
  * No trailing data — rootPath/cachePath are passed separately via string members.
  * Per-file state is encoded in the high 2 bits of CacheEntry::ino.
  *
@@ -36,7 +36,7 @@
  *    64      4    Paths section byte length (u32)
  *    68      4    User data total byte length (u32)
  *    72      4    status (in-memory only, 0 on disk)
- *    76      4    reserved (0)
+ *    76      4    fileHandle (int32, in-memory only, -1 on disk)
  */
 
 #include "cache-constants.h"
@@ -84,7 +84,7 @@ namespace fast_fs_hash {
   static_assert(offsetof(CacheEntry, size) == 24);
   static_assert(offsetof(CacheEntry, contentHash) == 32);
 
-  // ── On-disk header (96 bytes, all fields little-endian) ───────────────
+  // ── On-disk header (80 bytes, all fields little-endian) ───────────────
 
   struct CacheHeader {
     uint32_t magic;              //  0: 'F','S','H',0x00 = 0x00485346
@@ -99,7 +99,17 @@ namespace fast_fs_hash {
     uint32_t pathsLen;           // 64: byte length of packed paths section
     uint32_t udPayloadsLen;      // 68: total byte length of user data payloads
     uint32_t status;             // 72: CacheStatus (in-memory only, 0 on disk)
-    uint32_t _reserved_76;       // 76: reserved (must be 0 on disk)
+    int32_t fileHandle;          // 76: FfshFileHandle (in-memory only, -1 on disk)
+
+    /** Store a file handle (int32_t fd, -1 = invalid). */
+    FSH_FORCE_INLINE void setFileHandle(int32_t h) noexcept {
+      this->fileHandle = h;
+    }
+
+    /** Recover the file handle (int32_t fd, -1 = invalid). */
+    FSH_FORCE_INLINE int32_t getFileHandle() const noexcept {
+      return this->fileHandle;
+    }
 
     static constexpr size_t SIZE = 80;
     static constexpr uint32_t MAGIC = 0x00485346u;
@@ -144,6 +154,7 @@ namespace fast_fs_hash {
   static_assert(offsetof(CacheHeader, pathsLen) == 64);
   static_assert(offsetof(CacheHeader, udPayloadsLen) == 68);
   static_assert(offsetof(CacheHeader, status) == 72);
+  static_assert(offsetof(CacheHeader, fileHandle) == 76);
 
   // ── CacheStatus values ────────────────────────────────────────────────
 

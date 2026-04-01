@@ -23,6 +23,13 @@ function cachePath(label = "test"): string {
   return path.join(CACHE_DIR, `${label}-${++cacheCounter}.cache`);
 }
 
+type OpenArgs = Parameters<typeof FileHashCache.open>;
+
+async function withCache<T>(args: OpenArgs, run: (ctx: FileHashCache) => Promise<T> | T): Promise<T> {
+  await using ctx = await FileHashCache.open(...args);
+  return await run(ctx);
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────
 
 beforeAll(() => {
@@ -47,12 +54,13 @@ describe("FileHashCache auto root path [native]", () => {
     const fileB = path.join(FIX_A, "b.txt");
     const files = [fileA, fileB];
 
-    const ctx1 = await FileHashCache.open(cp, TEST_DIR, [], 1);
-    await ctx1.write({ files, rootPath: true });
+    await withCache([cp, TEST_DIR, [], 1], async (ctx1) => {
+      await ctx1.write({ files, rootPath: true });
+    });
 
     // Verify: re-open with the same files (root auto-detected as FIX_A)
-    const ctx2 = await FileHashCache.open(cp, FIX_A, files, 1);
-    expect(ctx2.status).toBe("upToDate");
+    const status = await withCache([cp, FIX_A, files, 1], (ctx2) => ctx2.status);
+    expect(status).toBe("upToDate");
   });
 
   it("rootPath: true with files spanning two directories uses common parent", async () => {
@@ -61,12 +69,13 @@ describe("FileHashCache auto root path [native]", () => {
     const fileC = path.join(FIX_B, "c.txt");
     const files = [fileA, fileC];
 
-    const ctx1 = await FileHashCache.open(cp, TEST_DIR, [], 1);
-    await ctx1.write({ files, rootPath: true });
+    await withCache([cp, TEST_DIR, [], 1], async (ctx1) => {
+      await ctx1.write({ files, rootPath: true });
+    });
 
     // Root should be TEST_DIR (common parent of project-a and project-b)
-    const ctx2 = await FileHashCache.open(cp, TEST_DIR, files, 1);
-    expect(ctx2.status).toBe("upToDate");
+    const status = await withCache([cp, TEST_DIR, files, 1], (ctx2) => ctx2.status);
+    expect(status).toBe("upToDate");
   });
 
   it("full cycle: open + write then validate", async () => {
@@ -75,11 +84,12 @@ describe("FileHashCache auto root path [native]", () => {
     const fileB = path.join(FIX_A, "b.txt");
     const files = [fileA, fileB];
 
-    const ctx1 = await FileHashCache.open(cp, FIX_A, files, 1);
-    await ctx1.write();
+    await withCache([cp, FIX_A, files, 1], async (ctx1) => {
+      await ctx1.write();
+    });
 
-    const ctx2 = await FileHashCache.open(cp, FIX_A, files, 1);
-    expect(ctx2.status).toBe("upToDate");
+    const status = await withCache([cp, FIX_A, files, 1], (ctx2) => ctx2.status);
+    expect(status).toBe("upToDate");
   });
 
   it("rootPath: true in write overrides auto-detected root from open", async () => {
@@ -88,22 +98,24 @@ describe("FileHashCache auto root path [native]", () => {
     const fileB = path.join(FIX_A, "b.txt");
     const files = [fileA, fileB];
 
-    const ctx1 = await FileHashCache.open(cp, TEST_DIR, [], 1);
-    await ctx1.write({ files, rootPath: true });
+    await withCache([cp, TEST_DIR, [], 1], async (ctx1) => {
+      await ctx1.write({ files, rootPath: true });
+    });
 
     // Should have used auto-computed root (FIX_A)
-    const ctx2 = await FileHashCache.open(cp, FIX_A, files, 1);
-    expect(ctx2.status).toBe("upToDate");
+    const status = await withCache([cp, FIX_A, files, 1], (ctx2) => ctx2.status);
+    expect(status).toBe("upToDate");
   });
 
   it("rootPath: explicit string in write sets root", async () => {
     const cp = cachePath("auto-explicit");
     const files = [path.join(FIX_A, "a.txt")];
 
-    const ctx1 = await FileHashCache.open(cp, TEST_DIR, [], 1);
-    await ctx1.write({ files, rootPath: FIX_A });
+    await withCache([cp, TEST_DIR, [], 1], async (ctx1) => {
+      await ctx1.write({ files, rootPath: FIX_A });
+    });
 
-    const ctx2 = await FileHashCache.open(cp, FIX_A, files, 1);
-    expect(ctx2.status).toBe("upToDate");
+    const status = await withCache([cp, FIX_A, files, 1], (ctx2) => ctx2.status);
+    expect(status).toBe("upToDate");
   });
 });

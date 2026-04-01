@@ -11,9 +11,9 @@
 
 namespace fast_fs_hash {
 
-  /** Opaque lock token — fd + 1 (POSIX) packed into a uint64_t. 0 = invalid. */
-  using CacheLockHandle = uint64_t;
-  static constexpr CacheLockHandle CACHE_LOCK_INVALID = 0;
+  /** Opaque file handle token — the fd itself. -1 = invalid. */
+  using FfshFileHandle = int32_t;
+  static constexpr FfshFileHandle FFSH_FILE_HANDLE_INVALID = -1;
 
   /**
    * RAII file handle — POSIX implementation.
@@ -175,31 +175,28 @@ namespace fast_fs_hash {
       return f;
     }
 
-    /** Convert this FfshFile to a CacheLockHandle (fd + 1). Releases ownership. */
-    FSH_FORCE_INLINE CacheLockHandle to_lock_handle() noexcept {
-      if (this->fd < 0) [[unlikely]] {
-        return CACHE_LOCK_INVALID;
-      }
-      const CacheLockHandle h = static_cast<CacheLockHandle>(this->fd) + 1;
+    /** Convert this FfshFile to a FfshFileHandle (the fd itself). Releases ownership. */
+    FSH_FORCE_INLINE FfshFileHandle to_file_handle() noexcept {
+      const FfshFileHandle h = static_cast<FfshFileHandle>(this->fd);
       this->fd = -1;
       return h;
     }
 
-    /** Create an FfshFile from a CacheLockHandle. Takes ownership. */
-    static FSH_FORCE_INLINE FfshFile from_lock_handle(CacheLockHandle handle) noexcept {
+    /** Create an FfshFile from a FfshFileHandle. Takes ownership. */
+    static FSH_FORCE_INLINE FfshFile from_file_handle(FfshFileHandle handle) noexcept {
       FfshFile f;
-      if (handle != CACHE_LOCK_INVALID) [[likely]] {
-        f.fd = static_cast<int>(handle - 1);
+      if (handle != FFSH_FILE_HANDLE_INVALID) [[likely]] {
+        f.fd = static_cast<int>(handle);
       }
       return f;
     }
 
-    /** Release a CacheLockHandle (unlock + close). */
-    static inline void release_lock_handle(CacheLockHandle handle) noexcept {
-      if (handle == CACHE_LOCK_INVALID) [[unlikely]] {
+    /** Release a FfshFileHandle (unlock + close). */
+    static inline void release_file_handle(FfshFileHandle handle) noexcept {
+      if (handle == FFSH_FILE_HANDLE_INVALID) [[unlikely]] {
         return;
       }
-      const int fd = static_cast<int>(handle - 1);
+      const int fd = static_cast<int>(handle);
       struct flock fl{};
       fl.l_type   = F_UNLCK;
       fl.l_whence = SEEK_SET;
