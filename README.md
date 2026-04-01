@@ -159,30 +159,29 @@ if (ctx.status === "upToDate") {
 
 ### Example: Dynamic file list + user data
 
+When the full file list is only known after a build step, open with `null` files
+(reuses the list from the previous cache), then pass the actual files to `write()`:
+
 ```ts
 import { FileHashCache } from "fast-fs-hash";
 
-await using ctx = await FileHashCache.open(
-  ".cache/tsc.fsh",
-  ".",
-  entryPoints,
-  2,
-);
+export async function getBuildOutput() {
+  await using ctx = await FileHashCache.open(".cache/tsc.fsh", ".", null, 2);
 
-if (ctx.status === "upToDate" && ctx.userData.length > 0) {
-  return JSON.parse(ctx.userData[0].toString());
+  if (ctx.status === "upToDate" && ctx.userData.length > 0) {
+    return JSON.parse(ctx.userData[0].toString());
+  }
+
+  const result = runBuild();
+  const outputFiles = result.getSourceFiles().map((f) => f.fileName);
+
+  await ctx.write({
+    files: outputFiles,
+    userData: [Buffer.from(JSON.stringify(result.output))],
+  });
+
+  return result.output;
 }
-
-const result = compile(entryPoints);
-const actualFiles = result.getSourceFiles().map((f) => f.fileName);
-
-await ctx.write({
-  files: actualFiles,
-  userData: [Buffer.from(JSON.stringify(result.output))],
-});
-
-return result.output;
-// write() released the lock; `await using` close() is a no-op
 ```
 
 ---
