@@ -162,7 +162,7 @@ describe.each(ALL_BACKENDS)("%s backend", (_name, backend) => {
 
     for (let i = 0; i < paths.length; i++) {
       const result = results[i];
-      if (!result || !result.equals(expectedHashes[i])) {
+      if (!result?.equals(expectedHashes[i])) {
         return false;
       }
     }
