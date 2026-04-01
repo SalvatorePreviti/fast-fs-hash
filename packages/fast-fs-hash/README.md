@@ -23,7 +23,7 @@ _Note: Unfortunately this package will not help you naming things — if you don
 
 <!-- BENCH_ENV:START -->
 
-> Node.js v22.22.0, Vitest 4.x — Apple M3 Max, macOS 24.6.0 (arm64)
+> Node.js v24.14.1, Vitest 4.x — Apple M4 Max, macOS 25.4.0 (arm64)
 >
 > _Results vary by hardware, file sizes, and OS cache state._
 
@@ -78,28 +78,59 @@ changed stat are re-hashed. This makes cache validation **O(n × stat)** instead
 
 | Scenario           | Mean                | Hz         | Files/s           | Throughput |
 | ------------------ | ------------------- | ---------- | ----------------- | ---------- |
-| no change          | 0.5 ms (502.0 µs)   | 1 992 op/s | 1 404 297 files/s | —          |
-| 1 file changed     | 1.1 ms (1 079.0 µs) | 927 op/s   | 653 404 files/s   | —          |
-| many files changed | 1.7 ms (1 738.5 µs) | 575 op/s   | 405 521 files/s   | 14.2 GB/s  |
-| no existing cache  | 4.0 ms (4 008.8 µs) | 249 op/s   | 175 862 files/s   | 6.2 GB/s   |
+| no change          | 0.6 ms (644.3 µs)   | 1 552 op/s | 1 094 293 files/s | —          |
+| 1 file changed     | 1.0 ms (1 001.2 µs) | 999 op/s   | 704 156 files/s   | —          |
+| many files changed | 2.7 ms (2 656.5 µs) | 376 op/s   | 265 383 files/s   | 9.3 GB/s   |
+| no existing cache  | 8.1 ms (8 068.0 µs) | 124 op/s   | 87 382 files/s    | 3.1 GB/s   |
 
 <!-- FHC_BENCHMARKS:END -->
 
 ### FileHashCache API
 
+Every `open()` acquires an exclusive OS-level lock on the cache file. The lock is held
+until `close()` is called (or the `using`/`await using` block exits).
+
 ```ts
-const ctx = await FileHashCache.open(cachePath, rootPath?, files?, version?, fingerprint?);
+await using ctx = await FileHashCache.open(cachePath, rootPath?, files?, version?, fingerprint?, timeoutMs?);
 // ctx.status: 'upToDate' | 'changed' | 'stale' | 'missing' | 'statsDirty'
 
 await ctx.write(options?);
 // options: { files?, rootPath?, userValue0..3?, fingerprint?, userData? }
+// lock released here
 ```
 
-- **`open()`** reads the cache file, validates version/fingerprint, and stat-matches entries.
-- **`write()`** hashes any unresolved entries, LZ4-compresses, and atomically writes to disk.
+- **`open()`** locks the cache file, reads from disk, validates version/fingerprint, and stat-matches entries.
+- **`write()`** hashes any unresolved entries, LZ4-compresses, and writes directly to the locked fd.
+- **`close()`** releases the lock. Also called automatically by `using` / `await using`.
 
 The file list can change between runs — `write({ files: newFiles })` remaps matched entries
 from the old cache, preserving hashes for unchanged files.
+
+**Lock properties:**
+
+- **Cross-process**: prevents concurrent writers from any process
+- **Crash-safe**: automatically released when the process dies (OS-level `fcntl`/`LockFileEx`)
+- **Worker-thread-safe**: automatically released when a worker thread is terminated
+- **Zero overhead on the happy path**: lock + open + stat-match in a single native async call
+
+**Platform implementations:**
+
+- **POSIX (Linux, macOS, FreeBSD)**: `fcntl F_SETLK` / `F_SETLKW` byte-range lock on the cache file
+- **Windows**: `LockFileEx` exclusive lock on the cache file
+
+**Timeout control** (`timeoutMs` parameter):
+
+- `-1` (default): block until the lock is available
+- `0`: fail immediately if locked
+- `>0`: wait up to N milliseconds
+
+```ts
+// Non-blocking try
+const cache = await FileHashCache.open(path, root, files, 1, null, 0);
+
+// Check if locked without acquiring
+FileHashCache.isLocked(path); // → boolean
+```
 
 ### Example: Simple build cache
 
@@ -108,7 +139,7 @@ import { FileHashCache } from "fast-fs-hash";
 import { globSync } from "node:fs";
 
 const files = globSync("src/**/*.ts");
-const ctx = await FileHashCache.open(".cache/build.fsh", ".", files, 1);
+await using ctx = await FileHashCache.open(".cache/build.fsh", ".", files, 1);
 
 if (ctx.status === "upToDate") {
   console.log("Build cache is fresh — skipping.");
@@ -117,6 +148,7 @@ if (ctx.status === "upToDate") {
   await runBuild();
   await ctx.write();
 }
+// lock released here
 ```
 
 ### Example: Dynamic file list + user data
@@ -124,7 +156,12 @@ if (ctx.status === "upToDate") {
 ```ts
 import { FileHashCache } from "fast-fs-hash";
 
-const ctx = await FileHashCache.open(".cache/tsc.fsh", ".", entryPoints, 2);
+await using ctx = await FileHashCache.open(
+  ".cache/tsc.fsh",
+  ".",
+  entryPoints,
+  2,
+);
 
 if (ctx.status === "upToDate" && ctx.userData.length > 0) {
   return JSON.parse(ctx.userData[0].toString());
@@ -139,6 +176,7 @@ await ctx.write({
 });
 
 return result.output;
+// lock released here
 ```
 
 ---
@@ -157,22 +195,22 @@ hood, but they are fully usable on their own.
 
 | Scenario             | Mean              | Hz          | Throughput | Relative        |
 | -------------------- | ----------------- | ----------- | ---------- | --------------- |
-| native               | 0.03 ms (34.8 µs) | 28 743 op/s | 5.7 GB/s   | **8.8× faster** |
-| Node.js crypto (md5) | 0.3 ms (307.7 µs) | 3 250 op/s  | 641 MB/s   | baseline        |
+| native               | 0.04 ms (41.7 µs) | 23 960 op/s | 4.7 GB/s   | **6.5× faster** |
+| Node.js crypto (md5) | 0.3 ms (270.5 µs) | 3 696 op/s  | 729 MB/s   | baseline        |
 
 **medium file (~49.9 KB):**
 
 | Scenario             | Mean              | Hz          | Throughput | Relative        |
 | -------------------- | ----------------- | ----------- | ---------- | --------------- |
-| native               | 0.02 ms (17.0 µs) | 58 843 op/s | 2.9 GB/s   | **7.2× faster** |
-| Node.js crypto (md5) | 0.1 ms (122.6 µs) | 8 159 op/s  | 407 MB/s   | baseline        |
+| native               | 0.03 ms (28.5 µs) | 35 125 op/s | 1.8 GB/s   | **3.8× faster** |
+| Node.js crypto (md5) | 0.1 ms (109.1 µs) | 9 164 op/s  | 457 MB/s   | baseline        |
 
 **small file (~1.0 KB):**
 
 | Scenario             | Mean              | Hz          | Relative        |
 | -------------------- | ----------------- | ----------- | --------------- |
-| native               | 0.01 ms (14.9 µs) | 67 114 op/s | **3.1× faster** |
-| Node.js crypto (md5) | 0.05 ms (46.4 µs) | 21 556 op/s | baseline        |
+| native               | 0.02 ms (24.5 µs) | 40 851 op/s | **2.4× faster** |
+| Node.js crypto (md5) | 0.06 ms (59.1 µs) | 16 914 op/s | baseline        |
 
 <!-- HASHFILE_BENCHMARKS:END -->
 
@@ -180,10 +218,10 @@ hood, but they are fully usable on their own.
 
 <!-- BENCHMARKS:START -->
 
-| Scenario             | Mean                  | Hz       | Throughput | Relative         |
-| -------------------- | --------------------- | -------- | ---------- | ---------------- |
-| native               | 3.0 ms (2 963.6 µs)   | 337 op/s | 8.3 GB/s   | **14.3× faster** |
-| Node.js crypto (md5) | 42.4 ms (42 370.5 µs) | 24 op/s  | 583 MB/s   | baseline         |
+| Scenario             | Mean                  | Hz       | Throughput | Relative        |
+| -------------------- | --------------------- | -------- | ---------- | --------------- |
+| native               | 7.4 ms (7 361.8 µs)   | 136 op/s | 3.4 GB/s   | **4.9× faster** |
+| Node.js crypto (md5) | 35.9 ms (35 893.9 µs) | 28 op/s  | 688 MB/s   | baseline        |
 
 <!-- BENCHMARKS:END -->
 
@@ -195,15 +233,15 @@ hood, but they are fully usable on their own.
 
 | Scenario           | Mean              | Hz           | Throughput | Relative         |
 | ------------------ | ----------------- | ------------ | ---------- | ---------------- |
-| native XXH3-128    | 0.002 ms (1.6 µs) | 634 512 op/s | 41.6 GB/s  | **52.0× faster** |
-| Node.js crypto md5 | 0.08 ms (82.0 µs) | 12 194 op/s  | 799 MB/s   | baseline         |
+| native XXH3-128    | 0.001 ms (1.4 µs) | 721 364 op/s | 47.3 GB/s  | **48.0× faster** |
+| Node.js crypto md5 | 0.07 ms (66.5 µs) | 15 040 op/s  | 986 MB/s   | baseline         |
 
 **1 MB buffer:**
 
 | Scenario           | Mean                | Hz          | Throughput | Relative         |
 | ------------------ | ------------------- | ----------- | ---------- | ---------------- |
-| native XXH3-128    | 0.02 ms (24.4 µs)   | 40 903 op/s | 42.9 GB/s  | **52.5× faster** |
-| Node.js crypto md5 | 1.3 ms (1 284.1 µs) | 779 op/s    | 817 MB/s   | baseline         |
+| native XXH3-128    | 0.02 ms (21.7 µs)   | 46 022 op/s | 48.3 GB/s  | **48.7× faster** |
+| Node.js crypto md5 | 1.1 ms (1 057.1 µs) | 946 op/s    | 992 MB/s   | baseline         |
 
 <!-- HASH_BUFFER_BENCHMARKS:END -->
 
@@ -277,29 +315,29 @@ compressed data and pass it to the decompression function.
 
 | Scenario                | Ratio | Mean              | Hz           | Throughput | Relative        |
 | ----------------------- | ----- | ----------------- | ------------ | ---------- | --------------- |
-| native LZ4              | 0.7%  | 0.004 ms (4.3 µs) | 233 609 op/s | 15.3 GB/s  | **8.0× faster** |
-| Node.js deflate level=1 | 1.0%  | 0.03 ms (34.2 µs) | 29 227 op/s  | 1.9 GB/s   | baseline        |
+| native LZ4              | 0.7%  | 0.003 ms (3.4 µs) | 298 045 op/s | 19.5 GB/s  | **7.3× faster** |
+| Node.js deflate level=1 | 1.0%  | 0.02 ms (24.4 µs) | 41 037 op/s  | 2.7 GB/s   | baseline        |
 
 **decompress 64 KB:**
 
 | Scenario        | Mean              | Hz           | Throughput | Relative        |
 | --------------- | ----------------- | ------------ | ---------- | --------------- |
-| native LZ4      | 0.003 ms (2.9 µs) | 340 142 op/s | 22.3 GB/s  | **3.8× faster** |
-| Node.js deflate | 0.01 ms (11.1 µs) | 89 820 op/s  | 5.9 GB/s   | baseline        |
+| native LZ4      | 0.003 ms (2.6 µs) | 384 184 op/s | 25.2 GB/s  | **3.9× faster** |
+| Node.js deflate | 0.01 ms (10.1 µs) | 98 728 op/s  | 6.5 GB/s   | baseline        |
 
 **compress 1 MB:**
 
-| Scenario                | Ratio | Mean              | Hz          | Throughput | Relative         |
-| ----------------------- | ----- | ----------------- | ----------- | ---------- | ---------------- |
-| native LZ4              | 0.4%  | 0.04 ms (35.9 µs) | 27 849 op/s | 29.2 GB/s  | **12.2× faster** |
-| Node.js deflate level=1 | 0.7%  | 0.4 ms (437.5 µs) | 2 286 op/s  | 2.4 GB/s   | baseline         |
+| Scenario                | Ratio | Mean              | Hz          | Throughput | Relative        |
+| ----------------------- | ----- | ----------------- | ----------- | ---------- | --------------- |
+| native LZ4              | 0.4%  | 0.03 ms (33.8 µs) | 29 553 op/s | 31.0 GB/s  | **9.8× faster** |
+| Node.js deflate level=1 | 0.7%  | 0.3 ms (332.8 µs) | 3 005 op/s  | 3.2 GB/s   | baseline        |
 
 **decompress 1 MB:**
 
 | Scenario        | Mean              | Hz          | Throughput | Relative        |
 | --------------- | ----------------- | ----------- | ---------- | --------------- |
-| native LZ4      | 0.07 ms (74.2 µs) | 13 478 op/s | 14.1 GB/s  | **1.8× faster** |
-| Node.js deflate | 0.1 ms (134.0 µs) | 7 463 op/s  | 7.8 GB/s   | baseline        |
+| native LZ4      | 0.03 ms (30.3 µs) | 33 057 op/s | 34.7 GB/s  | **3.1× faster** |
+| Node.js deflate | 0.09 ms (93.5 µs) | 10 694 op/s | 11.2 GB/s  | baseline        |
 
 <!-- LZ4_BENCHMARKS:END -->
 
@@ -329,104 +367,6 @@ console.log(decompressed.toString()); // "Hello, LZ4!"
 | `lz4CompressBound(inputSize)`                                                                      | Max compressed size for pre-allocation                    |
 
 > **Note:** LZ4 block compression supports inputs up to ~1.9 GiB (`LZ4_MAX_INPUT_SIZE = 0x7E000000`).
-
----
-
-## Locking — KeyedLock & ProcessLock
-
-<!-- LOCK_BENCHMARKS:START -->
-
-| Scenario    | Mean               | Hz             | Relative          |
-| ----------- | ------------------ | -------------- | ----------------- |
-| KeyedLock   | 0.0002 ms (0.2 µs) | 5 394 950 op/s | **102.3× faster** |
-| ProcessLock | 0.02 ms (19.0 µs)  | 52 718 op/s    | baseline          |
-
-<!-- LOCK_BENCHMARKS:END -->
-
-Both `KeyedLock` and `ProcessLock` implement the same `IKeyedLock` interface.
-
-|                  | `KeyedLock`                | `ProcessLock`                                             |
-| ---------------- | -------------------------- | --------------------------------------------------------- |
-| **Scope**        | Single process (in-memory) | Cross-process (OS-level)                                  |
-| **Key type**     | Any value (`unknown`)      | `string` (hashed to OS identifier)                        |
-| **Mechanism**    | Promise chaining           | Platform-specific (see below)                             |
-| **Crash safety** | N/A (in-process)           | Automatic — stale locks from dead processes are recovered |
-| **Overhead**     | Zero (no syscalls)         | ~20µs per acquire                                         |
-
-**ProcessLock platform backends:**
-
-- **Linux**: POSIX shared memory + robust `pthread_mutex` (`PTHREAD_MUTEX_ROBUST` — kernel handles crash recovery)
-- **macOS**: POSIX shared memory + `pthread_mutex` (PID-based crash recovery)
-- **FreeBSD**: `flock()` on lock file in temp directory (crash-safe — OS releases on exit)
-- **Windows**: `LockFileEx()` on lock file in `%TEMP%` (crash-safe — OS releases on exit)
-
-On FreeBSD/Windows, set `ProcessLock.lockDir` or the `FAST_FS_HASH_LOCK_DIR` env var to override the lock file directory.
-
-### KeyedLock — In-process locking
-
-```ts
-import { KeyedLock } from "fast-fs-hash";
-
-await using lock = await KeyedLock.acquire("my-key");
-// ... exclusive access within this process ...
-```
-
-### ProcessLock — Cross-process locking
-
-`ProcessLock` includes built-in in-process serialization (same promise chaining as `KeyedLock`)
-so concurrent acquires from the same process are serialized without redundant OS-level lock attempts.
-
-```ts
-import { ProcessLock } from "fast-fs-hash";
-
-await using lock = await ProcessLock.acquire("my-cache");
-// ... exclusive access across all processes ...
-```
-
-### Example: Protecting FileHashCache with ProcessLock
-
-```ts
-import { FileHashCache, ProcessLock } from "fast-fs-hash";
-
-const cachePath = ".cache/build.fsh";
-const files = globSync("src/**/*.ts");
-
-await using lock = await ProcessLock.acquire(cachePath);
-
-const ctx = await FileHashCache.open(cachePath, ".", files, 1);
-if (ctx.status !== "upToDate") {
-  await runBuild();
-  await ctx.write();
-}
-```
-
-### Lock API
-
-Both classes support the instance API for reuse:
-
-```ts
-const lock = new KeyedLock("my-key"); // or new ProcessLock("my-key")
-await lock.acquire();
-try { ... } finally { lock.release(); }
-// can call lock.acquire() again after release
-```
-
-| Member               | KeyedLock                      | ProcessLock                          | Description                                     |
-| -------------------- | ------------------------------ | ------------------------------------ | ----------------------------------------------- |
-| `new Lock(key)`      | `new KeyedLock(key, map?)`     | `new ProcessLock(key)`               | Create unacquired lock                          |
-| `Lock.acquire(key)`  | `KeyedLock.acquire(key, map?)` | `ProcessLock.acquire(key, options?)` | Static shorthand → `Promise<Lock>`              |
-| `lock.acquire()`     | ✓                              | `lock.acquire(options?)`             | Acquire, waiting for previous holder            |
-| `lock.release()`     | ✓                              | ✓                                    | Release → `true` if held                        |
-| `lock.ownsLock`      | ✓                              | ✓                                    | This instance owns the lock                     |
-| `lock.locked`        | In-process only                | Cross-process check                  | Key is locked by anyone                         |
-| `lock.key`           | ✓                              | ✓                                    | The lock key                                    |
-| `lock.promise`       | ✓                              | ✓                                    | Resolves when released. `undefined` if not held |
-| `Lock.count`         | ✓                              | ✓                                    | Number of keys held                             |
-| `Lock.isLocked(key)` | In-process only                | Cross-process check                  | Whether a key is locked                         |
-
-| `ProcessLock.lockDir` | —                              | Get/set lock file directory          | FreeBSD/Windows only (default: `os.tmpdir()`)   |
-
-ProcessLock options: `{ timeout?: number }` — `-1` = wait forever (default), `0` = try once, `>0` = wait up to N ms
 
 ---
 

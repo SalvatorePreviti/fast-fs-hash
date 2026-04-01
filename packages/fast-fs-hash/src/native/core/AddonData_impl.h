@@ -6,16 +6,20 @@
 #define _FAST_FS_HASH_ADDON_DATA_IMPL_H
 
 #include "AddonWorker.h"
-#include "../io/ProcessLock.h"
 
 namespace fast_fs_hash {
 
   inline void AddonData::init(napi_env env) {
     auto * d = new (std::nothrow) AddonData();
-    if (!d) [[unlikely]] { return; }
+    if (!d) [[unlikely]] {
+      return;
+    }
 
     auto * handle = new (std::nothrow) uv_async_t();
-    if (!handle) [[unlikely]] { delete d; return; }
+    if (!handle) [[unlikely]] {
+      delete d;
+      return;
+    }
 
     uv_loop_t * loop;
     napi_get_uv_event_loop(env, &loop);
@@ -59,13 +63,13 @@ namespace fast_fs_hash {
       head = next;
     }
 
-    // Release any process locks still held by this env (e.g., worker thread terminated)
+    // Release any cache locks still held by this env (e.g., worker thread terminated)
     {
-      std::lock_guard<std::mutex> guard(d->heldLocksMutex);
-      for (auto * h : d->heldLocks) {
-        processLockRelease(h);
+      std::lock_guard<std::mutex> guard(d->heldCacheLocksMutex);
+      for (CacheLockHandle h : d->heldCacheLocks) {
+        FfshFile::release_lock_handle(h);
       }
-      d->heldLocks.clear();
+      d->heldCacheLocks.clear();
     }
 
     d->cleanup_hook_ = hook;

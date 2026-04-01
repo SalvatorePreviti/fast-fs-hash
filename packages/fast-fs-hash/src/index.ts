@@ -21,10 +21,7 @@ import { XxHash128Stream } from "./XxHash128Stream";
 
 export type { CacheStatus, FileHashCacheWriteOptions } from "./FileHashCache";
 export { FileHashCache } from "./FileHashCache";
-export { KeyedLock } from "./KeyedLock";
-export type { ProcessLockOptions } from "./ProcessLock";
-export { ProcessLock } from "./ProcessLock";
-export type { FileHashCacheOptions, IKeyedLock, IXxHash128Functions } from "./public-types";
+export type { FileHashCacheOptions, IXxHash128Functions } from "./public-types";
 export { XxHash128Stream };
 
 /**

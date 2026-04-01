@@ -1,7 +1,6 @@
 #include "digest-functions.h"
 #include "stream-functions.h"
 #include "lz4-functions.h"
-#include "process-lock-functions.h"
 #include "InstanceHashWorker_impl.h"
 #include "file-cache-binding.h"
 #include "AddonData_impl.h"
@@ -59,9 +58,13 @@ static Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("streamAddFilesSequential", Napi::Function::New(env, stream_functions::streamAddFilesSequential));
   exports.Set("streamClone", Napi::Function::New(env, stream_functions::streamClone));
 
-  // Cache functions
+  // Cache functions (always-locking: open acquires lock, write uses locked fd)
   exports.Set("cacheOpen", Napi::Function::New(env, fast_fs_hash::bindCacheOpen));
   exports.Set("cacheWrite", Napi::Function::New(env, fast_fs_hash::bindCacheWrite));
+
+  // Cache lock release / query (handle is a BigInt from cacheOpen)
+  exports.Set("cacheLockRelease", Napi::Function::New(env, fast_fs_hash::bindCacheLockRelease));
+  exports.Set("cacheLockIsLocked", Napi::Function::New(env, fast_fs_hash::bindCacheLockIsLocked));
 
   // LZ4 block compression
   exports.Set("lz4CompressBlock", Napi::Function::New(env, lz4_functions::lz4CompressBlock));
@@ -71,12 +74,6 @@ static Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("lz4DecompressBlockTo", Napi::Function::New(env, lz4_functions::lz4DecompressBlockTo));
   exports.Set("lz4DecompressBlockAsync", Napi::Function::New(env, lz4_functions::lz4DecompressBlockAsync));
   exports.Set("lz4CompressBound", Napi::Function::New(env, lz4_functions::lz4CompressBound));
-
-  // Process lock
-  exports.Set("processLockAsync", Napi::Function::New(env, process_lock_functions::processLockAsync));
-  exports.Set("processLockRelease", Napi::Function::New(env, process_lock_functions::processLockRelease));
-  exports.Set("processLockIsLocked", Napi::Function::New(env, process_lock_functions::processLockIsLockedFn));
-  exports.Set("processLockHashName", Napi::Function::New(env, process_lock_functions::processLockHashNameFn));
 
   return exports;
 }

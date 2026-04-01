@@ -60,16 +60,20 @@ export interface BindingExportNative {
     cachePath: string,
     rootPath: string,
     version: number,
-    fingerprint: Uint8Array | null
-  ): Promise<Buffer>;
+    fingerprint: Uint8Array | null,
+    timeoutMs: number
+  ): Promise<[bigint, Buffer]>;
   cacheWrite(
     dataBuf: Uint8Array,
     encodedPaths: Uint8Array | null,
     fileCount: number,
     cachePath: string,
     rootPath: string,
-    userData: readonly Uint8Array[] | null | undefined
+    userData: readonly Uint8Array[] | null | undefined,
+    lockHandle: bigint
   ): Promise<number>;
+  cacheLockRelease(handle: bigint): void;
+  cacheLockIsLocked(cachePath: string): boolean;
   lz4CompressBlock(input: Uint8Array, offset?: number, length?: number): Buffer;
   lz4CompressBlockTo(
     input: Uint8Array,
@@ -95,10 +99,6 @@ export interface BindingExportNative {
     length?: number
   ): Promise<Buffer>;
   lz4CompressBound(inputSize: number): number;
-  processLockHashName(key: string): string;
-  processLockAsync(shmName: string, timeoutMs: number): Promise<object>;
-  processLockRelease(handle: object): void;
-  processLockIsLocked(shmName: string): boolean;
   getCpuFeatures(): { avx2: boolean; avx512: boolean };
 }
 

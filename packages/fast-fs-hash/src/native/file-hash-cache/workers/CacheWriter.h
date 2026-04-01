@@ -1,13 +1,13 @@
 /**
- * CacheWriter: async worker that hashes remaining entries + LZ4 writes.
+ * CacheWriter: async worker that hashes remaining entries + writes to locked fd.
  *
  * Flow:
  *   1. If encodedPaths differs from dataBuf → build new dataBuf, remap old entries
  *   2. Count unresolved entries (ino state bits != DONE)
  *   3. If work needed → fork hash threads on pool
- *   4. Assemble body, LZ4 compress, atomic write to disk
+ *   4. Assemble body, LZ4 compress, write directly to the locked cache fd
  *
- * On-disk format: [header:96 uncompressed][LZ4(body)]
+ * On-disk format: [header:80 uncompressed][LZ4(body)]
  */
 
 #ifndef _FAST_FS_HASH_CACHE_WRITER_H
@@ -36,7 +36,8 @@ namespace fast_fs_hash {
       uint32_t fileCount,
       std::string cachePath,
       std::string rootPath,
-      ParsedUserData && ud) :
+      ParsedUserData && ud,
+      CacheLockHandle lockHandle) :
       AddonWorker(env, deferred),
       cachePath_(std::move(cachePath)),
       rootPath_(std::move(rootPath)),
@@ -47,7 +48,8 @@ namespace fast_fs_hash {
       encodedPaths_(encodedPaths),
       encodedLen_(encodedLen),
       fileCount_(fileCount),
-      ud_(std::move(ud)) {}
+      ud_(std::move(ud)),
+      lockHandle_(lockHandle) {}
 
     void Execute() override {
       uint8_t * buf = this->dataBuf_;
@@ -94,6 +96,9 @@ namespace fast_fs_hash {
     size_t encodedLen_;
     uint32_t fileCount_;
     ParsedUserData ud_;
+
+    // Lock handle for writing directly to the locked fd
+    CacheLockHandle lockHandle_;
 
     // Remap output (owned, freed on destruction)
     OwnedBuf<> newBuf_;
@@ -274,7 +279,7 @@ namespace fast_fs_hash {
         }
       }
 
-      // LZ4 compress and atomic-write to disk
+      // LZ4 compress and write directly to the locked fd
       this->compressAndWrite_(hdr, body.ptr, bodyTotal);
     }
 
@@ -310,14 +315,18 @@ namespace fast_fs_hash {
 
       const size_t actualFileSize = CacheHeader::SIZE + static_cast<size_t>(compressedSize);
 
-      FfshFile out = FfshFile::open_tmp(this->cachePath_.c_str());
+      // Write directly to the locked fd: seek to 0, write, truncate, fsync
+      FfshFile out = FfshFile::from_lock_handle(this->lockHandle_);
       if (!out) [[unlikely]] {
         return;
       }
-      if (!out.write_all(outBuf.ptr, actualFileSize)) [[unlikely]] {
-        return;
-      }
-      this->writeSuccess_ = out.commit(this->cachePath_.c_str());
+
+      bool ok = out.seek(0) && out.write_all(outBuf.ptr, actualFileSize) && out.truncate(actualFileSize);
+
+      // Release FfshFile without closing — the lock handle is still owned by JS
+      out.release();
+
+      this->writeSuccess_ = ok;
     }
 
     // ── Merge-join remap ─────────────────────────────────────────────

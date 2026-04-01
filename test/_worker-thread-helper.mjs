@@ -12,7 +12,7 @@ import { isMainThread, parentPort, workerData } from "node:worker_threads";
 
 if (!isMainThread && parentPort && workerData) {
   const path = await import("node:path");
-  const { digestFilesParallel, ProcessLock, XxHash128Stream } = await import("fast-fs-hash");
+  const { digestFilesParallel, FileHashCache, XxHash128Stream } = await import("fast-fs-hash");
 
   if (workerData.mode === "basic") {
     const h1 = new XxHash128Stream();
@@ -26,8 +26,8 @@ if (!isMainThread && parentPort && workerData) {
 
     parentPort.postMessage({ hashHex, fileHashHex });
   } else if (workerData.mode === "lock-and-hang") {
-    const lock = await ProcessLock.acquire(workerData.lockKey);
-    parentPort.postMessage({ acquired: true, ownsLock: lock.ownsLock });
+    const cache = await FileHashCache.open(workerData.cachePath, workerData.rootPath, workerData.files, 1);
+    parentPort.postMessage({ acquired: true, disposed: cache.disposed });
     // Hang forever — parent will terminate() us. setTimeout avoids vitest's unsettled-await warning.
     setTimeout(() => {}, 2147483647);
   } else if (workerData.mode === "bulk") {

@@ -44,20 +44,6 @@ export interface IXxHash128Functions {
   ): Promise<TOut>;
 }
 
-/** Common interface for {@link KeyedLock} and {@link ProcessLock}. */
-export interface IKeyedLock<K = unknown> extends AsyncDisposable {
-  /** The key this lock is for. */
-  readonly key: K;
-  /** Whether this instance currently owns the lock. */
-  readonly ownsLock: boolean;
-  /** Whether the key is locked by any instance. */
-  readonly locked: boolean;
-  /** Promise that resolves when released. `undefined` if not held. */
-  readonly promise: Promise<void> | undefined;
-  /** Release the lock. Returns `true` if held, `false` if already released. */
-  release(): boolean;
-}
-
 /** Options for FileHashCache.open(). */
 export interface FileHashCacheOptions {
   /** User-defined cache version (u32). Default: 0. */

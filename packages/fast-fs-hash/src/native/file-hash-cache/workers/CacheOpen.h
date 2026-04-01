@@ -1,10 +1,12 @@
 /**
- * CacheOpen: NAPI async worker that reads + validates + stat-matches a cache file.
+ * CacheOpen: acquires an exclusive lock on the cache file, then reads,
+ * validates, and stat-matches entries using the locked fd.
  *
- * Single class: AddonWorker for NAPI lifecycle, uses pool->submit for stat-match fork.
+ * Always locks. Resolves with [BigInt<lockHandle>, Buffer<dataBuf>].
+ * The lock handle is registered with AddonData for crash-safe cleanup.
  *
- * Usage: new CacheOpen(env, deferred, ...) → Queue()
- * Result: resolves deferred with dataBuf on JS thread.
+ * Runs on a dedicated detached thread so blocking on lock acquisition
+ * does not stall the compute pool.
  */
 
 #ifndef _FAST_FS_HASH_CACHE_OPEN_H
@@ -19,6 +21,8 @@
 
 namespace fast_fs_hash {
 
+  static constexpr size_t CACHE_LOCK_STACK_SIZE = 32 * 1024;
+
   class CacheOpen final : public AddonWorker {
    public:
     CacheOpen(
@@ -31,7 +35,8 @@ namespace fast_fs_hash {
       std::string cachePath,
       std::string rootPath,
       uint32_t version,
-      const uint8_t * fingerprint) :
+      const uint8_t * fingerprint,
+      int timeoutMs) :
       AddonWorker(env, deferred),
       cachePath_(std::move(cachePath)),
       rootPath_(std::move(rootPath)),
@@ -40,35 +45,41 @@ namespace fast_fs_hash {
       encodedLen_(encodedLen),
       fileCount_(fileCount),
       version_(version),
-      hasFingerprint_(fingerprint != nullptr) {
+      hasFingerprint_(fingerprint != nullptr),
+      timeoutMs_(timeoutMs) {
       if (fingerprint) {
         memcpy(&this->fingerprint_, fingerprint, 16);
       }
     }
 
-    void Execute() override { this->doOpen_(); }
+    /** Must be queued on a detached thread — may block on lock acquisition. */
+    void Start() { this->QueueDetached(CACHE_LOCK_STACK_SIZE); }
+
+    void Execute() override {
+      const char * error = nullptr;
+      this->lockedFile_ = FfshFile::open_locked(this->cachePath_.c_str(), this->timeoutMs_, error);
+      if (!this->lockedFile_) [[unlikely]] {
+        this->signal(error ? error : "CacheLock: failed to acquire lock");
+        return;
+      }
+      this->doOpen_();
+    }
 
     void OnOK() override {
       auto env = Napi::Env(this->env);
       Napi::HandleScope scope(env);
 
-      const size_t len = this->dataBuf_.len;
-      uint8_t * ptr = this->dataBuf_.release();
+      CacheLockHandle lockHandle = this->lockedFile_.to_lock_handle();
+      this->addon->registerHeldCacheLock(lockHandle);
 
-      if (ptr) [[likely]] {
-        this->deferred.Resolve(Napi::Buffer<uint8_t>::New(env, ptr, len, [](Napi::Env, uint8_t * p) {
-          free(p);
-        }));
-      } else {
-        auto buf = Napi::Buffer<uint8_t>::New(env, CacheHeader::SIZE);
-        memset(buf.Data(), 0, CacheHeader::SIZE);
-        headerOf(buf.Data())->status = static_cast<uint32_t>(CacheStatus::MISSING);
-        this->deferred.Resolve(buf);
-      }
+      auto arr = Napi::Array::New(env, 2);
+      arr.Set(0u, Napi::BigInt::New(env, lockHandle));
+      arr.Set(1u, this->makeDataBuf_(env));
+      this->deferred.Resolve(arr);
     }
 
    private:
-    //  Strings (used on pool thread in stat loop + finalize)
+    // Strings (used on pool thread in stat loop + finalize)
     std::string cachePath_;
     std::string rootPath_;
 
@@ -82,12 +93,15 @@ namespace fast_fs_hash {
     uint32_t version_;
     bool hasFingerprint_;
     Hash128 fingerprint_{};
+    int timeoutMs_;
 
-    // Internal buffers
+    // Locked file handle
+    FfshFile lockedFile_;
+
+    // Output buffer
     OwnedBuf<> dataBuf_;
 
-    //  Stat-match runner state (set before pool.submit, read by all worker threads)
-    //    Grouped for cache locality during the hot stat loop.
+    // Stat-match runner state (set before pool.submit, read by all worker threads)
     size_t workBatch_ = 0;
     CacheEntry * runEntries_ = nullptr;
     const uint32_t * runPathEnds_ = nullptr;
@@ -103,6 +117,19 @@ namespace fast_fs_hash {
     static_assert(
       READ_BUFFER_SIZE + sizeof(PathResolver) <= ThreadPool::THREAD_STACK_SIZE - 64 * 1024,
       "buffers exceed pool thread usable stack");
+
+    /** Build a resolved dataBuf from a Napi::Buffer on the JS thread. */
+    Napi::Buffer<uint8_t> makeDataBuf_(Napi::Env env) {
+      const size_t len = this->dataBuf_.len;
+      uint8_t * ptr = this->dataBuf_.release();
+      if (ptr) [[likely]] {
+        return Napi::Buffer<uint8_t>::New(env, ptr, len, [](Napi::Env, uint8_t * p) { free(p); });
+      }
+      auto buf = Napi::Buffer<uint8_t>::New(env, CacheHeader::SIZE);
+      memset(buf.Data(), 0, CacheHeader::SIZE);
+      headerOf(buf.Data())->status = static_cast<uint32_t>(CacheStatus::MISSING);
+      return buf;
+    }
 
     void finalize_(CacheStatus st) noexcept {
       auto * hdr = headerOf(this->dataBuf_.ptr);
@@ -209,29 +236,43 @@ namespace fast_fs_hash {
       self->signal();
     }
 
+    /**
+     * Read the old cache from the locked fd. Seeks to 0, reads, decompresses.
+     * Does NOT close the fd — the lock must stay held.
+     */
     bool readOldCache_(
       OwnedBuf<> & oldBuf, const CacheHeader *& hdr, uint32_t & fc, size_t & bodyLen, bool & stale) noexcept {
-      FfshFile fd = FfshFile::open_read(this->cachePath_.c_str());
-      if (!fd) [[unlikely]] {
+      // Read from the already-locked fd
+      const int lockFd = this->lockedFile_.fd;
+      if (lockFd < 0) [[unlikely]] {
         return false;
       }
 
-      const int64_t fileSize = fd.fsize();
+      const int64_t fileSize = this->lockedFile_.fsize();
       if (fileSize < static_cast<int64_t>(CacheHeader::SIZE) || fileSize > static_cast<int64_t>(CACHE_MAX_FILE_SIZE))
         [[unlikely]] {
+        // File too small or too large — treat as missing (but keep the lock)
+        if (fileSize >= 0 && fileSize < static_cast<int64_t>(CacheHeader::SIZE)) {
+          return false;
+        }
         return false;
       }
       const size_t diskSize = static_cast<size_t>(fileSize);
+
+      // Seek to beginning and read the full file
+      if (!this->lockedFile_.seek(0)) [[unlikely]] {
+        return false;
+      }
 
       OwnedBuf<> fileBuf = OwnedBuf<>::alloc(diskSize);
       if (!fileBuf) [[unlikely]] {
         return false;
       }
-      const int64_t n = fd.read_at_most(fileBuf.ptr, diskSize);
+      const int64_t n = this->lockedFile_.read_at_most(fileBuf.ptr, diskSize);
       if (n < 0 || static_cast<size_t>(n) < diskSize) [[unlikely]] {
         return false;
       }
-      fd.close();
+      // NOTE: We do NOT close the fd — the lock stays held
 
       const auto * diskHdr = headerOf(fileBuf.ptr);
       if (!diskHdr->validateLimits()) [[unlikely]] {
@@ -380,7 +421,6 @@ namespace fast_fs_hash {
             const uint64_t oldSize = entry.size;
 
             const bool statOk = resolver.stat_into(entry);
-            // stat_into clears high 2 bits of ino (INO_VALUE_MASK applied in writeStat)
 
             if (!statOk) [[unlikely]] {
               entry.contentHash.set_zero();

@@ -1,5 +1,9 @@
 /**
- * FileHashCache — read, validate, and write file hash caches.
+ * FileHashCache — read, validate, and write file hash caches with exclusive locking.
+ *
+ * Every open acquires an exclusive OS-level lock on the cache file. The lock is
+ * held until {@link close} is called (or the `using` / `await using` disposable
+ * pattern releases it). Writes go directly to the locked fd — no atomic rename.
  *
  * @module
  */
@@ -109,18 +113,25 @@ function readAllUserData(
 // ─── FileHashCache ────────────────────────────────────────────────────
 
 /**
- * Result of opening a file hash cache.
+ * A file hash cache with an exclusive OS-level lock on the cache file.
+ *
+ * The lock is implemented via `fcntl F_SETLKW` (POSIX) or `LockFileEx` (Windows)
+ * directly on the cache file. It is:
+ *  - **Cross-process**: prevents concurrent writers from any process.
+ *  - **Crash-safe**: automatically released when the process dies.
  *
  * Created via {@link FileHashCache.open}. Provides readonly access to
  * the cache state and a {@link write} method to persist changes.
+ * Release the lock via {@link close} or the `using` / `await using` disposable pattern.
  *
  * @example
  * ```ts
- * const ctx = await FileHashCache.open("cache.fsh", files, { version: 1 });
- * if (ctx.status !== "upToDate") {
+ * await using cache = await FileHashCache.open("cache.fsh", null, files, 1);
+ * if (cache.status !== "upToDate") {
  *   // ... rebuild ...
- *   await ctx.write({ userData: [outputManifest] });
+ *   await cache.write({ userData: [outputManifest] });
  * }
+ * // lock released here
  * ```
  */
 export class FileHashCache {
@@ -154,15 +165,18 @@ export class FileHashCache {
   readonly #dataBuf: Buffer;
   readonly #encodedPaths: Buffer;
   #files: readonly string[] | null;
+  #lockHandle: bigint;
 
-  private constructor(
+  /** @internal */
+  public constructor(
     cachePath: string,
     version: number,
     rootPath: string,
     fingerprint: Uint8Array | null,
     dataBuf: Buffer,
     encodedPaths: Buffer,
-    openFiles: readonly string[] | null
+    openFiles: readonly string[] | null,
+    lockHandle: bigint
   ) {
     this.#encodedPaths = encodedPaths;
     this.#files = openFiles ?? null;
@@ -171,6 +185,7 @@ export class FileHashCache {
     this.rootPath = rootPath;
     this.fingerprint = fingerprint;
     this.#dataBuf = dataBuf;
+    this.#lockHandle = lockHandle;
 
     const hdrFc = dataBuf.readUInt32LE(H_FILE_COUNT);
     const pathsLen = dataBuf.readUInt32LE(H_PATHS_LEN);
@@ -193,6 +208,11 @@ export class FileHashCache {
     this.userData = readAllUserData(dataBuf, udDirStart, udPayloadsStart, udItemCount);
   }
 
+  /** True once {@link close} has been called. Subsequent calls are no-ops. */
+  public get disposed(): boolean {
+    return this.#lockHandle === 0n;
+  }
+
   /** File paths (relative to rootPath, sorted). */
   public get files(): readonly string[] {
     let f = this.#files;
@@ -211,11 +231,20 @@ export class FileHashCache {
   }
 
   /**
-   * Open a file hash cache: read from disk, validate, stat-match.
+   * Open a file hash cache with an exclusive OS-level lock.
    *
-   * Reads the cache file, checks version/fingerprint/file list, and if all match,
-   * stat-matches entries to detect changes. Returns a {@link FileHashCache} instance
-   * with the result status and cached data. Call {@link write} to persist changes.
+   * Acquires an exclusive lock on the cache file, reads from disk, validates
+   * version/fingerprint/file list, and if all match, stat-matches entries to
+   * detect changes. The lock is held until {@link close} is called.
+   *
+   * Use `await using` for automatic cleanup:
+   * ```ts
+   * await using cache = await FileHashCache.open("cache.fsh", null, files, 1);
+   * if (cache.status !== "upToDate") {
+   *   await cache.write({ userData: [manifest] });
+   * }
+   * // lock released here
+   * ```
    *
    * @param cachePath Path to the cache file. If relative, resolved from `rootPath`.
    * @param rootPath Root directory for file path resolution. When provided, file paths
@@ -227,13 +256,16 @@ export class FileHashCache {
    *   on-disk cache causes `status = 'stale'`. Default: `0`.
    * @param fingerprint 16-byte `Uint8Array` for fast cache rejection. A mismatch causes
    *   `status = 'stale'`. Omit or pass `null` for no fingerprint check.
+   * @param timeoutMs Lock acquisition timeout in ms. `-1` (default) = block forever,
+   *   `0` = non-blocking try, `>0` = timeout.
    */
   public static async open(
     cachePath: string,
     rootPath?: string | null,
     files?: Iterable<string> | null,
     version?: number,
-    fingerprint?: Uint8Array | null
+    fingerprint?: Uint8Array | null,
+    timeoutMs?: number
   ): Promise<FileHashCache> {
     const root = resolveRoot(rootPath ?? null, files ?? null);
     const resolvedCachePath = pathResolve(root, cachePath);
@@ -243,14 +275,54 @@ export class FileHashCache {
     const encoded = normalizedFiles ? encodeNormalizedPaths(normalizedFiles) : _emptyBuf;
     const fileCount = normalizedFiles ? normalizedFiles.length : 0;
 
-    const dataBuf: Buffer = await cacheOpen(encoded, fileCount, resolvedCachePath, root, ver, fp);
+    const [lockHandle, dataBuf] = await cacheOpen(
+      encoded,
+      fileCount,
+      resolvedCachePath,
+      root,
+      ver,
+      fp,
+      timeoutMs ?? -1
+    );
 
-    return new FileHashCache(resolvedCachePath, ver, root, fp, dataBuf, encoded, normalizedFiles);
+    return new FileHashCache(resolvedCachePath, ver, root, fp, dataBuf, encoded, normalizedFiles, lockHandle);
+  }
+
+  /**
+   * Release the lock and mark this instance as disposed.
+   * Safe to call multiple times — subsequent calls are no-ops.
+   */
+  public close(): void {
+    const h = this.#lockHandle;
+    if (h === 0n) {
+      return;
+    }
+    this.#lockHandle = 0n;
+    binding.cacheLockRelease(h);
+  }
+
+  /** Disposable — `using cache = ...` (synchronous close). */
+  public [Symbol.dispose](): void {
+    this.close();
+  }
+
+  /** AsyncDisposable — `await using cache = ...`. */
+  public [Symbol.asyncDispose](): Promise<void> {
+    this.close();
+    return Promise.resolve();
+  }
+
+  /**
+   * Check whether any process currently holds an exclusive lock on `cachePath`.
+   * Non-blocking — does not acquire the lock.
+   */
+  public static isLocked(cachePath: string): boolean {
+    return binding.cacheLockIsLocked(cachePath);
   }
 
   /**
    * Write the cache file. Hashes any unresolved entries, LZ4-compresses,
-   * and atomically writes to the cache path.
+   * and writes directly to the locked cache fd.
    *
    * If `options.files` is provided, builds a new file list and remaps entries
    * from the current dataBuf (preserving hashes for unchanged files).
@@ -287,15 +359,16 @@ export class FileHashCache {
 
     const resultFiles = opts.files;
     const root = this.rootPath;
+    const lockHandle = this.#lockHandle;
     let result: number;
     if (resultFiles) {
       const newRoot = resolveRoot(null, resultFiles, opts.rootPath ?? root);
       const newNormalized = normalizeFilePaths(newRoot, resultFiles);
       const newEncoded = encodeNormalizedPaths(newNormalized);
-      result = await cacheWrite(dataBuf, newEncoded, newNormalized.length, this.cachePath, newRoot, ud);
+      result = await cacheWrite(dataBuf, newEncoded, newNormalized.length, this.cachePath, newRoot, ud, lockHandle);
     } else {
       const encoded = this.#encodedPaths;
-      result = await cacheWrite(dataBuf, encoded, this.fileCount, this.cachePath, root, ud);
+      result = await cacheWrite(dataBuf, encoded, this.fileCount, this.cachePath, root, ud, lockHandle);
     }
     return result === 0;
   }

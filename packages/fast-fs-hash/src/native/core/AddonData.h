@@ -10,14 +10,14 @@
 #define _FAST_FS_HASH_ADDON_DATA_H
 
 #include "ThreadPool.h"
+#include "../io/FfshFile.h"
 #include <uv.h>
 #include <mutex>
-#include <vector>
+#include <unordered_set>
 
 namespace fast_fs_hash {
 
   class AddonWorker;
-  struct ProcessLockHandle;
 
   struct AddonData {
     ThreadPool pool;
@@ -26,27 +26,20 @@ namespace fast_fs_hash {
     std::atomic<int> pending{0};
     napi_async_cleanup_hook_handle cleanup_hook_ = nullptr;
 
-    /** Held process locks for this env — released on cleanup. Protected by heldLocksMutex. */
-    std::mutex heldLocksMutex;
-    std::vector<ProcessLockHandle *> heldLocks;
+    /** Held cache locks for this env — released on cleanup. Protected by heldCacheLocksMutex. */
+    std::mutex heldCacheLocksMutex;
+    std::unordered_set<CacheLockHandle> heldCacheLocks;
 
-    /** Register a held lock for cleanup on env teardown. */
-    void registerHeldLock(ProcessLockHandle * h) noexcept {
-      std::lock_guard<std::mutex> guard(this->heldLocksMutex);
-      this->heldLocks.push_back(h);
+    /** Register a held cache lock for cleanup on env teardown. */
+    void registerHeldCacheLock(CacheLockHandle h) noexcept {
+      std::lock_guard<std::mutex> guard(this->heldCacheLocksMutex);
+      this->heldCacheLocks.insert(h);
     }
 
-    /** Unregister a held lock (called on explicit release). */
-    void unregisterHeldLock(ProcessLockHandle * h) noexcept {
-      std::lock_guard<std::mutex> guard(this->heldLocksMutex);
-      auto & v = this->heldLocks;
-      for (size_t i = 0; i < v.size(); ++i) {
-        if (v[i] == h) {
-          v[i] = v.back();
-          v.pop_back();
-          return;
-        }
-      }
+    /** Unregister a held cache lock (called on explicit close). */
+    void unregisterHeldCacheLock(CacheLockHandle h) noexcept {
+      std::lock_guard<std::mutex> guard(this->heldCacheLocksMutex);
+      this->heldCacheLocks.erase(h);
     }
 
     static FSH_FORCE_INLINE AddonData * get(napi_env env) noexcept {

@@ -5,10 +5,11 @@
  * Platform dispatcher for FfshFile — includes the correct platform-specific
  * implementation (POSIX or Win32).
  *
- * Both platform headers define the same FfshFile class interface:
- *   - RAII file handle with read/write/atomic-commit
- *   - Static stat_into methods (write raw stat fields into CacheEntry)
- *   - Static helpers: close_fd, pread_fd, atomic_rename
+ * Both platform headers define:
+ *   - FfshFile: RAII file handle with read/write/lock/truncate/seek
+ *   - CacheLockHandle: opaque lock token (uint64_t)
+ *   - Static helpers: stat_into, is_locked, release_lock_handle
+ *   - DirFd, PathResolver: per-thread path resolution context
  */
 
 #ifdef _WIN32

@@ -53,9 +53,6 @@ const HASH_BUFFER_END = "<!-- HASH_BUFFER_BENCHMARKS:END -->";
 const LZ4_BENCHMARKS_START = "<!-- LZ4_BENCHMARKS:START -->";
 const LZ4_BENCHMARKS_END = "<!-- LZ4_BENCHMARKS:END -->";
 
-const LOCK_BENCHMARKS_START = "<!-- LOCK_BENCHMARKS:START -->";
-const LOCK_BENCHMARKS_END = "<!-- LOCK_BENCHMARKS:END -->";
-
 //  - Benchmark data size
 
 /** Read the benchmark fixture file list. */
@@ -135,7 +132,7 @@ const README_BENCH_FILES = [
   "test/bench/file-hash-cache-validate-serialize.bench.ts",
   "test/bench/file-hash-cache-validate-serialize-many.bench.ts",
   "test/bench/lz4.bench.ts",
-  "test/bench/lock.bench.ts",
+  "test/bench/file-hash-cache-locked.bench.ts",
 ];
 
 function runBenchmarks() {
@@ -511,25 +508,6 @@ function buildLz4Tables(benchData) {
 
 const lz4Sections = buildLz4Tables(benchData);
 
-//  - Lock benchmarks
-
-function buildLockTable(benchData) {
-  const benches = findBenchesInGroup(benchData, "lock — uncontended acquire + release", true);
-  if (benches.length === 0) {
-    return ["_No benchmark data available._"];
-  }
-  const baseline = benches[benches.length - 1];
-  const rows = benches.map((b) => {
-    const speedup = baseline.mean / b.mean;
-    const relative = b === baseline ? "baseline" : `**${fmt(speedup, 1)}× faster**`;
-    const hzStr = b.hz != null ? `${fmt(b.hz, 0)} op/s` : "—";
-    return [b.name, fmtTime(b.mean), hzStr, relative];
-  });
-  return [markdownTable(["Scenario", "Mean", "Hz", "Relative"], rows)];
-}
-
-const lockSections = buildLockTable(benchData);
-
 //  - Write README
 
 let readme = readFileSync(README, "utf8");
@@ -539,7 +517,6 @@ readme = updateReadmeSection(readme, HASHFILE_BENCHMARKS_START, HASHFILE_BENCHMA
 readme = updateReadmeSection(readme, BENCHMARKS_START, BENCHMARKS_END, hashSections.join("\n"));
 readme = updateReadmeSection(readme, HASH_BUFFER_START, HASH_BUFFER_END, hashBufferSections.join("\n"));
 readme = updateReadmeSection(readme, LZ4_BENCHMARKS_START, LZ4_BENCHMARKS_END, lz4Sections.join("\n"));
-readme = updateReadmeSection(readme, LOCK_BENCHMARKS_START, LOCK_BENCHMARKS_END, lockSections.join("\n"));
 readme = formatMarkdown(readme, README);
 
 const original = readFileSync(README, "utf8");

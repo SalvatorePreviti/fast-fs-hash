@@ -11,6 +11,10 @@
 
 namespace fast_fs_hash {
 
+  /** Opaque lock token — raw HANDLE cast to uint64_t. 0 = invalid. */
+  using CacheLockHandle = uint64_t;
+  static constexpr CacheLockHandle CACHE_LOCK_INVALID = 0;
+
   /**
    * WPath — Windows-only RAII UTF-8 → UTF-16 path converter.
    *
@@ -61,11 +65,14 @@ namespace fast_fs_hash {
    *   Accepts pre-converted UTF-16 paths (via WPath) or raw UTF-8.
    *
    * Read/write factories (cache files):
-   *   open_read(), open_write(), open_tmp().
-   *   Atomic write: open_tmp() → write_all() → commit(dest_path).
+   *   open_read(), open_write(), open_locked().
    *
-   * On destruction: closes fd, and if a tmp_path is set (write mode),
-   * unlinks the temp file and frees the path buffer.
+   * Locking:
+   *   open_locked() opens/creates the file and acquires an exclusive
+   *   LockFileEx byte-range lock. The lock is released when close() is called
+   *   or the handle is closed. Supports blocking, non-blocking, and timeout.
+   *
+   * On destruction: closes fd.
    */
   class FfshFile : NonCopyable {
    public:
@@ -84,21 +91,21 @@ namespace fast_fs_hash {
 
     FfshFile() noexcept = default;
 
-    ~FfshFile() noexcept { this->cleanup(); }
-
-    FfshFile(FfshFile && other) noexcept : fd(other.fd), tmp_path_(other.tmp_path_), write_start_(other.write_start_) {
-      other.fd = -1;
-      other.tmp_path_ = nullptr;
+    ~FfshFile() noexcept {
+      if (this->fd >= 0) {
+        close_fd(this->fd);
+      }
     }
+
+    FfshFile(FfshFile && other) noexcept : fd(other.fd) { other.fd = -1; }
 
     FfshFile & operator=(FfshFile && other) noexcept {
       if (this != &other) {
-        this->cleanup();
+        if (this->fd >= 0) {
+          close_fd(this->fd);
+        }
         this->fd = other.fd;
-        this->tmp_path_ = other.tmp_path_;
-        this->write_start_ = other.write_start_;
         other.fd = -1;
-        other.tmp_path_ = nullptr;
       }
       return *this;
     }
@@ -106,7 +113,7 @@ namespace fast_fs_hash {
     /** Returns true if the file was opened successfully. */
     FSH_FORCE_INLINE explicit operator bool() const noexcept { return this->fd >= 0; }
 
-    /** Close the fd. Safe to call multiple times. Does NOT unlink tmp. */
+    /** Close the fd. Safe to call multiple times. */
     inline void close() noexcept {
       if (this->fd >= 0) {
         close_fd(this->fd);
@@ -114,14 +121,190 @@ namespace fast_fs_hash {
       }
     }
 
-    /** Release ownership of the fd without closing or unlinking. Frees tmp_path. */
+    /** Release ownership of the fd without closing. */
     inline int release() noexcept {
       const int f = this->fd;
       this->fd = -1;
-      free(this->tmp_path_);
-      this->tmp_path_ = nullptr;
       return f;
     }
+
+    // ── Locking ────────────────────────────────────────────────────────
+
+    /**
+     * Open-or-create a cache file and acquire an exclusive LockFileEx lock.
+     *
+     * @param path      Cache file path (UTF-8).
+     * @param timeoutMs -1 = block forever, 0 = non-blocking try, >0 = timeout in ms.
+     * @param outError  Set to an error string on failure.
+     * @return FfshFile with the locked handle, or invalid on failure.
+     */
+    static FSH_NO_INLINE FfshFile open_locked(const char * path, int timeoutMs, const char *& outError) noexcept {
+      outError = nullptr;
+      FfshFile f;
+
+      if (!path || path[0] == '\0') [[unlikely]] {
+        outError = "CacheLock: empty cache path";
+        return f;
+      }
+      if (strlen(path) >= FSH_MAX_PATH) [[unlikely]] {
+        outError = "CacheLock: cache path too long";
+        return f;
+      }
+
+      HANDLE hFile = open_rw_handle_mkdir(path);
+      if (hFile == INVALID_HANDLE_VALUE) [[unlikely]] {
+        outError = "CacheLock: failed to open cache file for locking";
+        return f;
+      }
+
+      DWORD flags = LOCKFILE_EXCLUSIVE_LOCK;
+
+      if (timeoutMs == 0) {
+        OVERLAPPED ov{};
+        if (!LockFileEx(hFile, flags | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov)) [[unlikely]] {
+          CloseHandle(hFile);
+          outError = "CacheLock: lock not available";
+          return f;
+        }
+      } else if (timeoutMs < 0) {
+        HANDLE hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (!hEvent) [[unlikely]] {
+          CloseHandle(hFile);
+          outError = "CacheLock: CreateEvent failed";
+          return f;
+        }
+        OVERLAPPED ov{};
+        ov.hEvent = hEvent;
+        if (!LockFileEx(hFile, flags, 0, 1, 0, &ov)) {
+          if (GetLastError() == ERROR_IO_PENDING) {
+            WaitForSingleObject(hEvent, INFINITE);
+            DWORD transferred = 0;
+            if (!GetOverlappedResult(hFile, &ov, &transferred, FALSE)) [[unlikely]] {
+              CloseHandle(hEvent);
+              CloseHandle(hFile);
+              outError = "CacheLock: LockFileEx failed";
+              return f;
+            }
+          } else {
+            CloseHandle(hEvent);
+            CloseHandle(hFile);
+            outError = "CacheLock: LockFileEx failed";
+            return f;
+          }
+        }
+        CloseHandle(hEvent);
+      } else {
+        const ULONGLONG start = GetTickCount64();
+        int sleepMs = 1;
+        for (;;) {
+          OVERLAPPED ov{};
+          if (LockFileEx(hFile, flags | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov)) [[likely]] {
+            break;
+          }
+          if (GetTickCount64() - start >= static_cast<ULONGLONG>(timeoutMs)) [[unlikely]] {
+            CloseHandle(hFile);
+            outError = "CacheLock: timeout waiting for cache lock";
+            return f;
+          }
+          Sleep(sleepMs);
+          if (sleepMs < 50) {
+            sleepMs += sleepMs / 2;
+          }
+        }
+      }
+
+      // Wrap the locked HANDLE as a CRT fd for uniform API
+      const int crt_fd = _open_osfhandle(reinterpret_cast<intptr_t>(hFile), _O_RDWR | _O_BINARY);
+      if (crt_fd < 0) [[unlikely]] {
+        OVERLAPPED ov{};
+        UnlockFileEx(hFile, 0, 1, 0, &ov);
+        CloseHandle(hFile);
+        outError = "CacheLock: _open_osfhandle failed";
+        return f;
+      }
+
+      f.fd = crt_fd;
+      return f;
+    }
+
+    /** Convert this FfshFile to a CacheLockHandle. Releases ownership. */
+    FSH_FORCE_INLINE CacheLockHandle to_lock_handle() noexcept {
+      if (this->fd < 0) [[unlikely]] {
+        return CACHE_LOCK_INVALID;
+      }
+      HANDLE h = reinterpret_cast<HANDLE>(_get_osfhandle(this->fd));
+      if (h == INVALID_HANDLE_VALUE) [[unlikely]] {
+        return CACHE_LOCK_INVALID;
+      }
+      // Detach the CRT fd without closing the underlying HANDLE
+      // We need to keep the HANDLE alive, so don't close the fd normally
+      const CacheLockHandle lh = static_cast<CacheLockHandle>(reinterpret_cast<uintptr_t>(h));
+      // Mark fd as released — but on Windows we can't just set fd=-1 because
+      // _get_osfhandle already gave us the HANDLE. We close the CRT fd wrapper
+      // but the HANDLE stays owned by the lock handle.
+      // Actually, on Windows we should NOT close the CRT fd because that would
+      // close the underlying HANDLE. Instead, just transfer the fd value out.
+      this->fd = -1;
+      return lh;
+    }
+
+    /** Create an FfshFile from a CacheLockHandle. Takes ownership. */
+    static FSH_FORCE_INLINE FfshFile from_lock_handle(CacheLockHandle handle) noexcept {
+      FfshFile f;
+      if (handle != CACHE_LOCK_INVALID) [[likely]] {
+        HANDLE h = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(handle));
+        f.fd = _open_osfhandle(reinterpret_cast<intptr_t>(h), _O_RDWR | _O_BINARY);
+        // If _open_osfhandle fails, the HANDLE leaks — shouldn't happen in practice
+      }
+      return f;
+    }
+
+    /** Release a CacheLockHandle (unlock + close). */
+    static inline void release_lock_handle(CacheLockHandle handle) noexcept {
+      if (handle == CACHE_LOCK_INVALID) [[unlikely]] {
+        return;
+      }
+      HANDLE hFile = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(handle));
+      OVERLAPPED ov{};
+      UnlockFileEx(hFile, 0, 1, 0, &ov);
+      CloseHandle(hFile);
+    }
+
+    /** Non-blocking check: returns true if the file is currently locked by another holder. */
+    static inline bool is_locked(const char * cachePath) noexcept {
+      if (!cachePath || cachePath[0] == '\0') [[unlikely]] {
+        return false;
+      }
+      const int wlen = MultiByteToWideChar(CP_UTF8, 0, cachePath, -1, nullptr, 0);
+      if (wlen <= 0 || wlen > static_cast<int>(FSH_MAX_PATH)) [[unlikely]] {
+        return false;
+      }
+      wchar_t wpath[FSH_MAX_PATH];
+      MultiByteToWideChar(CP_UTF8, 0, cachePath, -1, wpath, wlen);
+
+      HANDLE hFile = CreateFileW(
+        wpath,
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+      if (hFile == INVALID_HANDLE_VALUE) [[unlikely]] {
+        return false;
+      }
+      OVERLAPPED ov{};
+      const bool gotLock =
+        LockFileEx(hFile, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov) != FALSE;
+      if (gotLock) {
+        OVERLAPPED ov2{};
+        UnlockFileEx(hFile, 0, 1, 0, &ov2);
+      }
+      CloseHandle(hFile);
+      return !gotLock;
+    }
+
+    // ── Read/Write ─────────────────────────────────────────────────────
 
     /** No-op on Windows — FILE_FLAG_SEQUENTIAL_SCAN is set at open time. */
     FSH_FORCE_INLINE void hint_sequential() noexcept {}
@@ -207,38 +390,37 @@ namespace fast_fs_hash {
       return true;
     }
 
-    /**
-     * Close the fd and atomically rename tmp → dest.
-     * On rename failure, retries and checks "newer wins".
-     * Returns true on success. Frees tmp_path regardless.
-     */
-    inline bool commit(const char * dest_path) noexcept {
-      this->close();
-      char * tmp = this->tmp_path_;
-      const auto ws = this->write_start_;
-      this->tmp_path_ = nullptr;
-
-      if (!tmp) return false;
-
-      if (file_rename(tmp, dest_path) == 0) [[likely]] {
-        free(tmp);
-        return true;
-      }
-
-      for (int attempt = 0; attempt < 3; ++attempt) {
-        ::Sleep(1);
-        if (file_rename(tmp, dest_path) == 0) {
-          free(tmp);
-          return true;
-        }
-      }
-
-      // "Newer wins": if dest was modified after we started, accept it
-      file_unlink(tmp);
-      const bool ok = file_modified_since(dest_path, ws);
-      free(tmp);
-      return ok;
+    /** Truncate the file to the given length. Returns true on success. */
+    inline bool truncate(size_t len) noexcept {
+      HANDLE h = this->get_handle();
+      if (h == INVALID_HANDLE_VALUE) [[unlikely]]
+        return false;
+      LARGE_INTEGER li;
+      li.QuadPart = static_cast<LONGLONG>(len);
+      if (!SetFilePointerEx(h, li, nullptr, FILE_BEGIN)) [[unlikely]]
+        return false;
+      return SetEndOfFile(h) != FALSE;
     }
+
+    /** Seek to a position from the beginning of the file. Returns true on success. */
+    inline bool seek(size_t offset) noexcept {
+      HANDLE h = this->get_handle();
+      if (h == INVALID_HANDLE_VALUE) [[unlikely]]
+        return false;
+      LARGE_INTEGER li;
+      li.QuadPart = static_cast<LONGLONG>(offset);
+      return SetFilePointerEx(h, li, nullptr, FILE_BEGIN) != FALSE;
+    }
+
+    /** Flush file data to disk. Returns true on success. */
+    inline bool fsync_data() noexcept {
+      HANDLE h = this->get_handle();
+      if (h == INVALID_HANDLE_VALUE) [[unlikely]]
+        return false;
+      return FlushFileBuffers(h) != FALSE;
+    }
+
+    // ── Static factories ───────────────────────────────────────────────
 
     /** Open a file for reading. */
     static inline FfshFile open_read(const char * path) noexcept {
@@ -247,26 +429,10 @@ namespace fast_fs_hash {
       return f;
     }
 
-    /** Open a file for writing (with mkdir on ENOENT). No tmp cleanup. */
+    /** Open a file for writing (with mkdir on ENOENT). */
     static inline FfshFile open_write(const char * path) noexcept {
       FfshFile f;
       f.fd = open_wr_mkdir(path);
-      return f;
-    }
-
-    /**
-     * Open a temp file for atomic writing.
-     * Generates a unique tmp path from cache_path (appends .PID_SEQ.tmp).
-     */
-    static inline FfshFile open_tmp(const char * cache_path) noexcept {
-      FfshFile f;
-      const size_t path_len = strlen(cache_path);
-      auto * buf = static_cast<char *>(malloc(path_len + 64));
-      if (!buf) return f;
-      make_tmp_path(buf, cache_path, path_len);
-      f.tmp_path_ = buf;
-      f.write_start_ = get_time();
-      f.fd = open_wr_mkdir(buf);
       return f;
     }
 
@@ -296,22 +462,7 @@ namespace fast_fs_hash {
     /** Close a raw fd. */
     static inline void close_fd(int f) noexcept { ::_close(f); }
 
-    /** Standalone atomic rename with retry + newer-wins. */
-    static inline bool atomic_rename(const char * tmp_path, const char * dest_path) noexcept {
-      const WriteTime ws = get_time();
-      if (file_rename(tmp_path, dest_path) == 0) [[likely]]
-        return true;
-      for (int attempt = 0; attempt < 3; ++attempt) {
-        ::Sleep(1);
-        if (file_rename(tmp_path, dest_path) == 0) return true;
-      }
-      if (file_modified_since(dest_path, ws)) {
-        file_unlink(tmp_path);
-        return true;
-      }
-      file_unlink(tmp_path);
-      return false;
-    }
+    // ── Stat helpers ──────────────────────────────────────────────────────
 
     /** stat using a pre-converted UTF-16 path, writing raw fields into CacheEntry. */
     static FSH_FORCE_INLINE bool stat_into(const wchar_t * wpath, CacheEntry & entry) noexcept {
@@ -365,52 +516,11 @@ namespace fast_fs_hash {
     }
 
    private:
-    char * tmp_path_ = nullptr;
-
-    struct WriteTime {
-      FILETIME ft{};
-    };
-
-    WriteTime write_start_{};
-
     /** Get the Win32 HANDLE from the CRT fd via _get_osfhandle. */
     FSH_FORCE_INLINE HANDLE get_handle() const noexcept {
       if (this->fd < 0) [[unlikely]]
         return INVALID_HANDLE_VALUE;
       return reinterpret_cast<HANDLE>(_get_osfhandle(this->fd));
-    }
-
-    inline void cleanup() noexcept {
-      if (this->fd >= 0) {
-        close_fd(this->fd);
-        this->fd = -1;
-      }
-      if (this->tmp_path_) {
-        file_unlink(this->tmp_path_);
-        free(this->tmp_path_);
-        this->tmp_path_ = nullptr;
-      }
-    }
-
-    static inline WriteTime get_time() noexcept {
-      WriteTime t{};
-      GetSystemTimeAsFileTime(&t.ft);
-      return t;
-    }
-
-    static inline bool file_modified_since(const char * path, WriteTime start) noexcept {
-      wchar_t wbuf[512];
-      wchar_t * heap = nullptr;
-      const int wlen = utf8_to_wide(path, wbuf, 512, &heap);
-      if (wlen <= 0) return false;
-      WIN32_FILE_ATTRIBUTE_DATA attr{};
-      const BOOL ok = GetFileAttributesExW(heap ? heap : wbuf, GetFileExInfoStandard, &attr);
-      free(heap);
-      if (!ok) return false;
-      const uint64_t file_t =
-        (static_cast<uint64_t>(attr.ftLastWriteTime.dwHighDateTime) << 32) | attr.ftLastWriteTime.dwLowDateTime;
-      const uint64_t start_t = (static_cast<uint64_t>(start.ft.dwHighDateTime) << 32) | start.ft.dwLowDateTime;
-      return file_t >= start_t;
     }
 
     static inline int utf8_to_wide(const char * utf8, wchar_t * buf, int cap, wchar_t ** heap_out) noexcept {
@@ -479,30 +589,58 @@ namespace fast_fs_hash {
       return f;
     }
 
-    static inline void file_unlink(const char * path) noexcept {
-      wchar_t wbuf[512];
-      wchar_t * heap = nullptr;
-      const int wlen = utf8_to_wide(path, wbuf, 512, &heap);
-      if (wlen > 0) DeleteFileW(heap ? heap : wbuf);
-      free(heap);
+    /** Open/create a file with GENERIC_READ|GENERIC_WRITE for locking — returns raw HANDLE. */
+    static FSH_NO_INLINE HANDLE open_rw_handle_(const wchar_t * wpath) noexcept {
+      return CreateFileW(
+        wpath,
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
     }
 
-    static inline int file_rename(const char * from, const char * to) noexcept {
-      wchar_t from_buf[512], to_buf[512];
-      wchar_t * from_heap = nullptr;
-      wchar_t * to_heap = nullptr;
-      const int fwl = utf8_to_wide(from, from_buf, 512, &from_heap);
-      if (fwl <= 0) return -1;
-      const int twl = utf8_to_wide(to, to_buf, 512, &to_heap);
-      if (twl <= 0) {
-        free(from_heap);
-        return -1;
+    static FSH_NO_INLINE bool mkdirW_(const wchar_t * wpath, int wlen) noexcept {
+      wchar_t buf[FSH_MAX_PATH];
+      if (wlen >= static_cast<int>(FSH_MAX_PATH)) [[unlikely]] {
+        return false;
       }
-      const BOOL ok = MoveFileExW(
-        from_heap ? from_heap : from_buf, to_heap ? to_heap : to_buf, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
-      free(from_heap);
-      free(to_heap);
-      return ok ? 0 : -1;
+      wmemcpy(buf, wpath, static_cast<size_t>(wlen));
+      buf[wlen] = L'\0';
+      for (int i = 1; i < wlen; ++i) {
+        if (buf[i] == L'\\' || buf[i] == L'/') {
+          buf[i] = L'\0';
+          CreateDirectoryW(buf, nullptr);
+          buf[i] = L'\\';
+        }
+      }
+      return CreateDirectoryW(buf, nullptr) || GetLastError() == ERROR_ALREADY_EXISTS;
+    }
+
+    static inline HANDLE open_rw_handle_mkdir(const char * path) noexcept {
+      const int wlen = MultiByteToWideChar(CP_UTF8, 0, path, -1, nullptr, 0);
+      if (wlen <= 0 || wlen > static_cast<int>(FSH_MAX_PATH)) [[unlikely]] {
+        return INVALID_HANDLE_VALUE;
+      }
+      wchar_t wpath[FSH_MAX_PATH];
+      MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, wlen);
+
+      HANDLE h = open_rw_handle_(wpath);
+      if (h != INVALID_HANDLE_VALUE) [[likely]] {
+        return h;
+      }
+      if (GetLastError() != ERROR_PATH_NOT_FOUND) [[unlikely]] {
+        return INVALID_HANDLE_VALUE;
+      }
+      int sep = wlen - 1;
+      while (sep > 0 && wpath[sep] != L'\\' && wpath[sep] != L'/') {
+        --sep;
+      }
+      if (sep > 0) {
+        mkdirW_(wpath, sep);
+      }
+      return open_rw_handle_(wpath);
     }
 
     static inline int mkdir_p(const char * path, size_t len) noexcept {
@@ -582,16 +720,6 @@ namespace fast_fs_hash {
       const uint64_t p_ino = ((static_cast<uint64_t>(info.nFileIndexHigh) << 32) | info.nFileIndexLow) & INO_VALUE_MASK;
       entry.writeStat(p_ino, li_to_ns(basicInfo.LastWriteTime), li_to_ns(basicInfo.ChangeTime), sz64);
       return true;
-    }
-
-    static inline void make_tmp_path(char * dst, const char * cache_path, size_t path_len) noexcept {
-      static std::atomic<uint32_t> counter{0};
-      const uint32_t seq = counter.fetch_add(1, std::memory_order_relaxed);
-      char suffix[64];
-      const int suffix_len =
-        snprintf(suffix, sizeof(suffix), ".%u_%x.tmp", static_cast<unsigned>(GetCurrentProcessId()), seq);
-      memcpy(dst, cache_path, path_len);
-      memcpy(dst + path_len, suffix, static_cast<size_t>(suffix_len) + 1);
     }
   };
 

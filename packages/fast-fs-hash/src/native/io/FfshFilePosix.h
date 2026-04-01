@@ -6,7 +6,14 @@
 #  include "../includes.h"
 #  include "../file-hash-cache/file-hash-cache-format.h"
 
+#  include <sys/file.h>
+#  include <time.h>
+
 namespace fast_fs_hash {
+
+  /** Opaque lock token — fd + 1 (POSIX) packed into a uint64_t. 0 = invalid. */
+  using CacheLockHandle = uint64_t;
+  static constexpr CacheLockHandle CACHE_LOCK_INVALID = 0;
 
   /**
    * RAII file handle — POSIX implementation.
@@ -16,11 +23,14 @@ namespace fast_fs_hash {
    *   Supports openat() for dir-fd-relative access.
    *
    * Read/write factories (cache files):
-   *   open_read(), open_write(), open_tmp().
-   *   Atomic write: open_tmp() → write_all() → commit(dest_path).
+   *   open_read(), open_write(), open_locked().
    *
-   * On destruction: closes fd, and if a tmp_path is set (write mode),
-   * unlinks the temp file and frees the path buffer.
+   * Locking:
+   *   open_locked() opens/creates the file and acquires an exclusive
+   *   fcntl byte-range lock. The lock is released when close() is called
+   *   or the fd is closed. Supports blocking, non-blocking, and timeout.
+   *
+   * On destruction: closes fd.
    */
   class FfshFile : NonCopyable {
    public:
@@ -49,21 +59,21 @@ namespace fast_fs_hash {
 
     FfshFile() noexcept = default;
 
-    ~FfshFile() noexcept { this->cleanup(); }
-
-    FfshFile(FfshFile && other) noexcept : fd(other.fd), tmp_path_(other.tmp_path_), write_start_(other.write_start_) {
-      other.fd = -1;
-      other.tmp_path_ = nullptr;
+    ~FfshFile() noexcept {
+      if (this->fd >= 0) {
+        close_fd(this->fd);
+      }
     }
+
+    FfshFile(FfshFile && other) noexcept : fd(other.fd) { other.fd = -1; }
 
     FfshFile & operator=(FfshFile && other) noexcept {
       if (this != &other) {
-        this->cleanup();
+        if (this->fd >= 0) {
+          close_fd(this->fd);
+        }
         this->fd = other.fd;
-        this->tmp_path_ = other.tmp_path_;
-        this->write_start_ = other.write_start_;
         other.fd = -1;
-        other.tmp_path_ = nullptr;
       }
       return *this;
     }
@@ -73,7 +83,7 @@ namespace fast_fs_hash {
 
     // ── Lifecycle ──────────────────────────────────────────────────────
 
-    /** Close the fd. Safe to call multiple times. Does NOT unlink tmp. */
+    /** Close the fd. Safe to call multiple times. */
     inline void close() noexcept {
       if (this->fd >= 0) {
         close_fd(this->fd);
@@ -81,13 +91,144 @@ namespace fast_fs_hash {
       }
     }
 
-    /** Release ownership of the fd without closing or unlinking. Frees tmp_path. */
+    /** Release ownership of the fd without closing. */
     inline int release() noexcept {
       const int f = this->fd;
       this->fd = -1;
-      free(this->tmp_path_);
-      this->tmp_path_ = nullptr;
       return f;
+    }
+
+    // ── Locking ────────────────────────────────────────────────────────
+
+    /**
+     * Open-or-create a cache file and acquire an exclusive fcntl lock.
+     *
+     * @param path      Cache file path.
+     * @param timeoutMs -1 = block forever, 0 = non-blocking try, >0 = timeout in ms.
+     * @param outError  Set to an error string on failure.
+     * @return FfshFile with the locked fd, or invalid on failure.
+     */
+    static FSH_NO_INLINE FfshFile open_locked(const char * path, int timeoutMs, const char *& outError) noexcept {
+      outError = nullptr;
+      FfshFile f;
+
+      if (!path || path[0] == '\0') [[unlikely]] {
+        outError = "CacheLock: empty cache path";
+        return f;
+      }
+      if (strlen(path) >= FSH_MAX_PATH) [[unlikely]] {
+        outError = "CacheLock: cache path too long";
+        return f;
+      }
+
+      f.fd = open_rw_mkdir(path);
+      if (f.fd < 0) [[unlikely]] {
+        outError = "CacheLock: failed to open cache file for locking";
+        return f;
+      }
+
+      if (timeoutMs == 0) {
+        if (fcntl_lock_(f.fd, F_SETLK) != 0) [[unlikely]] {
+          f.close();
+          outError = "CacheLock: lock not available";
+          return f;
+        }
+      } else if (timeoutMs < 0) {
+        if (fcntl_lock_(f.fd, F_SETLKW) != 0) [[unlikely]] {
+          f.close();
+          outError = "CacheLock: fcntl F_SETLKW failed";
+          return f;
+        }
+      } else {
+        struct timespec start;
+        clock_gettime(CLOCK_MONOTONIC, &start);
+        int sleepUs = 500;
+
+        for (;;) {
+          if (fcntl_lock_(f.fd, F_SETLK) == 0) [[likely]] {
+            break;
+          }
+          if (errno != EAGAIN && errno != EACCES) [[unlikely]] {
+            f.close();
+            outError = "CacheLock: fcntl failed";
+            return f;
+          }
+
+          struct timespec now;
+          clock_gettime(CLOCK_MONOTONIC, &now);
+          const int64_t elapsedMs =
+            (now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) / 1000000;
+          if (elapsedMs >= static_cast<int64_t>(timeoutMs)) [[unlikely]] {
+            f.close();
+            outError = "CacheLock: timeout waiting for cache lock";
+            return f;
+          }
+
+          const struct timespec ts = {0, static_cast<long>(sleepUs) * 1000L};
+          ::nanosleep(&ts, nullptr);
+          if (sleepUs < 50000) {
+            sleepUs += sleepUs / 2;
+          }
+        }
+      }
+
+      return f;
+    }
+
+    /** Convert this FfshFile to a CacheLockHandle (fd + 1). Releases ownership. */
+    FSH_FORCE_INLINE CacheLockHandle to_lock_handle() noexcept {
+      if (this->fd < 0) [[unlikely]] {
+        return CACHE_LOCK_INVALID;
+      }
+      const CacheLockHandle h = static_cast<CacheLockHandle>(this->fd) + 1;
+      this->fd = -1;
+      return h;
+    }
+
+    /** Create an FfshFile from a CacheLockHandle. Takes ownership. */
+    static FSH_FORCE_INLINE FfshFile from_lock_handle(CacheLockHandle handle) noexcept {
+      FfshFile f;
+      if (handle != CACHE_LOCK_INVALID) [[likely]] {
+        f.fd = static_cast<int>(handle - 1);
+      }
+      return f;
+    }
+
+    /** Release a CacheLockHandle (unlock + close). */
+    static inline void release_lock_handle(CacheLockHandle handle) noexcept {
+      if (handle == CACHE_LOCK_INVALID) [[unlikely]] {
+        return;
+      }
+      const int fd = static_cast<int>(handle - 1);
+      struct flock fl{};
+      fl.l_type   = F_UNLCK;
+      fl.l_whence = SEEK_SET;
+      fl.l_start  = 0;
+      fl.l_len    = 1;
+      ::fcntl(fd, F_SETLK, &fl);
+      ::close(fd);
+    }
+
+    /** Non-blocking check: returns true if the file is currently locked by another holder. */
+    static inline bool is_locked(const char * cachePath) noexcept {
+      if (!cachePath || cachePath[0] == '\0') [[unlikely]] {
+        return false;
+      }
+      const int fd = ::open(cachePath, O_RDONLY | O_CLOEXEC, 0);
+      if (fd < 0) [[unlikely]] {
+        return false;
+      }
+      struct flock fl{};
+      fl.l_type   = F_WRLCK;
+      fl.l_whence = SEEK_SET;
+      fl.l_start  = 0;
+      fl.l_len    = 1;
+      const int rc = ::fcntl(fd, F_GETLK, &fl);
+      ::close(fd);
+      if (rc != 0) [[unlikely]] {
+        return false;
+      }
+      return fl.l_type != F_UNLCK;
     }
 
     // ── Advise the OS about read patterns ──────────────────────────────
@@ -179,29 +320,25 @@ namespace fast_fs_hash {
       return true;
     }
 
-    /**
-     * Close the fd and atomically rename tmp → dest.
-     * On rename failure, checks "newer wins".
-     * Returns true on success. Frees tmp_path regardless.
-     */
-    inline bool commit(const char * dest_path) noexcept {
-      this->close();
-      char * tmp = this->tmp_path_;
-      const auto ws = this->write_start_;
-      this->tmp_path_ = nullptr;
+    /** Truncate the file to the given length. Returns true on success. */
+    inline bool truncate(size_t len) noexcept {
+      return ::ftruncate(this->fd, static_cast<off_t>(len)) == 0;
+    }
 
-      if (!tmp) return false;
+    /** Seek to a position from the beginning of the file. Returns true on success. */
+    inline bool seek(size_t offset) noexcept {
+      return ::lseek(this->fd, static_cast<off_t>(offset), SEEK_SET) >= 0;
+    }
 
-      if (::rename(tmp, dest_path) == 0) [[likely]] {
-        free(tmp);
-        return true;
-      }
-
-      // "Newer wins": if dest was modified after we started, accept it
-      ::unlink(tmp);
-      const bool ok = file_modified_since(dest_path, ws);
-      free(tmp);
-      return ok;
+    /** Flush file data to disk. Returns true on success. */
+    inline bool fsync_data() noexcept {
+#  if defined(__APPLE__)
+      return ::fcntl(this->fd, F_FULLFSYNC) == 0 || ::fsync(this->fd) == 0;
+#  elif defined(__linux__)
+      return ::fdatasync(this->fd) == 0;
+#  else
+      return ::fsync(this->fd) == 0;
+#  endif
     }
 
     // ── Static factories ───────────────────────────────────────────────
@@ -213,26 +350,10 @@ namespace fast_fs_hash {
       return f;
     }
 
-    /** Open a file for writing (with mkdir on ENOENT). No tmp cleanup. */
+    /** Open a file for writing (with mkdir on ENOENT). */
     static inline FfshFile open_write(const char * path) noexcept {
       FfshFile f;
       f.fd = open_wr_mkdir(path);
-      return f;
-    }
-
-    /**
-     * Open a temp file for atomic writing.
-     * Generates a unique tmp path from cache_path (appends .PID_SEQ.tmp).
-     */
-    static inline FfshFile open_tmp(const char * cache_path) noexcept {
-      FfshFile f;
-      const size_t path_len = strlen(cache_path);
-      auto * buf = static_cast<char *>(malloc(path_len + 64));
-      if (!buf) return f;
-      make_tmp_path(buf, cache_path, path_len);
-      f.tmp_path_ = buf;
-      f.write_start_ = get_time();
-      f.fd = open_wr_mkdir(buf);
       return f;
     }
 
@@ -257,19 +378,6 @@ namespace fast_fs_hash {
 
     /** Close a raw fd. */
     static inline void close_fd(int f) noexcept { ::close(f); }
-
-    /** Standalone atomic rename with newer-wins. */
-    static inline bool atomic_rename(const char * tmp_path, const char * dest_path) noexcept {
-      const WriteTime ws = get_time();
-      if (::rename(tmp_path, dest_path) == 0) [[likely]]
-        return true;
-      if (file_modified_since(dest_path, ws)) {
-        ::unlink(tmp_path);
-        return true;
-      }
-      ::unlink(tmp_path);
-      return false;
-    }
 
     // ── Stat helpers ──────────────────────────────────────────────────────
 
@@ -312,45 +420,25 @@ namespace fast_fs_hash {
     }
 
    private:
-    char * tmp_path_ = nullptr;
+    // ── fcntl lock helper ──────────────────────────────────────────────
 
-    struct WriteTime {
-      struct timespec ts{};
-    };
-
-    WriteTime write_start_{};
-
-    // ── Cleanup ────────────────────────────────────────────────────────
-
-    inline void cleanup() noexcept {
-      if (this->fd >= 0) {
-        close_fd(this->fd);
-        this->fd = -1;
+    /** Apply or try an exclusive fcntl lock on byte 0 of fd. */
+    static FSH_FORCE_INLINE int fcntl_lock_(int fd, int cmd) noexcept {
+      struct flock fl{};
+      fl.l_type   = F_WRLCK;
+      fl.l_whence = SEEK_SET;
+      fl.l_start  = 0;
+      fl.l_len    = 1;
+      for (;;) {
+        const int rc = ::fcntl(fd, cmd, &fl);
+        if (rc == 0) [[likely]] {
+          return 0;
+        }
+        if (errno == EINTR) [[unlikely]] {
+          continue;
+        }
+        return -1;
       }
-      if (this->tmp_path_) {
-        ::unlink(this->tmp_path_);
-        free(this->tmp_path_);
-        this->tmp_path_ = nullptr;
-      }
-    }
-
-    // ── Timestamp helpers ──────────────────────────────────────────────
-
-    static inline WriteTime get_time() noexcept {
-      WriteTime t{};
-      clock_gettime(CLOCK_REALTIME, &t.ts);
-      return t;
-    }
-
-    static inline bool file_modified_since(const char * path, WriteTime start) noexcept {
-      struct stat st{};
-      if (::stat(path, &st) != 0) return false;
-#  if defined(__APPLE__)
-      const auto & mts = st.st_mtimespec;
-#  else
-      const auto & mts = st.st_mtim;
-#  endif
-      return mts.tv_sec > start.ts.tv_sec || (mts.tv_sec == start.ts.tv_sec && mts.tv_nsec >= start.ts.tv_nsec);
     }
 
     // ── Platform file operations ───────────────────────────────────────
@@ -369,6 +457,10 @@ namespace fast_fs_hash {
 
     static inline int open_wr(const char * path) noexcept {
       return ::open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
+    }
+
+    static inline int open_rw(const char * path) noexcept {
+      return ::open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
     }
 
     static inline int mkdir_p(const char * path, size_t len) noexcept {
@@ -400,6 +492,20 @@ namespace fast_fs_hash {
       return f;
     }
 
+    static inline int open_rw_mkdir(const char * path) noexcept {
+      int f = open_rw(path);
+      if (f >= 0 || errno != ENOENT) [[likely]]
+        return f;
+      const size_t len = strlen(path);
+      size_t sep = len;
+      while (sep > 0 && path[sep - 1] != '/')
+        --sep;
+      if (sep > 1 && mkdir_p(path, sep - 1) == 0) {
+        f = open_rw(path);
+      }
+      return f;
+    }
+
     // ── Stat internal helper ───────────────────────────────────────────
 
     static FSH_FORCE_INLINE bool stat_from_struct_(
@@ -418,17 +524,6 @@ namespace fast_fs_hash {
 
       entry.writeStat(static_cast<uint64_t>(st.st_ino) & INO_VALUE_MASK, mtimeNs, ctimeNs, static_cast<uint64_t>(st.st_size));
       return true;
-    }
-
-    // ── Temp path generation ───────────────────────────────────────────
-
-    static inline void make_tmp_path(char * dst, const char * cache_path, size_t path_len) noexcept {
-      static std::atomic<uint32_t> counter{0};
-      const uint32_t seq = counter.fetch_add(1, std::memory_order_relaxed);
-      char suffix[64];
-      const int suffix_len = snprintf(suffix, sizeof(suffix), ".%u_%x.tmp", static_cast<unsigned>(getpid()), seq);
-      memcpy(dst, cache_path, path_len);
-      memcpy(dst + path_len, suffix, static_cast<size_t>(suffix_len) + 1);
     }
   };
 
