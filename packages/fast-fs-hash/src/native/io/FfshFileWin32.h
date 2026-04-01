@@ -752,6 +752,30 @@ namespace fast_fs_hash {
         dest.set_zero();
         return;
       }
+      hash_open_file_(rf, dest, rbuf, rbs);
+    }
+
+    /** Combined stat + hash: opens file once, fstats the fd, then reads and hashes.
+     *  Saves one syscall vs separate stat_into() + hash_file(). */
+    FSH_FORCE_INLINE bool stat_and_hash_file(
+      CacheEntry & entry, Hash128 & dest, unsigned char * rbuf, size_t rbs) const noexcept {
+      FfshFile rf = this->open_file();
+      if (!rf) [[unlikely]] {
+        entry.clearStat();
+        dest.set_zero();
+        return false;
+      }
+      if (!FfshFile::fstat_into(rf.fd, entry)) [[unlikely]] {
+        dest.set_zero();
+        return false;
+      }
+      hash_open_file_(rf, dest, rbuf, rbs);
+      return true;
+    }
+
+   private:
+    static FSH_FORCE_INLINE void hash_open_file_(
+      FfshFile & rf, Hash128 & dest, unsigned char * rbuf, size_t rbs) noexcept {
       const int64_t n = rf.read_at_most(rbuf, rbs);
       if (n < 0) [[unlikely]] {
         dest.set_zero();

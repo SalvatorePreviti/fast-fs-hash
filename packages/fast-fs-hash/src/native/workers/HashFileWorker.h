@@ -10,7 +10,6 @@
 #define _FAST_FS_HASH_HASH_FILE_WORKER_H
 
 #include "includes.h"
-#include "AlignedPtr.h"
 #include "FfshFile.h"
 #include "AddonWorker.h"
 
@@ -26,6 +25,10 @@ class HashFileWorker final : public fast_fs_hash::AddonWorker {
     this->has_external_ = true;
   }
 
+  static_assert(
+    fast_fs_hash::READ_BUFFER_SIZE <= fast_fs_hash::ThreadPool::THREAD_STACK_SIZE - 64 * 1024,
+    "read buffer exceeds pool thread usable stack");
+
   void Execute() override {
     fast_fs_hash::FfshFile fh(this->path_.c_str());
     if (!fh) [[unlikely]] {
@@ -37,14 +40,10 @@ class HashFileWorker final : public fast_fs_hash::AddonWorker {
       return;
     }
 
-    AlignedPtr<uint8_t> rbuf(64, fast_fs_hash::READ_BUFFER_SIZE);
-    if (!rbuf) [[unlikely]] {
-      this->signal("hashFile: out of memory");
-      return;
-    }
+    alignas(64) uint8_t rbuf[fast_fs_hash::READ_BUFFER_SIZE];
 
     // Try one-shot for small files.
-    const int64_t n = fh.read_at_most(rbuf.ptr, fast_fs_hash::READ_BUFFER_SIZE);
+    const int64_t n = fh.read_at_most(rbuf, fast_fs_hash::READ_BUFFER_SIZE);
     if (n < 0) [[unlikely]] {
       if (this->throw_on_error_) {
         this->signal("hashFile: read error");
@@ -58,16 +57,16 @@ class HashFileWorker final : public fast_fs_hash::AddonWorker {
     if (bytes < fast_fs_hash::READ_BUFFER_SIZE) [[likely]] {
       // Entire file in one read — one-shot hash (fast path).
       XXH128_canonicalFromHash(
-        reinterpret_cast<XXH128_canonical_t *>(this->digest_), XXH3_128bits(rbuf.ptr, bytes));
+        reinterpret_cast<XXH128_canonical_t *>(this->digest_), XXH3_128bits(rbuf, bytes));
     } else {
       // Large file — streaming.
       fh.hint_sequential();
       XXH3_state_t state;
       XXH3_128bits_reset(&state);
-      XXH3_128bits_update(&state, rbuf.ptr, bytes);
+      XXH3_128bits_update(&state, rbuf, bytes);
 
       for (;;) {
-        const int64_t n2 = fh.read(rbuf.ptr, fast_fs_hash::READ_BUFFER_SIZE);
+        const int64_t n2 = fh.read(rbuf, fast_fs_hash::READ_BUFFER_SIZE);
         if (n2 <= 0) [[unlikely]] {
           if (n2 < 0) {
             if (this->throw_on_error_) {
@@ -79,7 +78,7 @@ class HashFileWorker final : public fast_fs_hash::AddonWorker {
           }
           break;
         }
-        XXH3_128bits_update(&state, rbuf.ptr, static_cast<size_t>(n2));
+        XXH3_128bits_update(&state, rbuf, static_cast<size_t>(n2));
       }
 
       XXH128_canonicalFromHash(reinterpret_cast<XXH128_canonical_t *>(this->digest_), XXH3_128bits_digest(&state));

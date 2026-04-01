@@ -147,8 +147,14 @@ namespace fast_fs_hash {
 
     FSH_NO_INLINE void finish_(CacheStatus st) noexcept {
       if (!this->dataBuf_) [[unlikely]] {
-        this->dataBuf_ = OwnedBuf<>::calloc(CacheHeader::SIZE);
-        this->fileCount_ = 0;
+        // Build full dataBuf with file list so CacheWriter skips remap
+        if (this->encodedLen_ > 0 && this->fileCount_ > 0) {
+          this->dataBuf_ = buildCacheDataBuf(this->encodedPaths_, this->encodedLen_, this->fileCount_);
+        }
+        if (!this->dataBuf_) {
+          this->dataBuf_ = OwnedBuf<>::calloc(CacheHeader::SIZE);
+          this->fileCount_ = 0;
+        }
       }
       this->finalize_(st);
       this->signal();

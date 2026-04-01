@@ -482,13 +482,10 @@ namespace fast_fs_hash {
             continue;
           }
 
-          // New entry (NOT_CHECKED) — full stat + hash
-          const bool statOk = resolver.stat_into(entry);
-          if (!statOk) [[unlikely]] {
-            entry.contentHash.set_zero();
+          // New entry (NOT_CHECKED) — combined stat + hash in one open
+          if (!resolver.stat_and_hash_file(entry, entry.contentHash, readBuf, readBufSize)) [[unlikely]] {
             continue;
           }
-          resolver.hash_file(entry.contentHash, readBuf, readBufSize);
         }
       }
     }

@@ -133,11 +133,11 @@ namespace fast_fs_hash {
     return deferred.Promise();
   }
 
-  /** cacheLockRelease(handle: number) → void — handle is an int32 fd. */
-  inline Napi::Value bindCacheLockRelease(const Napi::CallbackInfo & info) {
+  /** cacheClose(handle: number) → void — handle is an int32 fd. */
+  inline Napi::Value bindCacheClose(const Napi::CallbackInfo & info) {
     const auto env = info.Env();
     if (info.Length() < 1 || !info[0].IsNumber()) [[unlikely]] {
-      Napi::TypeError::New(env, "cacheLockRelease: expected number handle").ThrowAsJavaScriptException();
+      Napi::TypeError::New(env, "cacheClose: expected number handle").ThrowAsJavaScriptException();
       return env.Undefined();
     }
     int32_t handle = FFSH_FILE_HANDLE_INVALID;
@@ -153,11 +153,11 @@ namespace fast_fs_hash {
     return env.Undefined();
   }
 
-  /** cacheLockIsLocked(cachePath: string) → boolean */
-  inline Napi::Value bindCacheLockIsLocked(const Napi::CallbackInfo & info) {
+  /** cacheIsLocked(cachePath: string) → boolean */
+  inline Napi::Value bindCacheIsLocked(const Napi::CallbackInfo & info) {
     const auto env = info.Env();
     if (info.Length() < 1 || !info[0].IsString()) [[unlikely]] {
-      Napi::TypeError::New(env, "cacheLockIsLocked: expected (cachePath: string)").ThrowAsJavaScriptException();
+      Napi::TypeError::New(env, "cacheIsLocked: expected (cachePath: string)").ThrowAsJavaScriptException();
       return env.Undefined();
     }
     char cachePath[FSH_MAX_PATH];

@@ -50,8 +50,8 @@ namespace fast_fs_hash {
       if (spawnDetachedThread(detachedEntry_, this, stackSize)) [[likely]] {
         return;
       }
-      // Fallback: run synchronously (should never happen)
-      this->Execute();
+      // Thread creation failed — signal error instead of blocking the JS thread
+      this->signal("QueueDetached: failed to spawn thread");
     }
 
     void run() noexcept override {

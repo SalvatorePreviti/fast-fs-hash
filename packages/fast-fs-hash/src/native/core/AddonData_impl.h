@@ -12,12 +12,14 @@ namespace fast_fs_hash {
   inline void AddonData::init(napi_env env) {
     auto * d = new (std::nothrow) AddonData();
     if (!d) [[unlikely]] {
+      napi_throw_error(env, nullptr, "fast-fs-hash: out of memory allocating AddonData");
       return;
     }
 
     auto * handle = new (std::nothrow) uv_async_t();
     if (!handle) [[unlikely]] {
       delete d;
+      napi_throw_error(env, nullptr, "fast-fs-hash: out of memory allocating async handle");
       return;
     }
 

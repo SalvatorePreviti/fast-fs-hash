@@ -53,7 +53,7 @@ export interface BindingExportNative {
     throwOnError?: boolean
   ): Promise<void>;
   streamAddFilesSequential(state: object, pathsBuf: Uint8Array, throwOnError?: boolean): Promise<void>;
-  streamClone(state: object): object;
+  streamClone(dst: object, src: object): void;
   cacheOpen(
     encodedPaths: Uint8Array,
     fileCount: number,
@@ -71,8 +71,8 @@ export interface BindingExportNative {
     rootPath: string,
     userData: readonly Uint8Array[] | null | undefined
   ): Promise<number>;
-  cacheLockRelease(handle: number): void;
-  cacheLockIsLocked(cachePath: string): boolean;
+  cacheClose(handle: number): void;
+  cacheIsLocked(cachePath: string): boolean;
   lz4CompressBlock(input: Uint8Array, offset?: number, length?: number): Buffer;
   lz4CompressBlockTo(
     input: Uint8Array,

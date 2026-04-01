@@ -2,8 +2,9 @@
  * FileHashCache — read, validate, and write file hash caches with exclusive locking.
  *
  * Every open acquires an exclusive OS-level lock on the cache file. The lock is
- * held until {@link close} is called (or the `using` / `await using` disposable
- * pattern releases it). Writes go directly to the locked fd — no atomic rename.
+ * released by {@link FileHashCache.write} (after writing) or by
+ * {@link FileHashCache.close} / the `using` / `await using` disposable pattern.
+ * Writes go directly to the locked fd — no atomic rename.
  *
  * @module
  */
@@ -123,7 +124,8 @@ function readAllUserData(
  *
  * Created via {@link FileHashCache.open}. Provides readonly access to
  * the cache state and a {@link write} method to persist changes.
- * Release the lock via {@link close} or the `using` / `await using` disposable pattern.
+ * The lock is released by {@link write} (after writing) or by {@link close}
+ * / the `using` / `await using` disposable pattern.
  *
  * @example
  * ```ts
@@ -131,9 +133,9 @@ function readAllUserData(
  * if (cache.status !== "upToDate") {
  *   // ... rebuild ...
  *   await cache.write({ userData: [outputManifest] });
- *   // lock still held — write() never releases it
+ *   // write() released the lock — cache is now disposed
  * }
- * // lock released here by `await using`
+ * // `await using` calls close() again (no-op since already disposed)
  * ```
  */
 export class FileHashCache {
@@ -244,8 +246,9 @@ export class FileHashCache {
    * await using cache = await FileHashCache.open("cache.fsh", null, files, 1);
    * if (cache.status !== "upToDate") {
    *   await cache.write({ userData: [manifest] });
+   *   // write() released the lock
    * }
-   * // lock released here
+   * // `await using` calls close() (no-op if write() already released)
    * ```
    *
    * @param cachePath Path to the cache file. If relative, resolved from `rootPath`.
@@ -286,11 +289,7 @@ export class FileHashCache {
    * Release the exclusive lock and mark this instance as disposed.
    *
    * Safe to call multiple times — subsequent calls are no-ops.
-   *
-   * This is the **only** way to release the lock. {@link write} intentionally does
-   * not release it, because you may call `write` multiple times on a single open
-   * (e.g. flush updated stats, then later flush rebuilt hashes). Use `await using`
-   * for automatic release, or call `close()` explicitly in a `finally` block.
+   * Also called automatically by {@link write} after a successful write.
    */
   public close(): void {
     if (this.#closed) {
@@ -301,7 +300,7 @@ export class FileHashCache {
     const h = buf.readInt32LE(H_FILE_HANDLE);
     buf.writeInt32LE(-1, H_FILE_HANDLE);
     if (h !== -1) {
-      binding.cacheLockRelease(h);
+      binding.cacheClose(h);
     }
   }
 
@@ -321,22 +320,27 @@ export class FileHashCache {
    * Non-blocking — does not acquire the lock.
    */
   public static isLocked(cachePath: string): boolean {
-    return binding.cacheLockIsLocked(cachePath);
+    return binding.cacheIsLocked(cachePath);
   }
 
   /**
-   * Write the cache file. Hashes any unresolved entries, LZ4-compresses,
-   * and writes directly to the locked cache fd.
+   * Write the cache file and release the lock.
+   *
+   * Hashes any unresolved entries, LZ4-compresses, and writes directly to the
+   * locked cache fd. After writing, the lock is released and this instance is
+   * marked as disposed — no further reads or writes are possible.
    *
    * If `options.files` is provided, builds a new file list and remaps entries
    * from the current dataBuf (preserving hashes for unchanged files).
    *
-   * **The lock is not released after write.** You may call `write` multiple times
-   * on a single open. Call {@link close} (or rely on `await using`) to release the lock.
-   *
+   * @throws If this instance has already been closed or written.
    * @returns `true` if the write succeeded, `false` on failure.
    */
   public async write(options?: FileHashCacheWriteOptions): Promise<boolean> {
+    if (this.#closed) {
+      throw new Error("FileHashCache: already closed");
+    }
+
     const dataBuf = this.#dataBuf;
     const opts = options ?? {};
 
@@ -367,14 +371,18 @@ export class FileHashCache {
     const resultFiles = opts.files;
     const root = this.rootPath;
     let result: number;
-    if (resultFiles) {
-      const newRoot = resolveRoot(null, resultFiles, opts.rootPath ?? root);
-      const newNormalized = normalizeFilePaths(newRoot, resultFiles);
-      const newEncoded = encodeNormalizedPaths(newNormalized);
-      result = await cacheWrite(dataBuf, newEncoded, newNormalized.length, this.cachePath, newRoot, ud);
-    } else {
-      const encoded = this.#encodedPaths;
-      result = await cacheWrite(dataBuf, encoded, this.fileCount, this.cachePath, root, ud);
+    try {
+      if (resultFiles) {
+        const newRoot = resolveRoot(null, resultFiles, opts.rootPath ?? root);
+        const newNormalized = normalizeFilePaths(newRoot, resultFiles);
+        const newEncoded = encodeNormalizedPaths(newNormalized);
+        result = await cacheWrite(dataBuf, newEncoded, newNormalized.length, this.cachePath, newRoot, ud);
+      } else {
+        const encoded = this.#encodedPaths;
+        result = await cacheWrite(dataBuf, encoded, this.fileCount, this.cachePath, root, ud);
+      }
+    } finally {
+      this.close();
     }
     return result === 0;
   }

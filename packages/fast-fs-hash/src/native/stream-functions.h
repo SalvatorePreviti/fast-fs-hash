@@ -143,10 +143,14 @@ namespace stream_functions {
     if (info.Length() > 3 && napi_get_value_uint32(env, info[3], &len32) == napi_ok) {
       length = len32;
     } else {
+      if (static_cast<size_t>(offset) > buf_len) [[unlikely]] {
+        Napi::RangeError::New(env, "streamAddBuffer: offset exceeds buffer size").ThrowAsJavaScriptException();
+        return Napi::Value(env, nullptr);
+      }
       length = buf_len - static_cast<size_t>(offset);
     }
 
-    if (static_cast<size_t>(offset) + length > buf_len) [[unlikely]] {
+    if (length > buf_len || static_cast<size_t>(offset) > buf_len - length) [[unlikely]] {
       Napi::RangeError::New(env, "streamAddBuffer: offset + length exceeds buffer size").ThrowAsJavaScriptException();
       return Napi::Value(env, nullptr);
     }
@@ -260,24 +264,18 @@ namespace stream_functions {
     return deferred.Promise();
   }
 
-  /** streamClone(state) → External (new independent copy of the hash state) */
+  /** streamClone(dst, src) → void — copies src hash state into dst (both must be allocated states) */
   static Napi::Value streamClone(const Napi::CallbackInfo & info) {
     auto env = info.Env();
 
-    auto * src_state = getState(env, info[0]);
+    auto * dst_state = getState(env, info[0]);
+    if (!dst_state) [[unlikely]] return Napi::Value(env, nullptr);
+
+    auto * src_state = getState(env, info[1]);
     if (!src_state) [[unlikely]] return Napi::Value(env, nullptr);
 
-    auto * tag = reinterpret_cast<TaggedState *>(aligned_malloc(STATE_ALIGNMENT, TOTAL_STATE_ALLOC));
-    if (!tag) [[unlikely]] {
-      Napi::Error::New(env, "streamClone: out of memory").ThrowAsJavaScriptException();
-      return Napi::Value(env, nullptr);
-    }
-
-    tag->magic = STATE_MAGIC;
-    auto * dst_state = stateFromTag(tag);
     XXH3_copyState(dst_state, src_state);
-
-    return Napi::External<TaggedState>::New(env, tag, freeTaggedState);
+    return Napi::Env(env).Undefined();
   }
 
 }  // namespace stream_functions

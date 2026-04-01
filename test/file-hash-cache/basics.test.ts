@@ -1415,4 +1415,96 @@ describe("FileHashCache [native]", () => {
       writeFileSync(fixtureFile("a.txt"), "hello world\n");
     });
   });
+
+  // ── lifecycle: disposed, close, write-closes-lock ──────────────────
+
+  describe("lifecycle", () => {
+    it("disposed is false after open, true after close", async () => {
+      const cp = cachePath("disposed");
+      const files = [fixtureFile("a.txt")];
+      const ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
+      expect(ctx.disposed).toBe(false);
+      ctx.close();
+      expect(ctx.disposed).toBe(true);
+    });
+
+    it("close is idempotent — multiple calls are safe", async () => {
+      const cp = cachePath("close-idem");
+      const files = [fixtureFile("a.txt")];
+      const ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
+      ctx.close();
+      ctx.close();
+      ctx.close();
+      expect(ctx.disposed).toBe(true);
+    });
+
+    it("write() releases the lock and marks disposed", async () => {
+      const cp = cachePath("write-closes");
+      const files = [fixtureFile("a.txt"), fixtureFile("b.txt")];
+      const ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
+      expect(ctx.disposed).toBe(false);
+      const ok = await ctx.write();
+      expect(ok).toBe(true);
+      expect(ctx.disposed).toBe(true);
+    });
+
+    it("write() throws on already-closed cache", async () => {
+      const cp = cachePath("write-after-close");
+      const files = [fixtureFile("a.txt")];
+      const ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
+      ctx.close();
+      await expect(ctx.write()).rejects.toThrow("already closed");
+    });
+
+    it("write() followed by another write() throws", async () => {
+      const cp = cachePath("double-write");
+      const files = [fixtureFile("a.txt")];
+      const ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
+      await ctx.write();
+      await expect(ctx.write()).rejects.toThrow("already closed");
+    });
+
+    it("await using releases the lock after write", async () => {
+      const cp = cachePath("await-using-write");
+      const files = [fixtureFile("a.txt"), fixtureFile("b.txt")];
+      {
+        await using ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
+        await ctx.write();
+        // write() already released — await using close() is a no-op
+      }
+      // Verify cache is readable
+      {
+        await using ctx2 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
+        expect(ctx2.status).toBe("upToDate");
+      }
+    });
+
+    it("await using releases the lock without write", async () => {
+      const cp = cachePath("await-using-nowrite");
+      const files = [fixtureFile("a.txt")];
+      {
+        await using ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
+        expect(ctx.status).toBe("missing");
+        // no write — await using should still release the lock
+      }
+      // Verify the lock is released: can open again
+      {
+        await using ctx2 = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
+        expect(ctx2.status).toBe("missing");
+      }
+    });
+
+    it("properties are still readable after write()", async () => {
+      const cp = cachePath("read-after-write");
+      const files = [fixtureFile("a.txt"), fixtureFile("b.txt")];
+      const ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
+      await ctx.write({ userValue0: 42 });
+      // Properties set at construction time should still be accessible
+      expect(ctx.fileCount).toBe(2);
+      expect(ctx.version).toBe(1);
+      expect(ctx.rootPath).toMatch(FIXTURE_DIR);
+      expect(ctx.userValue0).toBe(0); // original value, not written value
+      expect(ctx.disposed).toBe(true);
+    });
+  });
 });

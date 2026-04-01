@@ -9,7 +9,7 @@ export const { from: bufferFrom, allocUnsafe: bufferAllocUnsafe, isBuffer } = Bu
 
 /** Clamp concurrency to [1..8], defaulting 0 to 8, and cap at fileCount. */
 export function effectiveConcurrency(fileCount: number, concurrency: number): number {
-  const c = concurrency > 0 && concurrency < 8 ? concurrency : 8;
+  const c = concurrency > 0 && concurrency <= 8 ? concurrency : 8;
   return Math.min(c, fileCount);
 }
 

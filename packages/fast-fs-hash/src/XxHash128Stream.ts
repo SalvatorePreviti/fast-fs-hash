@@ -187,7 +187,7 @@ export class XxHash128Stream {
    */
   public clone(): XxHash128Stream {
     const copy = new XxHash128Stream(this.seedLow, this.seedHigh);
-    copy.#state = streamClone(this.#state);
+    streamClone(copy.#state, this.#state);
     return copy;
   }
 

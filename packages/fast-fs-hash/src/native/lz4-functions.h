@@ -42,7 +42,7 @@ namespace lz4_functions {
     }
 
     if (hasLength) {
-      if (static_cast<size_t>(offset) + length > bufLen) [[unlikely]] {
+      if (length > bufLen || static_cast<size_t>(offset) > bufLen - length) [[unlikely]] {
         Napi::RangeError::New(env, "offset + length exceeds buffer length").ThrowAsJavaScriptException();
         return false;
       }
@@ -320,6 +320,10 @@ namespace lz4_functions {
     void Execute() override {
       if (this->uncompSize_ == 0) {
         this->signal();
+        return;
+      }
+      if (this->len_ > static_cast<size_t>(INT32_MAX)) [[unlikely]] {
+        this->signal("lz4DecompressBlockAsync: input exceeds 2 GiB");
         return;
       }
       this->outBuf_ = static_cast<uint8_t *>(malloc(this->uncompSize_));
