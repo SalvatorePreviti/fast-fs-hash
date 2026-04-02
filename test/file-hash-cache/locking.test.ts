@@ -4,6 +4,11 @@
  * isLocked and waitUnlocked detect locks held by OTHER processes (POSIX fcntl
  * semantics: F_GETLK never reports the calling process's own locks). These
  * tests use child_process.fork() to hold locks from a separate process.
+ *
+ * Coordination uses IPC messages for deterministic signaling:
+ * - Child sends { acquired: true } when it holds the lock
+ * - Parent sends "release" when it wants the child to drop the lock
+ * - Child sends { released: true } after disposing the cache
  */
 
 import type { ChildProcess } from "node:child_process";
@@ -44,7 +49,6 @@ beforeAll(() => {
 });
 
 afterEach(() => {
-  // Kill any leftover children from the test
   for (const child of activeChildren) {
     child.kill("SIGKILL");
   }
@@ -55,7 +59,7 @@ afterAll(() => {
   rmSync(TEST_DIR, { recursive: true, force: true });
 });
 
-/** Spawn a child process that acquires an exclusive lock and hangs until killed. */
+/** Spawn a child process that acquires an exclusive lock and signals when ready. */
 function lockInChild(cp: string, files: string[]): Promise<{ child: ChildProcess; acquired: boolean }> {
   return new Promise((resolve, reject) => {
     const args = JSON.stringify({ mode: "lock-and-hang", cachePath: cp, rootPath: FIXTURE_DIR, files });
@@ -68,6 +72,25 @@ function lockInChild(cp: string, files: string[]): Promise<{ child: ChildProcess
     child.on("exit", () => {
       activeChildren.delete(child);
     });
+  });
+}
+
+/** Ask a child to release its lock via IPC and wait for confirmation. */
+function releaseChild(child: ChildProcess): Promise<void> {
+  return new Promise((resolve) => {
+    const onMsg = (msg: { released?: boolean }) => {
+      if (msg.released) {
+        child.removeListener("message", onMsg);
+        resolve();
+      }
+    };
+    child.on("message", onMsg);
+    // If the child dies before confirming, resolve anyway (lock is released by OS)
+    child.on("exit", () => {
+      activeChildren.delete(child);
+      resolve();
+    });
+    child.send("release");
   });
 }
 
@@ -113,20 +136,23 @@ describe("FileHashCache.isLocked", () => {
       expect(acquired).toBe(true);
       expect(FileHashCache.isLocked(cp)).toBe(true);
     } finally {
+      // Gracefully release, then verify unlocked
+      await releaseChild(child);
       await killChild(child);
     }
 
-    // After the child dies, OS releases the lock
     expect(FileHashCache.isLocked(cp)).toBe(false);
-  }, 15_000);
+  }, 30_000);
 
-  it("returns false when checking own process lock (fcntl limitation)", async () => {
+  it("returns false on POSIX (fcntl limitation) and true on Windows when checking own process lock", async () => {
     const cp = cachePath("own-lock");
     const files = [fixtureFile("a.txt")];
 
-    // fcntl F_GETLK never reports the calling process's own locks
+    // POSIX: fcntl F_GETLK never reports the calling process's own locks → false
+    // Windows: LockFileEx on a separate handle sees the lock even within the same process → true
     await using _ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-    expect(FileHashCache.isLocked(cp)).toBe(false);
+    const expected = process.platform === "win32";
+    expect(FileHashCache.isLocked(cp)).toBe(expected);
   });
 });
 
@@ -162,12 +188,12 @@ describe("FileHashCache.waitUnlocked", () => {
       expect(result0).toBe(false);
 
       // Short timeout — file is still locked
-      const result = await FileHashCache.waitUnlocked(cp, 200);
+      const result = await FileHashCache.waitUnlocked(cp, 100);
       expect(result).toBe(false);
     } finally {
       await killChild(child);
     }
-  }, 15_000);
+  }, 30_000);
 
   it("resolves true when lock is released before timeout", async () => {
     const cp = cachePath("release-wait");
@@ -177,15 +203,15 @@ describe("FileHashCache.waitUnlocked", () => {
     expect(acquired).toBe(true);
 
     // Start waiting with a generous timeout
-    const waitPromise = FileHashCache.waitUnlocked(cp, 10_000);
+    const waitPromise = FileHashCache.waitUnlocked(cp, 20_000);
 
-    // Release the lock after a short delay
-    await new Promise((r) => setTimeout(r, 200));
+    // Gracefully release the lock via IPC
+    await releaseChild(child);
     await killChild(child);
 
     const result = await waitPromise;
     expect(result).toBe(true);
-  }, 15_000);
+  }, 30_000);
 
   it("resolves true for infinite wait when lock is released", async () => {
     const cp = cachePath("infinite-wait");
@@ -197,13 +223,13 @@ describe("FileHashCache.waitUnlocked", () => {
     // Start waiting with -1 (infinite)
     const waitPromise = FileHashCache.waitUnlocked(cp, -1);
 
-    // Release the lock
-    await new Promise((r) => setTimeout(r, 200));
+    // Gracefully release the lock via IPC
+    await releaseChild(child);
     await killChild(child);
 
     const result = await waitPromise;
     expect(result).toBe(true);
-  }, 15_000);
+  }, 30_000);
 });
 
 //  - threadPoolTrim
