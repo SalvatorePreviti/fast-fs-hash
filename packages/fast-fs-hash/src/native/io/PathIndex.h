@@ -93,8 +93,22 @@ struct PathIndex : NonCopyable {
   /** True if any segment contains a path traversal sequence. Only meaningful when ValidatePaths=true. */
   FSH_FORCE_INLINE bool has_unsafe() const noexcept { return this->has_unsafe_; }
 
+  PathIndex() noexcept : count(0), segments(nullptr), max_seg_len(0), oom_(false), has_unsafe_(false) {}
+
   inline PathIndex(const uint8_t * buf, size_t len, size_t maxCount = SIZE_MAX) noexcept :
     count(0), segments(nullptr), max_seg_len(0), oom_(false), has_unsafe_(false) {
+    this->init(buf, len, maxCount);
+  }
+
+  /** Initialize or re-initialize from a null-separated buffer. */
+  inline void init(const uint8_t * buf, size_t len, size_t maxCount = SIZE_MAX) noexcept {
+    free(this->segments);
+    this->segments = nullptr;
+    this->count = 0;
+    this->max_seg_len = 0;
+    this->oom_ = false;
+    this->has_unsafe_ = false;
+
     if (len == 0 || buf == nullptr || maxCount == 0) {
       return;
     }

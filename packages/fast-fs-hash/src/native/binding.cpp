@@ -65,6 +65,7 @@ static Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("streamAddFile", Napi::Function::New(env, stream_functions::streamAddFile));
   exports.Set("streamAddFilesParallel", Napi::Function::New(env, stream_functions::streamAddFilesParallel));
   exports.Set("streamAddFilesSequential", Napi::Function::New(env, stream_functions::streamAddFilesSequential));
+  exports.Set("streamIsBusy", Napi::Function::New(env, stream_functions::streamIsBusy));
   exports.Set("streamClone", Napi::Function::New(env, stream_functions::streamClone));
 
   // Cache functions (always-locking: open acquires lock, write uses locked fd)

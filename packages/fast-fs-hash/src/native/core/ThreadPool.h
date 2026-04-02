@@ -282,9 +282,7 @@ namespace fast_fs_hash {
     }
 
     /** Release the TTAS spinlock guarding the task queue. */
-    FSH_FORCE_INLINE void q_release_() noexcept {
-      this->q_lock_.store(false, std::memory_order_release);
-    }
+    FSH_FORCE_INLINE void q_release_() noexcept { this->q_lock_.store(false, std::memory_order_release); }
 
     /** Push a task to the tail of the FIFO queue. */
     void push_task_(Task * task) noexcept {
@@ -369,8 +367,7 @@ namespace fast_fs_hash {
       while (count < target) {
 #ifdef _WIN32
         unsigned tid = 0;
-        uintptr_t h =
-          _beginthreadex(nullptr, static_cast<unsigned>(THREAD_STACK_SIZE), thread_entry_, this, 0, &tid);
+        uintptr_t h = _beginthreadex(nullptr, static_cast<unsigned>(THREAD_STACK_SIZE), thread_entry_, this, 0, &tid);
         if (!h) [[unlikely]] {
           break;
         }
@@ -394,6 +391,13 @@ namespace fast_fs_hash {
      * Try to unregister and detach this thread from the pool.
      * Returns true if the thread was detached and MUST exit immediately.
      * Returns false if work is pending or shutdown — caller should loop back.
+     *
+     * Race to close: a concurrent enqueue() can push a task after our first
+     * queue check but before this thread fully unregisters. To prevent stranding
+     * that work, we temporarily remove this thread from the pool metadata,
+     * re-check the queue under mu_, and restore the current thread if new work
+     * arrived. That keeps the current worker alive instead of relying on a
+     * replacement thread to spawn successfully under resource pressure.
      */
     bool thread_self_exit_() noexcept {
       std::lock_guard<std::mutex> lock(this->mu_);
@@ -423,6 +427,17 @@ namespace fast_fs_hash {
             this->thread_ids_[i] = this->thread_ids_[last];
           }
           this->thread_count_.store(last, std::memory_order_release);
+
+          this->q_acquire_();
+          const bool still_has_work = this->q_head_ != nullptr;
+          this->q_release_();
+          if (still_has_work) {
+            this->handles_[last] = h;
+            this->thread_ids_[last] = my_id;
+            this->thread_count_.store(count, std::memory_order_release);
+            return false;
+          }
+
           CloseHandle(h);
           return true;
         }
@@ -436,6 +451,16 @@ namespace fast_fs_hash {
             this->threads_[i] = this->threads_[last];
           }
           this->thread_count_.store(last, std::memory_order_release);
+
+          this->q_acquire_();
+          const bool still_has_work = this->q_head_ != nullptr;
+          this->q_release_();
+          if (still_has_work) {
+            this->threads_[last] = my_tid;
+            this->thread_count_.store(count, std::memory_order_release);
+            return false;
+          }
+
           pthread_detach(my_tid);
           return true;
         }

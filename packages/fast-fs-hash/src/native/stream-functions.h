@@ -19,22 +19,44 @@
  */
 namespace stream_functions {
 
+  struct StreamBusyGuard {
+    uint8_t * state_ptr;
+
+    explicit FSH_FORCE_INLINE StreamBusyGuard(uint8_t * p) noexcept : state_ptr(p) {}
+
+    FSH_FORCE_INLINE ~StreamBusyGuard() noexcept {
+      if (this->state_ptr) {
+        fast_fs_hash::clearStreamBusy(this->state_ptr);
+      }
+    }
+
+    FSH_FORCE_INLINE void release() noexcept { this->state_ptr = nullptr; }
+  };
+
   static constexpr size_t STATE_ALIGNMENT = 64;
 
-  /** Magic tag placed AFTER XXH3_state_t to validate the pointer. */
-  static constexpr uint64_t STATE_MAGIC = 0x5858'4833'7374'6174ULL;  // "XXH3stat"
+  /**
+   * Magic tag placed AFTER XXH3_state_t — doubles as the busy flag.
+   * MAGIC_IDLE  = normal state, safe for sync operations.
+   * MAGIC_BUSY  = async worker owns the state, sync ops must throw.
+   * Any other value = invalid/corrupt pointer.
+   *
+   * Single load, single compare — no separate busy field needed.
+   */
+  static constexpr uint64_t MAGIC_IDLE = 0x5858'4833'7374'6174ULL;  // "XXH3stat"
+  static constexpr uint64_t MAGIC_BUSY = 0x5858'4833'6275'7379ULL;  // "XXH3busy"
 
   /**
    * Tagged state layout (64-byte aligned):
-   *   [0..]                     XXH3_state_t (64-byte aligned for SIMD)
-   *   [sizeof(XXH3_state_t)..]  magic tag (STATE_MAGIC)
+   *   [0..]                        XXH3_state_t (64-byte aligned for SIMD)
+   *   [sizeof(XXH3_state_t)..]     magic tag (MAGIC_IDLE or MAGIC_BUSY)
    *
    * Total allocation: sizeof(XXH3_state_t) + 8, 64-byte aligned.
    * State is at offset 0 — perfect alignment with no wasted padding.
    */
   static constexpr size_t TOTAL_STATE_ALLOC = sizeof(XXH3_state_t) + sizeof(uint64_t);
 
-  static FSH_FORCE_INLINE uint64_t * magicOf(void * p) noexcept {
+  static FSH_FORCE_INLINE uint64_t * tagOf(void * p) noexcept {
     return reinterpret_cast<uint64_t *>(static_cast<uint8_t *>(p) + sizeof(XXH3_state_t));
   }
 
@@ -42,33 +64,55 @@ namespace stream_functions {
 
   /**
    * Extract and validate XXH3_state_t* from a napi_value (expected External).
-   * Throws TypeError and returns nullptr if the value is not a valid stream state.
+   * Throws TypeError on invalid/corrupt state, Error if busy.
+   * Returns nullptr on failure.
    */
   static FSH_FORCE_INLINE XXH3_state_t * getState(napi_env env, napi_value val) {
     void * ptr = nullptr;
-    if (napi_get_value_external(env, val, &ptr) != napi_ok || !ptr ||
-        *magicOf(ptr) != STATE_MAGIC) [[unlikely]] {
+    if (napi_get_value_external(env, val, &ptr) != napi_ok || !ptr) [[unlikely]] {
       Napi::TypeError::New(env, "Invalid stream state: expected object from streamAllocState()")
         .ThrowAsJavaScriptException();
       return nullptr;
     }
-    return static_cast<XXH3_state_t *>(ptr);
+    const uint64_t tag = *tagOf(ptr);
+    if (tag == MAGIC_IDLE) [[likely]] {
+      return static_cast<XXH3_state_t *>(ptr);
+    }
+    if (tag == MAGIC_BUSY) {
+      Napi::Error::New(env, "XxHash128Stream: cannot use state while an async operation is pending — await it first")
+        .ThrowAsJavaScriptException();
+    } else {
+      Napi::TypeError::New(env, "Invalid stream state: expected object from streamAllocState()")
+        .ThrowAsJavaScriptException();
+    }
+    return nullptr;
   }
 
   /**
-   * Extract and validate raw uint8_t* pointer to the XXH3 state.
-   * Used by async workers that need the raw pointer, not the XXH3_state_t*.
-   * Throws TypeError and returns nullptr on invalid state.
+   * Extract, validate, and mark the state as busy for an async operation.
+   * Returns raw pointer for async workers. Throws if already busy or invalid.
+   * Caller must restore MAGIC_IDLE via clearStreamBusy() in OnOK/OnError.
    */
-  static FSH_FORCE_INLINE uint8_t * getStateRawPtr(napi_env env, napi_value val) {
+  static FSH_FORCE_INLINE uint8_t * acquireStateForAsync(napi_env env, napi_value val) {
     void * ptr = nullptr;
-    if (napi_get_value_external(env, val, &ptr) != napi_ok || !ptr ||
-        *magicOf(ptr) != STATE_MAGIC) [[unlikely]] {
+    if (napi_get_value_external(env, val, &ptr) != napi_ok || !ptr) [[unlikely]] {
       Napi::TypeError::New(env, "Invalid stream state: expected object from streamAllocState()")
         .ThrowAsJavaScriptException();
       return nullptr;
     }
-    return static_cast<uint8_t *>(ptr);
+    uint64_t * tag = tagOf(ptr);
+    if (*tag == MAGIC_IDLE) [[likely]] {
+      *tag = MAGIC_BUSY;
+      return static_cast<uint8_t *>(ptr);
+    }
+    if (*tag == MAGIC_BUSY) {
+      Napi::Error::New(env, "XxHash128Stream: cannot use state while an async operation is pending — await it first")
+        .ThrowAsJavaScriptException();
+    } else {
+      Napi::TypeError::New(env, "Invalid stream state: expected object from streamAllocState()")
+        .ThrowAsJavaScriptException();
+    }
+    return nullptr;
   }
 
   /** streamAllocState(seedLow, seedHigh) → External (tagged, 64-byte aligned) */
@@ -81,7 +125,7 @@ namespace stream_functions {
       return Napi::Value(env, nullptr);
     }
 
-    *magicOf(state) = STATE_MAGIC;
+    *tagOf(state) = MAGIC_IDLE;
 
     uint32_t lo = 0, hi = 0;
     napi_get_value_uint32(env, info[0], &lo);
@@ -203,24 +247,23 @@ namespace stream_functions {
     }
 
     if (static_cast<size_t>(offset) > out_len || out_len - static_cast<size_t>(offset) < 16) [[unlikely]] {
-      Napi::RangeError::New(env, "streamDigestTo: offset + 16 exceeds output buffer size")
-        .ThrowAsJavaScriptException();
+      Napi::RangeError::New(env, "streamDigestTo: offset + 16 exceeds output buffer size").ThrowAsJavaScriptException();
       return Napi::Value(env, nullptr);
     }
 
     XXH128_canonicalFromHash(
-      reinterpret_cast<XXH128_canonical_t *>(static_cast<uint8_t *>(out_ptr) + offset),
-      XXH3_128bits_digest(state));
+      reinterpret_cast<XXH128_canonical_t *>(static_cast<uint8_t *>(out_ptr) + offset), XXH3_128bits_digest(state));
     return info[1];
   }
 
   /** streamAddFile(state, path, throwOnError?) → Promise<void> */
   static Napi::Value streamAddFile(const Napi::CallbackInfo & info) {
     auto env = info.Env();
-    auto * state_ptr = getStateRawPtr(env, info[0]);
+    auto * state_ptr = acquireStateForAsync(env, info[0]);
     if (!state_ptr) [[unlikely]] {
       return Napi::Value(env, nullptr);
     }
+    StreamBusyGuard busy_guard(state_ptr);
 
     bool throw_on_error = true;
     if (info.Length() > 2) {
@@ -229,19 +272,25 @@ namespace stream_functions {
 
     auto deferred = Napi::Promise::Deferred::New(env);
     auto * worker = new UpdateFileWorker(
-      env, deferred, Napi::ObjectReference::New(info[0].As<Napi::Object>(), 1),
-      state_ptr, info[1].As<Napi::String>().Utf8Value(), throw_on_error);
+      env,
+      deferred,
+      Napi::ObjectReference::New(info[0].As<Napi::Object>(), 1),
+      state_ptr,
+      info[1].As<Napi::String>().Utf8Value(),
+      throw_on_error);
     worker->Queue();
+    busy_guard.release();
     return deferred.Promise();
   }
 
   /** streamAddFilesParallel(state, pathsBuf, concurrency, throwOnError?) → Promise<null> */
   static Napi::Value streamAddFilesParallel(const Napi::CallbackInfo & info) {
     auto env = info.Env();
-    auto * state_ptr = getStateRawPtr(env, info[0]);
+    auto * state_ptr = acquireStateForAsync(env, info[0]);
     if (!state_ptr) [[unlikely]] {
       return Napi::Value(env, nullptr);
     }
+    StreamBusyGuard busy_guard(state_ptr);
 
     bool throw_on_error = true;
     if (info.Length() > 3) {
@@ -251,20 +300,26 @@ namespace stream_functions {
     auto paths = info[1].As<Napi::Uint8Array>();
     auto deferred = Napi::Promise::Deferred::New(env);
     auto * worker = new InstanceHashWorker(
-      env, deferred, Napi::ObjectReference::New(info[0].As<Napi::Object>(), 1),
-      state_ptr, info[2].As<Napi::Number>().Int32Value(), throw_on_error);
+      env,
+      deferred,
+      Napi::ObjectReference::New(info[0].As<Napi::Object>(), 1),
+      state_ptr,
+      info[2].As<Napi::Number>().Int32Value(),
+      throw_on_error);
     worker->setPaths(Napi::ObjectReference::New(paths, 1), paths.Data(), paths.ElementLength());
     worker->Queue();
+    busy_guard.release();
     return deferred.Promise();
   }
 
   /** streamAddFilesSequential(state, pathsBuf, throwOnError) → Promise<null> */
   static Napi::Value streamAddFilesSequential(const Napi::CallbackInfo & info) {
     auto env = info.Env();
-    auto * state_ptr = getStateRawPtr(env, info[0]);
+    auto * state_ptr = acquireStateForAsync(env, info[0]);
     if (!state_ptr) [[unlikely]] {
       return Napi::Value(env, nullptr);
     }
+    StreamBusyGuard busy_guard(state_ptr);
 
     auto paths = info[1].As<Napi::Uint8Array>();
 
@@ -279,7 +334,25 @@ namespace stream_functions {
     worker->setState(Napi::ObjectReference::New(info[0].As<Napi::Object>(), 1), state_ptr);
     worker->setPaths(Napi::ObjectReference::New(paths, 1), paths.Data(), paths.ElementLength());
     worker->Queue();
+    busy_guard.release();
     return deferred.Promise();
+  }
+
+  /** streamIsBusy(state) → boolean — true if an async operation is in flight. */
+  static Napi::Value streamIsBusy(const Napi::CallbackInfo & info) {
+    auto env = info.Env();
+    void * ptr = nullptr;
+    if (napi_get_value_external(env, info[0], &ptr) == napi_ok && ptr) [[likely]] {
+      const uint64_t tag = *tagOf(ptr);
+      if (tag == MAGIC_BUSY) {
+        return Napi::Boolean::New(env, true);
+      }
+      if (tag == MAGIC_IDLE) {
+        return Napi::Boolean::New(env, false);
+      }
+    }
+    Napi::TypeError::New(env, "Invalid stream state: expected object from streamAllocState()").ThrowAsJavaScriptException();
+    return Napi::Value(env, nullptr);
   }
 
   /** streamClone(dst, src) → void — copies src hash state into dst (both must be allocated states) */

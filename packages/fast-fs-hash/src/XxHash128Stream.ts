@@ -27,6 +27,7 @@ const {
   streamAddFile,
   streamAddFilesParallel,
   streamAddFilesSequential,
+  streamIsBusy,
   streamClone,
 } = binding;
 
@@ -39,9 +40,11 @@ const {
  * **One-shot usage:** call static methods like `XxHash128Stream.digestBuffer(data)`
  * or `XxHash128Stream.hash(input)` directly.
  *
- * **Concurrency warning:** instance methods are **not** thread-safe. Do not call
- * any method while an async operation (`addFile`, `addFiles`, `addFilesParallel`)
- * is pending. Always `await` each async call before invoking another method.
+ * **Busy guard:** Async methods (`addFile`, `addFiles`, `addFilesParallel`) mark the
+ * instance as busy while the native worker is in flight. During this time, calling any
+ * synchronous method (`addBuffer`, `addString`, `digest`, `reset`, `clone`) or starting
+ * another async operation will throw. Check `busy` to inspect the state, or simply
+ * `await` each async call before invoking another method.
  *
  * @example
  * ```ts
@@ -63,6 +66,14 @@ export class XxHash128Stream {
   public seedHigh: number;
 
   #state: object;
+
+  /**
+   * Returns `true` if an async operation (`addFile`, `addFiles`, `addFilesParallel`)
+   * is currently in flight. While busy, synchronous methods will throw.
+   */
+  public get busy(): boolean {
+    return streamIsBusy(this.#state);
+  }
 
   /**
    * Creates a new streaming hash instance with an optional 64-bit seed.
@@ -105,9 +116,11 @@ export class XxHash128Stream {
 
   /**
    * Reads a single file and feeds its content into the running hash state.
+   * Marks the instance as `busy` until the returned promise settles.
    *
    * @param path File path.
    * @param throwOnError If `true` (default), rejects on I/O error. If `false`, silently skips.
+   * @throws If the instance is already busy (an async operation is pending).
    */
   public addFile(path: string, throwOnError = true): Promise<void> {
     return streamAddFile(this.#state, path, throwOnError);
@@ -115,9 +128,11 @@ export class XxHash128Stream {
 
   /**
    * Reads multiple files sequentially and feeds each into the running hash state.
+   * Marks the instance as `busy` until the returned promise settles.
    *
    * @param paths Array of file paths.
    * @param throwOnError If `true` (default), rejects on I/O error. If `false`, silently skips.
+   * @throws If the instance is already busy (an async operation is pending).
    */
   public addFiles(paths: readonly string[], throwOnError = true): Promise<void> {
     if (paths.length === 0) {
@@ -128,12 +143,14 @@ export class XxHash128Stream {
 
   /**
    * Reads multiple files in parallel and feeds each into the running hash state.
+   * Marks the instance as `busy` until the returned promise settles.
    *
    * Per-file digests are computed in parallel and then fed into the stream in path-order.
    *
    * @param paths File paths.
    * @param concurrency Max concurrent I/O lanes (0 = default, max 8).
    * @param throwOnError If `true` (default), rejects on I/O error. If `false`, unreadable files produce a zero hash.
+   * @throws If the instance is already busy (an async operation is pending).
    */
   public addFilesParallel(paths: readonly string[], concurrency = 0, throwOnError = true): Promise<void> {
     const n = paths.length;

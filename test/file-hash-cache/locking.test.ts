@@ -110,6 +110,57 @@ function killChild(child: ChildProcess): Promise<void> {
   });
 }
 
+function runTrimRaceInChild(filePath: string, iterations = 200): Promise<{ ok: boolean; iterations: number }> {
+  return new Promise((resolve, reject) => {
+    const args = JSON.stringify({ mode: "trim-race", filePath, iterations, pauseMs: 5, waveSize: 3 });
+    const child = fork(CHILD_SCRIPT, [args], {
+      stdio: "pipe",
+      env: {
+        ...process.env,
+        FAST_FS_HASH_POOL_IDLE_TIMEOUT_MS: "1",
+      },
+    });
+    activeChildren.add(child);
+
+    let settled = false;
+    const timer = setTimeout(() => {
+      settled = true;
+      child.kill("SIGKILL");
+      reject(new Error("trim-race child timed out"));
+    }, 15_000);
+
+    child.on("message", (msg: { ok: boolean; iterations: number }) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      resolve(msg);
+      child.kill("SIGKILL");
+    });
+    child.on("error", (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("exit", (code, signal) => {
+      activeChildren.delete(child);
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      if (code === 0 || code === null || signal === "SIGTERM") {
+        return;
+      }
+      reject(new Error(`trim-race child exited with code ${code}`));
+    });
+  });
+}
+
 //  - isLocked
 
 describe("FileHashCache.isLocked", () => {
@@ -279,5 +330,10 @@ describe("threadPoolTrim", () => {
 
     await using ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 0);
     expect(ctx.status).toBe("upToDate");
+  }, 30_000);
+
+  it("does not strand new work while idle threads self-terminate", async () => {
+    const result = await runTrimRaceInChild(fixtureFile("a.txt"), 250);
+    expect(result.ok).toBe(true);
   }, 30_000);
 });

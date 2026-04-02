@@ -83,9 +83,15 @@ class UpdateFileWorker final : public fast_fs_hash::AddonWorker {
   }
 
   void OnOK() override {
+    fast_fs_hash::clearStreamBusy(this->state_ptr_);
     auto env = Napi::Env(this->env);
     Napi::HandleScope scope(env);
     this->deferred.Resolve(env.Undefined());
+  }
+
+  void OnError(const Napi::Error & e) override {
+    fast_fs_hash::clearStreamBusy(this->state_ptr_);
+    this->deferred.Reject(e.Value());
   }
 
  private:

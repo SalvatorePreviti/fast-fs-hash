@@ -184,6 +184,7 @@ else()
         -fvisibility=hidden -ffunction-sections -fdata-sections
         -fno-unwind-tables -fno-asynchronous-unwind-tables
         -fno-stack-protector -fno-math-errno -fstrict-aliasing
+        -fno-common
     )
 
     target_compile_options(xxhash PRIVATE ${FSH_C_FLAGS})
@@ -245,20 +246,15 @@ else()
     # Linker flags for dead code elimination
     foreach(T IN LISTS FSH_ALL_ADDON_TARGETS)
         if(APPLE)
-            target_link_options(${T} PRIVATE -Wl,-dead_strip -Wl,-x)
+            target_link_options(${T} PRIVATE -Wl,-dead_strip -Wl,-x -Wl,-dead_strip_dylibs)
         else()
             target_link_options(${T} PRIVATE -Wl,--gc-sections -Wl,-s -Wl,--as-needed)
         endif()
     endforeach()
 endif()
 
-# ARM64: add crypto extensions (single binary)
-if(FSH_TARGET_ARCH MATCHES "aarch64|arm64|ARM64")
-    if(NOT MSVC)
-        check_cxx_compiler_flag("-march=armv8-a+crypto" HAS_ARM_CRYPTO)
-        if(HAS_ARM_CRYPTO)
-            target_compile_options(${PROJECT_NAME} PRIVATE -march=armv8-a+crypto)
-        endif()
-    endif()
-endif()
+# ARM64: NEON is baseline on AArch64 — no extra -march flags needed.
+# Neither xxHash nor LZ4 uses ARM crypto extensions (AES/SHA), so +crypto
+# would only let the compiler auto-vectorize with AES instructions, which
+# provides no benefit here and causes SIGILL under QEMU user-mode emulation.
 

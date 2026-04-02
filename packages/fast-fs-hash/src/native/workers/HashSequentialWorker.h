@@ -135,6 +135,9 @@ class HashSequentialWorker final : public fast_fs_hash::AddonWorker {
   }
 
   void OnOK() override {
+    if (this->state_ptr_) {
+      fast_fs_hash::clearStreamBusy(this->state_ptr_);
+    }
     auto env = Napi::Env(this->env);
     Napi::HandleScope scope(env);
 
@@ -143,6 +146,13 @@ class HashSequentialWorker final : public fast_fs_hash::AddonWorker {
     } else {
       this->deferred.Resolve(env.Null());
     }
+  }
+
+  void OnError(const Napi::Error & e) override {
+    if (this->state_ptr_) {
+      fast_fs_hash::clearStreamBusy(this->state_ptr_);
+    }
+    this->deferred.Reject(e.Value());
   }
 
  private:

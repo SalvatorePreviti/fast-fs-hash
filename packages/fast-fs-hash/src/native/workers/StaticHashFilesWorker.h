@@ -34,12 +34,12 @@ class StaticHashFilesWorker final : public fast_fs_hash::AddonWorker {
       signal("digestFilesParallelTo: output buffer too small"); return;
     }
 
-    this->paths_index_ = new (std::nothrow) PathIndex<>(this->paths_data_, this->paths_len_);
-    if (!this->paths_index_ || this->paths_index_->oom()) [[unlikely]] {
+    this->paths_index_.init(this->paths_data_, this->paths_len_);
+    if (this->paths_index_.oom()) [[unlikely]] {
       signal("digestFilesParallelTo: out of memory"); return;
     }
 
-    const size_t fileCount = this->paths_index_->count;
+    const size_t fileCount = this->paths_index_.count;
     if (fileCount == 0) [[unlikely]] {
       XXH128_canonicalFromHash(
         reinterpret_cast<XXH128_canonical_t *>(this->external_ptr_),
@@ -55,15 +55,11 @@ class StaticHashFilesWorker final : public fast_fs_hash::AddonWorker {
       signal("digestFilesParallelTo: out of memory"); return;
     }
 
-    this->worker_ = new (std::nothrow) fast_fs_hash::HashFilesWorker{
-      this->paths_index_->segments, fileCount, this->tmp_.ptr, this->paths_index_->max_seg_len};
-    if (!this->worker_) [[unlikely]] {
-      signal("digestFilesParallelTo: out of memory"); return;
-    }
-    this->worker_->throwOnError = this->throw_on_error_;
+    this->worker_.init(this->paths_index_.segments, fileCount, this->tmp_.ptr);
+    this->worker_.throwOnError = this->throw_on_error_;
 
     auto * d = this->addon;
-    this->worker_->run(d->pool, this->concurrency_, onHashDone_, this);
+    this->worker_.run(d->pool, this->concurrency_, onHashDone_, this);
   }
 
   void OnOK() override {
@@ -83,19 +79,14 @@ class StaticHashFilesWorker final : public fast_fs_hash::AddonWorker {
   Napi::ObjectReference external_ref_;
 
   size_t fileCount_ = 0;
-  PathIndex<> * paths_index_ = nullptr;
+  PathIndex<> paths_index_;
   AlignedPtr<uint8_t> tmp_;
-  fast_fs_hash::HashFilesWorker * worker_ = nullptr;
-
-  ~StaticHashFilesWorker() override {
-    delete this->paths_index_;
-    delete this->worker_;
-  }
+  fast_fs_hash::HashFilesWorker worker_;
 
   static void onHashDone_(void * raw) {
     auto * self = static_cast<StaticHashFilesWorker *>(raw);
 
-    if (self->throw_on_error_ && self->worker_->hasError.load(std::memory_order_relaxed)) {
+    if (self->throw_on_error_ && self->worker_.hasError.load(std::memory_order_relaxed)) {
       self->signal("digestFilesParallelTo: one or more files could not be read");
       return;
     }

@@ -51,6 +51,7 @@ export interface BindingExportNative {
     throwOnError?: boolean
   ): Promise<void>;
   streamAddFilesSequential(state: object, pathsBuf: Uint8Array, throwOnError?: boolean): Promise<void>;
+  streamIsBusy(state: object): boolean;
   streamClone(dst: object, src: object): void;
   cacheOpen(
     encodedPaths: Uint8Array,

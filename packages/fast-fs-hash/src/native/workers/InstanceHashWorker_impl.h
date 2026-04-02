@@ -6,13 +6,13 @@
 #include "PathIndex.h"
 
 inline void InstanceHashWorker::Execute() {
-  this->paths_index_ = new (std::nothrow) PathIndex<>(this->paths_data_, this->paths_len_);
-  if (!this->paths_index_ || this->paths_index_->oom()) [[unlikely]] {
+  this->paths_index_.init(this->paths_data_, this->paths_len_);
+  if (this->paths_index_.oom()) [[unlikely]] {
     this->signal("hash_files: out of memory");
     return;
   }
 
-  const size_t fileCount = this->paths_index_->count;
+  const size_t fileCount = this->paths_index_.count;
   if (fileCount == 0) [[unlikely]] {
     this->signal();
     return;
@@ -26,21 +26,16 @@ inline void InstanceHashWorker::Execute() {
   }
   this->output_len_ = needed;
 
-  this->worker_ = new (std::nothrow) fast_fs_hash::HashFilesWorker{
-    this->paths_index_->segments, fileCount, this->output_.ptr, this->paths_index_->max_seg_len};
-  if (!this->worker_) [[unlikely]] {
-    this->signal("hash_files: out of memory");
-    return;
-  }
-  this->worker_->throwOnError = this->throw_on_error_;
+  this->worker_.init(this->paths_index_.segments, fileCount, this->output_.ptr);
+  this->worker_.throwOnError = this->throw_on_error_;
 
   auto * d = this->addon;
-  this->worker_->run(d->pool, this->concurrency_, onHashDone_, this);
+  this->worker_.run(d->pool, this->concurrency_, onHashDone_, this);
 }
 
 inline void InstanceHashWorker::onHashDone_(void * raw) {
   auto * self = static_cast<InstanceHashWorker *>(raw);
-  if (self->throw_on_error_ && self->worker_->hasError.load(std::memory_order_relaxed)) {
+  if (self->throw_on_error_ && self->worker_.hasError.load(std::memory_order_relaxed)) {
     self->signal("hash_files: one or more files could not be read");
     return;
   }
@@ -56,9 +51,15 @@ inline void InstanceHashWorker::onHashDone_(void * raw) {
 }
 
 inline void InstanceHashWorker::OnOK() {
+  fast_fs_hash::clearStreamBusy(this->state_ptr_);
   auto env = Napi::Env(this->env);
   Napi::HandleScope scope(env);
   this->deferred.Resolve(env.Null());
+}
+
+inline void InstanceHashWorker::OnError(const Napi::Error & e) {
+  fast_fs_hash::clearStreamBusy(this->state_ptr_);
+  this->deferred.Reject(e.Value());
 }
 
 #endif

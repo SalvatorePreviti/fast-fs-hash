@@ -44,6 +44,9 @@ namespace fast_fs_hash {
 
     virtual void Execute() = 0;
     virtual void OnOK() = 0;
+    virtual void OnError(const Napi::Error & e) {
+      this->deferred.Reject(e.Value());
+    }
 
     /** Signal successful completion. `this` may be deleted after this call. */
     void signal() {
@@ -76,10 +79,6 @@ namespace fast_fs_hash {
     friend struct AddonData;
 
     const char * error_ = nullptr;
-
-    void OnError(const Napi::Error & e) {
-      this->deferred.Reject(e.Value());
-    }
   };
 
 }  // namespace fast_fs_hash

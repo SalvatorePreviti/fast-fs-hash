@@ -65,12 +65,18 @@ namespace fast_fs_hash {
    */
   struct HashFilesWorker {
     // Cache line 0: read-only config (set once by run(), read by all threads)
-    const char * const * segments;
-    size_t fileCount;
-    uint8_t * outputData;
+    const char * const * segments = nullptr;
+    size_t fileCount = 0;
+    uint8_t * outputData = nullptr;
     size_t workBatch = 0;
     bool throwOnError = false;
     const ThreadPool * pool_ = nullptr;
+
+    void init(const char * const * segs, size_t count, uint8_t * output) noexcept {
+      this->segments = segs;
+      this->fileCount = count;
+      this->outputData = output;
+    }
 
     struct Job : ForkJob<Job, MAX_HASH_THREADS> {
       HashFilesWorker * owner;

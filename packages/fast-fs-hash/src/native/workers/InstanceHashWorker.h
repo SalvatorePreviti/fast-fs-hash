@@ -24,6 +24,7 @@ class InstanceHashWorker final : public fast_fs_hash::AddonWorker {
 
   void Execute() override;
   void OnOK() override;
+  void OnError(const Napi::Error & e) override;
 
  private:
   Napi::ObjectReference state_ref_;
@@ -36,13 +37,8 @@ class InstanceHashWorker final : public fast_fs_hash::AddonWorker {
 
   AlignedPtr<uint8_t> output_;
   size_t output_len_ = 0;
-  PathIndex<> * paths_index_ = nullptr;
-  fast_fs_hash::HashFilesWorker * worker_ = nullptr;
-
-  ~InstanceHashWorker() override {
-    delete this->paths_index_;
-    delete this->worker_;
-  }
+  PathIndex<> paths_index_;
+  fast_fs_hash::HashFilesWorker worker_;
 
   static void onHashDone_(void * raw);
 };

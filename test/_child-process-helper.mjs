@@ -9,9 +9,12 @@
  *                  then waits for a "release" message from the parent to close/dispose
  *                  the cache and send { released: true }. If no release message arrives,
  *                  the process hangs until killed — the OS releases the lock on exit.
+ *   trim-race: repeatedly trims idle pool threads, waits for self-termination,
+ *              then submits fresh work. Used to catch the race where new work
+ *              could be stranded while the last idle thread detaches.
  */
 
-import { FileHashCache } from "fast-fs-hash";
+import { digestFile, FileHashCache, threadPoolTrim } from "fast-fs-hash";
 
 const args = JSON.parse(process.argv[2]);
 
@@ -29,4 +32,28 @@ if (args.mode === "lock-and-hang") {
 
   // Hang forever — parent will either send "release" or kill us.
   setTimeout(() => {}, 2147483647);
+}
+
+if (args.mode === "trim-race") {
+  const iterations = args.iterations ?? 200;
+  const pauseMs = args.pauseMs ?? 5;
+  const waveSize = args.waveSize ?? 3;
+  const expectedHex = (await digestFile(args.filePath)).toString("hex");
+
+  for (let i = 0; i < iterations; i++) {
+    threadPoolTrim();
+    await new Promise((resolve) => setTimeout(resolve, pauseMs));
+
+    const digests = await Promise.all(
+      Array.from({ length: waveSize }, () => digestFile(args.filePath).then((buf) => buf.toString("hex")))
+    );
+
+    for (const digest of digests) {
+      if (digest !== expectedHex) {
+        throw new Error(`trim-race digest mismatch at iteration ${i}`);
+      }
+    }
+  }
+
+  process.send({ ok: true, iterations });
 }

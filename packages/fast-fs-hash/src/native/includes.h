@@ -131,6 +131,19 @@ namespace fast_fs_hash {
    * Covers the vast majority of source files in a single read.
    */
   static constexpr size_t READ_BUFFER_SIZE = 128 * 1024;
+
+  /**
+   * Offset of the magic/busy tag within the tagged streaming state allocation.
+   * Layout: [XXH3_state_t][tag:uint64_t]
+   * MAGIC_IDLE when available, MAGIC_BUSY while an async worker owns it.
+   */
+  static constexpr size_t STREAM_STATE_TAG_OFFSET = sizeof(XXH3_state_t);
+  static constexpr uint64_t STREAM_STATE_MAGIC_IDLE = 0x5858'4833'7374'6174ULL;  // "XXH3stat"
+
+  /** Restore the tag to MAGIC_IDLE after an async operation completes (JS-thread only). */
+  static FSH_FORCE_INLINE void clearStreamBusy(uint8_t * state_ptr) noexcept {
+    *reinterpret_cast<uint64_t *>(state_ptr + STREAM_STATE_TAG_OFFSET) = STREAM_STATE_MAGIC_IDLE;
+  }
 }  // namespace fast_fs_hash
 
 #endif
