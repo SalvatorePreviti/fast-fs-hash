@@ -1,6 +1,6 @@
 {
   "name": "@fast-fs-hash/fast-fs-hash-node-win32-x64-msvc",
-  "version": "0.0.0-rc0",
+  "version": "0.0.0",
   "description": "fast-fs-hash native binding for Windows x64",
   "os": [
     "win32"
@@ -20,6 +20,6 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/SalvatorePreviti/fast-fs-hash"
+    "url": "git+https://github.com/SalvatorePreviti/fast-fs-hash.git"
   }
 }
