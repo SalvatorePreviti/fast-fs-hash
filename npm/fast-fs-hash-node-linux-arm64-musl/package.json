@@ -1,6 +1,6 @@
 {
   "name": "@fast-fs-hash/fast-fs-hash-node-linux-arm64-musl",
-  "version": "0.0.0-rc0",
+  "version": "0.0.0",
   "description": "fast-fs-hash native binding for Linux arm64 (musl)",
   "os": [
     "linux"
