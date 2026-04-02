@@ -1,5 +1,5 @@
 /**
- * Tests: FileHashCache locking — isLocked, waitUnlocked, poolTrim.
+ * Tests: FileHashCache locking — isLocked, waitUnlocked, threadPoolTrim.
  *
  * isLocked and waitUnlocked detect locks held by OTHER processes (POSIX fcntl
  * semantics: F_GETLK never reports the calling process's own locks). These
@@ -11,7 +11,7 @@ import type { ChildProcess } from "node:child_process";
 import { fork } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { FileHashCache } from "fast-fs-hash";
+import { FileHashCache, threadPoolTrim } from "fast-fs-hash";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 //  - Fixture setup
@@ -206,17 +206,17 @@ describe("FileHashCache.waitUnlocked", () => {
   }, 15_000);
 });
 
-//  - poolTrim
+//  - threadPoolTrim
 
-describe("FileHashCache.poolTrim", () => {
+describe("threadPoolTrim", () => {
   it("does not throw and is callable", () => {
-    expect(() => FileHashCache.poolTrim()).not.toThrow();
+    expect(() => threadPoolTrim()).not.toThrow();
   });
 
   it("can be called multiple times without error", () => {
-    FileHashCache.poolTrim();
-    FileHashCache.poolTrim();
-    FileHashCache.poolTrim();
+    threadPoolTrim();
+    threadPoolTrim();
+    threadPoolTrim();
   });
 
   it("does not break subsequent cache operations", async () => {
@@ -230,7 +230,7 @@ describe("FileHashCache.poolTrim", () => {
     }
 
     // Trim idle threads
-    FileHashCache.poolTrim();
+    threadPoolTrim();
 
     // Cache operations should still work
     {
@@ -240,7 +240,7 @@ describe("FileHashCache.poolTrim", () => {
   });
 
   it("pool recovers after trim (new work spawns threads)", async () => {
-    FileHashCache.poolTrim();
+    threadPoolTrim();
 
     // Wait a bit for threads to self-terminate
     await new Promise((r) => setTimeout(r, 50));

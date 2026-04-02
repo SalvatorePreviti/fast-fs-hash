@@ -39,16 +39,16 @@ namespace fast_fs_hash {
       const volatile uint8_t * cancelByte = nullptr,
       Napi::ObjectReference && cancelRef = {}) :
       AddonWorker(env, deferred),
-      cachePath_(std::move(cachePath)),
-      rootPath_(std::move(rootPath)),
-      pathsRef_(std::move(pathsRef)),
-      cancelRef_(std::move(cancelRef)),
       encodedPaths_(encodedPaths),
       encodedLen_(encodedLen),
       fileCount_(fileCount),
       version_(version),
       hasFingerprint_(fingerprint != nullptr),
-      timeoutMs_(timeoutMs) {
+      timeoutMs_(timeoutMs),
+      cachePath_(std::move(cachePath)),
+      rootPath_(std::move(rootPath)),
+      pathsRef_(std::move(pathsRef)),
+      cancelRef_(std::move(cancelRef)) {
       if (fingerprint) {
         memcpy(&this->fingerprint_, fingerprint, 16);
       }
@@ -99,44 +99,46 @@ namespace fast_fs_hash {
     }
 
    private:
-    // Strings (used on pool thread in stat loop + finalize)
-    std::string cachePath_;
-    std::string rootPath_;
+    // ── Pool-thread hot fields ──────────────────────────────────────────
 
-    // JS refs (prevent GC, never accessed on pool threads)
-    Napi::ObjectReference pathsRef_;
-    Napi::ObjectReference cancelRef_;
-
-    // Inputs (read once in doOpen_, then done)
+    // Inputs (read on pool thread in doOpen_)
     const uint8_t * encodedPaths_;
     size_t encodedLen_;
     uint32_t fileCount_;
     uint32_t version_;
     bool hasFingerprint_;
-    Hash128 fingerprint_{};
     int timeoutMs_;
+    Hash128 fingerprint_{};
 
+    // Paths (pool thread: stat loop + finalize)
+    std::string cachePath_;
+    std::string rootPath_;
+
+    // Cancellation + lock
     FfshFile::LockCancel cancel_;
-    bool lockFailed_ = false;
-
-    // Locked file handle
     FfshFile lockedFile_;
+    bool lockFailed_ = false;
 
     // Output buffer
     OwnedBuf<> dataBuf_;
 
     // Stat-match runner state (set before pool.submit, read by all worker threads)
-    size_t workBatch_ = 0;
     CacheEntry * runEntries_ = nullptr;
     const uint32_t * runPathEnds_ = nullptr;
     const uint8_t * runPackedPaths_ = nullptr;
     size_t runPackedPathsSize_ = 0;
+    size_t workBatch_ = 0;
 
     // Work-stealing counter (hot — every thread writes). Own cache line.
     alignas(64) mutable std::atomic<size_t> nextIndex_{0};
 
     // Match result (cold — written at most once per thread on change)
     mutable std::atomic<MatchResult> matchResult_{MatchResult::OK};
+
+    // ── JS-thread-only fields (cold, never touched by pool threads) ─────
+
+    Napi::ObjectReference pathsRef_;
+    Napi::ObjectReference cancelRef_;
 
     static_assert(
       READ_BUFFER_SIZE + sizeof(PathResolver) <= ThreadPool::THREAD_STACK_SIZE - 64 * 1024,

@@ -53,6 +53,9 @@ const HASH_BUFFER_END = "<!-- HASH_BUFFER_BENCHMARKS:END -->";
 const LZ4_BENCHMARKS_START = "<!-- LZ4_BENCHMARKS:START -->";
 const LZ4_BENCHMARKS_END = "<!-- LZ4_BENCHMARKS:END -->";
 
+const FILES_EQUAL_BENCHMARKS_START = "<!-- FILES_EQUAL_BENCHMARKS:START -->";
+const FILES_EQUAL_BENCHMARKS_END = "<!-- FILES_EQUAL_BENCHMARKS:END -->";
+
 //  - Benchmark data size
 
 /** Read the benchmark fixture file list. */
@@ -133,6 +136,7 @@ const README_BENCH_FILES = [
   "test/bench/file-hash-cache-validate-serialize-many.bench.ts",
   "test/bench/file-hash-cache-write-new.bench.ts",
   "test/bench/lz4.bench.ts",
+  "test/bench/files-equal.bench.ts",
   "test/bench/file-hash-cache-locked.bench.ts",
 ];
 
@@ -510,6 +514,54 @@ function buildLz4Tables(benchData) {
 
 const lz4Sections = buildLz4Tables(benchData);
 
+//  - filesEqual benchmarks
+
+function buildFilesEqualTables(benchData) {
+  const lines = [];
+  // Collect all groups under the "filesEqual" top-level describe
+  for (const file of benchData.files ?? []) {
+    for (const group of file.groups ?? []) {
+      if (!group.fullName?.includes("filesEqual")) {
+        continue;
+      }
+      const benches = (group.benchmarks ?? []).filter((b) => b.mean != null);
+      if (benches.length === 0) {
+        continue;
+      }
+      benches.sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
+
+      const label = groupNameSegment(group.fullName);
+      const fileBytes = parseSizeAnnotation(label);
+      const showThroughput = fileBytes >= 10000;
+
+      const baseline = benches[benches.length - 1];
+      const rows = benches.map((b) => {
+        const speedup = baseline.mean / b.mean;
+        const relative = b === baseline ? "baseline" : `**${fmt(speedup, 1)}× faster**`;
+        const hzStr = b.hz != null ? `${fmt(b.hz, 0)} op/s` : "—";
+        const row = [b.name, fmtTime(b.mean), hzStr];
+        if (showThroughput) {
+          row.push(fmtThroughput(fileBytes, b.mean));
+        }
+        row.push(relative);
+        return row;
+      });
+
+      const headers = showThroughput
+        ? ["Scenario", "Mean", "Hz", "Throughput", "Relative"]
+        : ["Scenario", "Mean", "Hz", "Relative"];
+
+      if (lines.length > 0) {
+        lines.push("");
+      }
+      lines.push(`**${label}:**`, "", markdownTable(headers, rows));
+    }
+  }
+  return lines.length > 0 ? lines : ["_No benchmark data available._"];
+}
+
+const filesEqualSections = buildFilesEqualTables(benchData);
+
 //  - Write README
 
 let readme = readFileSync(README, "utf8");
@@ -519,6 +571,12 @@ readme = updateReadmeSection(readme, HASHFILE_BENCHMARKS_START, HASHFILE_BENCHMA
 readme = updateReadmeSection(readme, BENCHMARKS_START, BENCHMARKS_END, hashSections.join("\n"));
 readme = updateReadmeSection(readme, HASH_BUFFER_START, HASH_BUFFER_END, hashBufferSections.join("\n"));
 readme = updateReadmeSection(readme, LZ4_BENCHMARKS_START, LZ4_BENCHMARKS_END, lz4Sections.join("\n"));
+readme = updateReadmeSection(
+  readme,
+  FILES_EQUAL_BENCHMARKS_START,
+  FILES_EQUAL_BENCHMARKS_END,
+  filesEqualSections.join("\n")
+);
 readme = formatMarkdown(readme, README);
 
 const original = readFileSync(README, "utf8");

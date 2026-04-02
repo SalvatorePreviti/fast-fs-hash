@@ -1,6 +1,7 @@
 #include "digest-functions.h"
 #include "stream-functions.h"
 #include "lz4-functions.h"
+#include "files-equal-binding.h"
 #include "InstanceHashWorker_impl.h"
 #include "file-cache-binding.h"
 #include "AddonData_impl.h"
@@ -76,6 +77,9 @@ static Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("cacheIsLocked", Napi::Function::New(env, fast_fs_hash::bindCacheIsLocked));
   exports.Set("cacheWaitUnlocked", Napi::Function::New(env, fast_fs_hash::bindCacheWaitUnlocked));
 
+  // File comparison
+  exports.Set("filesEqual", Napi::Function::New(env, fast_fs_hash::bindFilesEqual));
+
   // Pool management
   exports.Set("poolTrim", Napi::Function::New(env, poolTrim));
 
@@ -87,6 +91,8 @@ static Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("lz4DecompressBlockTo", Napi::Function::New(env, lz4_functions::lz4DecompressBlockTo));
   exports.Set("lz4DecompressBlockAsync", Napi::Function::New(env, lz4_functions::lz4DecompressBlockAsync));
   exports.Set("lz4CompressBound", Napi::Function::New(env, lz4_functions::lz4CompressBound));
+  exports.Set("lz4ReadAndCompress", Napi::Function::New(env, lz4_functions::lz4CompressFile));
+  exports.Set("lz4DecompressAndWrite", Napi::Function::New(env, lz4_functions::lz4DecompressAndWrite));
 
   return exports;
 }

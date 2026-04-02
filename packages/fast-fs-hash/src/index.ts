@@ -239,4 +239,84 @@ export const lz4DecompressBlockAsync: (
   length?: number
 ) => Promise<Buffer> = binding.lz4DecompressBlockAsync;
 
+/**
+ * Compare two files for byte-equality asynchronously on a pool thread.
+ * Returns false if either file cannot be opened/read or if sizes differ.
+ * @param pathA First file path.
+ * @param pathB Second file path.
+ */
+export const filesEqual: (pathA: string, pathB: string) => Promise<boolean> = binding.filesEqual;
+
+/**
+ * Hash a file and return the digest as a 32-character hex string.
+ * Convenience wrapper around {@link digestFile} + {@link hashToHex}.
+ * @param path File path.
+ * @param throwOnError If false, returns an all-zero hex string on error. Default true.
+ */
+export async function digestFileToHex(path: string, throwOnError?: boolean): Promise<string> {
+  return hashToHex(await XxHash128Stream.digestFile(path, throwOnError));
+}
+
+/**
+ * Hash multiple files in parallel and return an array of 32-character hex strings.
+ * Each string is the individual xxHash3-128 digest of the corresponding file.
+ * @param paths Array of file paths.
+ * @param concurrency Max parallel file reads. Default 8.
+ * @param throwOnError If false, returns all-zero hex for unreadable files. Default true.
+ */
+export async function digestFilesToHexArray(
+  paths: readonly string[],
+  concurrency?: number,
+  throwOnError?: boolean
+): Promise<string[]> {
+  const n = paths.length;
+  if (n === 0) {
+    return [];
+  }
+  const conc = concurrency && concurrency > 0 && concurrency <= 64 ? concurrency : 8;
+  const result = new Array<string>(n);
+  let i = 0;
+  const run = async () => {
+    while (i < n) {
+      const idx = i++;
+      result[idx] = hashToHex(await XxHash128Stream.digestFile(paths[idx], throwOnError));
+    }
+  };
+  const workers = new Array(Math.min(conc, n));
+  for (let w = 0; w < workers.length; w++) {
+    workers[w] = run();
+  }
+  await Promise.all(workers);
+  return result;
+}
+
+/**
+ * Read a file and LZ4-block-compress it asynchronously on a pool thread.
+ * Returns the compressed data and the original uncompressed size (needed for decompression).
+ * Max file size: 512 MiB.
+ * @param path File path.
+ */
+export const lz4ReadAndCompress: (path: string) => Promise<{ data: Buffer; uncompressedSize: number }> =
+  binding.lz4ReadAndCompress;
+
+/**
+ * Decompress LZ4 data and write to a file asynchronously on a pool thread.
+ * Creates parent directories if needed. The inverse of {@link lz4ReadAndCompress}.
+ * @param compressedData LZ4-compressed data.
+ * @param uncompressedSize Original uncompressed size (from lz4ReadAndCompress).
+ * @param path Output file path.
+ */
+export const lz4DecompressAndWrite: (
+  compressedData: Uint8Array,
+  uncompressedSize: number,
+  path: string
+) => Promise<boolean> = binding.lz4DecompressAndWrite;
+
+/**
+ * Wake idle native pool threads so they can self-terminate and free memory.
+ * Threads with pending work will continue running — this is not a shutdown.
+ * Threads respawn automatically when new work arrives.
+ */
+export const threadPoolTrim: () => void = binding.poolTrim;
+
 export { findCommonRootPath, hashesToHexArray, hashToHex, normalizeFilePaths, toRelativePath };

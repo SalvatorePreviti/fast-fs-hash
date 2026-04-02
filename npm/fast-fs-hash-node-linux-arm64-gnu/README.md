@@ -105,11 +105,11 @@ changed stat are re-hashed. This makes cache validation **O(n × stat)** instead
 
 | Scenario           | Mean                | Hz         | Files/s           | Throughput |
 | ------------------ | ------------------- | ---------- | ----------------- | ---------- |
-| no change          | 0.6 ms (630.9 µs)   | 1 585 op/s | 1 117 498 files/s | —          |
-| 1 file changed     | 1.0 ms (1 037.9 µs) | 964 op/s   | 679 283 files/s   | —          |
-| many files changed | 2.6 ms (2 629.9 µs) | 380 op/s   | 268 067 files/s   | 9.4 GB/s   |
-| no existing cache  | 7.5 ms (7 537.1 µs) | 133 op/s   | 93 537 files/s    | 3.3 GB/s   |
-| writeNew           | 7.7 ms (7 714.1 µs) | 130 op/s   | 91 391 files/s    | 3.2 GB/s   |
+| no change          | 0.6 ms (644.6 µs)   | 1 551 op/s | 1 093 662 files/s | —          |
+| 1 file changed     | 1.0 ms (1 012.6 µs) | 988 op/s   | 696 204 files/s   | —          |
+| many files changed | 2.5 ms (2 490.6 µs) | 402 op/s   | 283 064 files/s   | 9.9 GB/s   |
+| no existing cache  | 7.6 ms (7 596.2 µs) | 132 op/s   | 92 809 files/s    | 3.3 GB/s   |
+| writeNew           | 7.4 ms (7 412.5 µs) | 135 op/s   | 95 110 files/s    | 3.3 GB/s   |
 
 <!-- FHC_BENCHMARKS:END -->
 
@@ -127,17 +127,41 @@ Every `open()` acquires an exclusive OS-level lock on the cache file. The lock i
 until `close()` is called (or the `using`/`await using` block exits).
 
 ```ts
-await using ctx = await FileHashCache.open(cachePath, rootPath?, files?, version?, fingerprint?, lockTimeoutMs?);
-// ctx.status: 'upToDate' | 'changed' | 'stale' | 'missing' | 'statsDirty'
+await using ctx = await FileHashCache.open(cachePath, rootPath?, files?, version?, fingerprint?, lockTimeoutMs?, signal?);
+// ctx.status: 'upToDate' | 'changed' | 'stale' | 'missing' | 'statsDirty' | 'lockFailed'
 
 await ctx.write(options?);
-// options: { files?, rootPath?, userValue0..3?, fingerprint?, userData? }
+// options: { files?, rootPath?, userValue0..3?, fingerprint?, userData?, signal? }
 // write() releases the lock — ctx is now disposed
 ```
 
 - **`open()`** locks the cache file, reads from disk, validates version/fingerprint, and stat-matches entries.
 - **`write()`** hashes any unresolved entries, LZ4-compresses, writes directly to the locked fd, then releases the lock.
 - **`close()`** releases the lock (no-op if `write()` already released it). Also called automatically by `using` / `await using`.
+
+**Cancellation via AbortSignal:**
+
+All async operations accept an optional `AbortSignal` to cancel the lock wait and/or hash phase:
+
+```ts
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 1000);
+
+const cache = await FileHashCache.open(
+  path,
+  root,
+  files,
+  1,
+  null,
+  -1,
+  controller.signal,
+);
+// If aborted before the lock is acquired → status === 'lockFailed'
+```
+
+The file write itself is never cancelled — once hashing completes, the write always runs to
+completion to avoid corrupting the cache file. Cancellation only affects lock acquisition and
+the stat/hash phase.
 
 The file list can change between runs — `write({ files: newFiles })` remaps matched entries
 from the old cache, preserving hashes for unchanged files.
@@ -164,6 +188,10 @@ calling `isLocked()` may briefly still observe the lock before the OS fully rele
 - `0`: fail immediately if locked
 - `>0`: wait up to N milliseconds
 
+When the lock cannot be acquired (timeout, non-blocking, or cancelled via `signal`), `open()`
+returns an instance with `status === 'lockFailed'`. You can still call `write()` on it — it
+transparently falls back to `writeNew()` with a fresh lock attempt.
+
 ```ts
 // Non-blocking try
 const cache = await FileHashCache.open(path, root, files, 1, null, 0);
@@ -180,19 +208,16 @@ FileHashCache.isLocked(path); // → boolean
 await FileHashCache.waitUnlocked(path, 5000); // → true if unlocked, false on timeout
 await FileHashCache.waitUnlocked(path, -1); // block until unlocked
 await FileHashCache.waitUnlocked(path, 0); // non-blocking check
-
-// Release idle pool threads to free memory (they respawn on demand)
-FileHashCache.poolTrim();
+await FileHashCache.waitUnlocked(path, -1, controller.signal); // cancellable wait
 ```
 
 **Static methods:**
 
-| Method                                           | Description                                                                                                                                                                                           |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `isLocked(cachePath)`                            | Non-blocking check: returns `true` if another process holds the lock. Uses `fcntl F_GETLK` (POSIX) or `LockFileEx` (Windows). Only detects cross-process locks.                                       |
-| `waitUnlocked(cachePath, lockTimeoutMs?)`        | Wait until the lock is released. `-1` = block forever, `0` = non-blocking, `>0` = timeout ms. For infinite waits, blocks in the kernel with zero CPU. Returns `true` if unlocked, `false` on timeout. |
-| `writeNew(cachePath, rootPath, files, options?)` | Write a brand-new cache without reading the old one. Useful when you know a full rebuild is needed.                                                                                                   |
-| `poolTrim()`                                     | Wake idle native pool threads so they self-terminate and free memory. Threads respawn automatically when new work arrives.                                                                            |
+| Method                                             | Description                                                                                                                                                                                                        |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `isLocked(cachePath)`                              | Non-blocking check: returns `true` if another process holds the lock. Uses `fcntl F_GETLK` (POSIX) or `LockFileEx` (Windows). Only detects cross-process locks.                                                    |
+| `waitUnlocked(cachePath, lockTimeoutMs?, signal?)` | Wait until the lock is released. `-1` = block forever, `0` = non-blocking, `>0` = timeout ms. For infinite waits, blocks in the kernel with zero CPU. Returns `true` if unlocked, `false` on timeout/cancellation. |
+| `writeNew(cachePath, rootPath, files, options?)`   | Write a brand-new cache without reading the old one. Options include `signal` for cancellation. Useful when you know a full rebuild is needed.                                                                     |
 
 ### Example: Simple build cache
 
@@ -257,22 +282,22 @@ hood, but they are fully usable on their own.
 
 | Scenario             | Mean              | Hz          | Throughput | Relative        |
 | -------------------- | ----------------- | ----------- | ---------- | --------------- |
-| native               | 0.04 ms (41.8 µs) | 23 945 op/s | 4.7 GB/s   | **6.5× faster** |
-| Node.js crypto (md5) | 0.3 ms (273.5 µs) | 3 656 op/s  | 721 MB/s   | baseline        |
+| native               | 0.04 ms (40.1 µs) | 24 957 op/s | 4.9 GB/s   | **6.8× faster** |
+| Node.js crypto (md5) | 0.3 ms (271.8 µs) | 3 680 op/s  | 726 MB/s   | baseline        |
 
 **medium file (~49.9 KB):**
 
 | Scenario             | Mean              | Hz          | Throughput | Relative        |
 | -------------------- | ----------------- | ----------- | ---------- | --------------- |
-| native               | 0.03 ms (27.1 µs) | 36 847 op/s | 1.8 GB/s   | **4.1× faster** |
-| Node.js crypto (md5) | 0.1 ms (110.5 µs) | 9 049 op/s  | 452 MB/s   | baseline        |
+| native               | 0.02 ms (24.8 µs) | 40 340 op/s | 2.0 GB/s   | **4.4× faster** |
+| Node.js crypto (md5) | 0.1 ms (110.0 µs) | 9 089 op/s  | 454 MB/s   | baseline        |
 
 **small file (~1.0 KB):**
 
 | Scenario             | Mean              | Hz          | Relative        |
 | -------------------- | ----------------- | ----------- | --------------- |
-| native               | 0.03 ms (27.6 µs) | 36 251 op/s | **2.1× faster** |
-| Node.js crypto (md5) | 0.06 ms (57.6 µs) | 17 348 op/s | baseline        |
+| native               | 0.02 ms (23.9 µs) | 41 787 op/s | **2.4× faster** |
+| Node.js crypto (md5) | 0.06 ms (56.4 µs) | 17 737 op/s | baseline        |
 
 <!-- HASHFILE_BENCHMARKS:END -->
 
@@ -282,8 +307,8 @@ hood, but they are fully usable on their own.
 
 | Scenario             | Mean                  | Hz       | Throughput | Relative        |
 | -------------------- | --------------------- | -------- | ---------- | --------------- |
-| native               | 7.0 ms (6 982.9 µs)   | 143 op/s | 3.5 GB/s   | **5.1× faster** |
-| Node.js crypto (md5) | 35.8 ms (35 768.3 µs) | 28 op/s  | 691 MB/s   | baseline        |
+| native               | 6.9 ms (6 856.6 µs)   | 146 op/s | 3.6 GB/s   | **5.3× faster** |
+| Node.js crypto (md5) | 36.3 ms (36 271.8 µs) | 28 op/s  | 681 MB/s   | baseline        |
 
 <!-- BENCHMARKS:END -->
 
@@ -295,15 +320,15 @@ hood, but they are fully usable on their own.
 
 | Scenario           | Mean              | Hz           | Throughput | Relative         |
 | ------------------ | ----------------- | ------------ | ---------- | ---------------- |
-| native XXH3-128    | 0.001 ms (1.4 µs) | 730 628 op/s | 47.9 GB/s  | **48.6× faster** |
-| Node.js crypto md5 | 0.07 ms (66.5 µs) | 15 031 op/s  | 985 MB/s   | baseline         |
+| native XXH3-128    | 0.001 ms (1.4 µs) | 722 554 op/s | 47.4 GB/s  | **48.6× faster** |
+| Node.js crypto md5 | 0.07 ms (67.2 µs) | 14 877 op/s  | 975 MB/s   | baseline         |
 
 **1 MB buffer:**
 
 | Scenario           | Mean                | Hz          | Throughput | Relative         |
 | ------------------ | ------------------- | ----------- | ---------- | ---------------- |
-| native XXH3-128    | 0.02 ms (21.5 µs)   | 46 580 op/s | 48.8 GB/s  | **49.3× faster** |
-| Node.js crypto md5 | 1.1 ms (1 059.4 µs) | 944 op/s    | 990 MB/s   | baseline         |
+| native XXH3-128    | 0.02 ms (21.5 µs)   | 46 540 op/s | 48.8 GB/s  | **49.7× faster** |
+| Node.js crypto md5 | 1.1 ms (1 068.3 µs) | 936 op/s    | 982 MB/s   | baseline         |
 
 <!-- HASH_BUFFER_BENCHMARKS:END -->
 
@@ -337,6 +362,23 @@ import { digestFile, hashToHex } from "fast-fs-hash";
 const digest = await digestFile("package.json");
 console.log(hashToHex(digest));
 ```
+
+### Hex string convenience
+
+```ts
+import { digestFileToHex, digestFilesToHexArray } from "fast-fs-hash";
+
+// Single file → 32-char hex string
+const hex = await digestFileToHex("package.json");
+
+// Multiple files in parallel → per-file hex strings
+const hexes = await digestFilesToHexArray(["src/a.ts", "src/b.ts"], 8);
+```
+
+| Function                                                    | Description                                                             |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `digestFileToHex(path, throwOnError?)`                      | Hash a file → 32-char hex string. Wrapper around digestFile + hashToHex |
+| `digestFilesToHexArray(paths, concurrency?, throwOnError?)` | Hash files in parallel → per-file hex strings. Default concurrency 8    |
 
 ### Hash buffers and strings
 
@@ -377,29 +419,29 @@ compressed data and pass it to the decompression function.
 
 | Scenario                | Ratio | Mean              | Hz           | Throughput | Relative        |
 | ----------------------- | ----- | ----------------- | ------------ | ---------- | --------------- |
-| native LZ4              | 0.7%  | 0.003 ms (3.4 µs) | 296 194 op/s | 19.4 GB/s  | **7.2× faster** |
-| Node.js deflate level=1 | 1.0%  | 0.02 ms (24.4 µs) | 40 987 op/s  | 2.7 GB/s   | baseline        |
+| native LZ4              | 0.7%  | 0.003 ms (3.4 µs) | 296 246 op/s | 19.4 GB/s  | **7.2× faster** |
+| Node.js deflate level=1 | 1.0%  | 0.02 ms (24.4 µs) | 40 968 op/s  | 2.7 GB/s   | baseline        |
 
 **decompress 64 KB:**
 
 | Scenario        | Mean              | Hz           | Throughput | Relative        |
 | --------------- | ----------------- | ------------ | ---------- | --------------- |
-| native LZ4      | 0.003 ms (3.0 µs) | 338 458 op/s | 22.2 GB/s  | **3.7× faster** |
-| Node.js deflate | 0.01 ms (11.1 µs) | 90 267 op/s  | 5.9 GB/s   | baseline        |
+| native LZ4      | 0.003 ms (2.7 µs) | 374 247 op/s | 24.5 GB/s  | **3.8× faster** |
+| Node.js deflate | 0.01 ms (10.2 µs) | 98 358 op/s  | 6.4 GB/s   | baseline        |
 
 **compress 1 MB:**
 
 | Scenario                | Ratio | Mean              | Hz          | Throughput | Relative        |
 | ----------------------- | ----- | ----------------- | ----------- | ---------- | --------------- |
-| native LZ4              | 0.4%  | 0.03 ms (33.6 µs) | 29 746 op/s | 31.2 GB/s  | **9.8× faster** |
-| Node.js deflate level=1 | 0.7%  | 0.3 ms (327.8 µs) | 3 051 op/s  | 3.2 GB/s   | baseline        |
+| native LZ4              | 0.4%  | 0.03 ms (33.7 µs) | 29 640 op/s | 31.1 GB/s  | **9.9× faster** |
+| Node.js deflate level=1 | 0.7%  | 0.3 ms (333.6 µs) | 2 998 op/s  | 3.1 GB/s   | baseline        |
 
 **decompress 1 MB:**
 
 | Scenario        | Mean              | Hz          | Throughput | Relative        |
 | --------------- | ----------------- | ----------- | ---------- | --------------- |
-| native LZ4      | 0.03 ms (32.6 µs) | 30 705 op/s | 32.2 GB/s  | **2.9× faster** |
-| Node.js deflate | 0.10 ms (95.5 µs) | 10 476 op/s | 11.0 GB/s  | baseline        |
+| native LZ4      | 0.03 ms (32.7 µs) | 30 561 op/s | 32.0 GB/s  | **2.9× faster** |
+| Node.js deflate | 0.10 ms (95.9 µs) | 10 425 op/s | 10.9 GB/s  | baseline        |
 
 <!-- LZ4_BENCHMARKS:END -->
 
@@ -418,29 +460,109 @@ console.log(decompressed.toString()); // "Hello, LZ4!"
 
 ### LZ4 API
 
-| Function                                                                                           | Description                                               |
-| -------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| `lz4CompressBlock(input, offset?, length?)`                                                        | Sync compress → new Buffer                                |
-| `lz4CompressBlockTo(input, output, outputOffset?, inputOffset?, inputLength?)`                     | Sync compress into pre-allocated buffer → bytes written   |
-| `lz4CompressBlockAsync(input, offset?, length?)`                                                   | Async compress on pool thread → Promise\<Buffer\>         |
-| `lz4DecompressBlock(input, uncompressedSize, offset?, length?)`                                    | Sync decompress → new Buffer                              |
-| `lz4DecompressBlockTo(input, uncompressedSize, output, outputOffset?, inputOffset?, inputLength?)` | Sync decompress into pre-allocated buffer → bytes written |
-| `lz4DecompressBlockAsync(input, uncompressedSize, offset?, length?)`                               | Async decompress on pool thread → Promise\<Buffer\>       |
-| `lz4CompressBound(inputSize)`                                                                      | Max compressed size for pre-allocation                    |
+| Function                                                                                           | Description                                                                          |
+| -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `lz4CompressBlock(input, offset?, length?)`                                                        | Sync compress → new Buffer                                                           |
+| `lz4CompressBlockTo(input, output, outputOffset?, inputOffset?, inputLength?)`                     | Sync compress into pre-allocated buffer → bytes written                              |
+| `lz4CompressBlockAsync(input, offset?, length?)`                                                   | Async compress on pool thread → Promise\<Buffer\>                                    |
+| `lz4DecompressBlock(input, uncompressedSize, offset?, length?)`                                    | Sync decompress → new Buffer                                                         |
+| `lz4DecompressBlockTo(input, uncompressedSize, output, outputOffset?, inputOffset?, inputLength?)` | Sync decompress into pre-allocated buffer → bytes written                            |
+| `lz4DecompressBlockAsync(input, uncompressedSize, offset?, length?)`                               | Async decompress on pool thread → Promise\<Buffer\>                                  |
+| `lz4CompressBound(inputSize)`                                                                      | Max compressed size for pre-allocation                                               |
+| `lz4ReadAndCompress(path)`                                                                         | Read a file and LZ4-compress it on pool thread → `Promise<{data, uncompressedSize}>` |
+| `lz4DecompressAndWrite(compressedData, uncompressedSize, path)`                                    | Decompress and write to file on pool thread (creates dirs) → `Promise<boolean>`      |
 
 > **Note:** LZ4 block compression supports inputs up to ~1.9 GiB (`LZ4_MAX_INPUT_SIZE = 0x7E000000`).
+> `lz4ReadAndCompress` and `lz4DecompressAndWrite` support files up to 512 MiB.
+
+### Read and compress a file
+
+`lz4ReadAndCompress` reads a file and LZ4-block-compresses it in a single pool-thread operation —
+no JS-thread I/O, no intermediate Buffer allocation visible to the event loop.
+
+```ts
+import {
+  lz4ReadAndCompress,
+  lz4DecompressAndWrite,
+  lz4DecompressBlock,
+} from "fast-fs-hash";
+
+const { data, uncompressedSize } = await lz4ReadAndCompress("large-file.bin");
+console.log(`Compressed ${uncompressedSize} → ${data.length} bytes`);
+
+// Decompress back to a file (creates parent directories if needed)
+await lz4DecompressAndWrite(data, uncompressedSize, "restored-file.bin");
+
+// Or decompress to a buffer in memory
+const original = lz4DecompressBlock(data, uncompressedSize);
+```
+
+---
+
+## File Comparison
+
+Compare two files for byte-equality asynchronously on a native pool thread. Opens both files,
+compares sizes via `fstat`, then reads in lockstep chunks with `memcmp`. Returns `false` if
+either file cannot be opened/read or if sizes differ — never throws.
+
+<!-- FILES_EQUAL_BENCHMARKS:START -->
+
+**equal files (~49.9 KB):**
+
+| Scenario                           | Mean              | Hz          | Throughput | Relative        |
+| ---------------------------------- | ----------------- | ----------- | ---------- | --------------- |
+| native                             | 0.05 ms (45.4 µs) | 22 020 op/s | 1.1 GB/s   | **2.4× faster** |
+| Node.js (fs.open + read + compare) | 0.1 ms (108.9 µs) | 9 182 op/s  | 458 MB/s   | baseline        |
+
+**equal files (~197.3 KB):**
+
+| Scenario                           | Mean              | Hz          | Throughput | Relative        |
+| ---------------------------------- | ----------------- | ----------- | ---------- | --------------- |
+| native                             | 0.05 ms (49.6 µs) | 20 168 op/s | 4.0 GB/s   | **3.1× faster** |
+| Node.js (fs.open + read + compare) | 0.2 ms (154.2 µs) | 6 486 op/s  | 1.3 GB/s   | baseline        |
+
+**different content, same size (~49.9 KB):**
+
+| Scenario                           | Mean              | Hz          | Throughput | Relative        |
+| ---------------------------------- | ----------------- | ----------- | ---------- | --------------- |
+| native                             | 0.04 ms (38.3 µs) | 26 100 op/s | 1.3 GB/s   | **2.7× faster** |
+| Node.js (fs.open + read + compare) | 0.1 ms (104.9 µs) | 9 532 op/s  | 476 MB/s   | baseline        |
+
+**different sizes (early exit):**
+
+| Scenario                           | Mean              | Hz          | Relative        |
+| ---------------------------------- | ----------------- | ----------- | --------------- |
+| native                             | 0.04 ms (36.3 µs) | 27 552 op/s | **2.4× faster** |
+| Node.js (fs.open + read + compare) | 0.09 ms (88.5 µs) | 11 297 op/s | baseline        |
+
+<!-- FILES_EQUAL_BENCHMARKS:END -->
+
+```ts
+import { filesEqual } from "fast-fs-hash";
+
+if (await filesEqual("output.bin", "expected.bin")) {
+  console.log("Files are identical");
+} else {
+  console.log("Files differ (or one doesn't exist)");
+}
+```
+
+| Function                   | Description                                                   |
+| -------------------------- | ------------------------------------------------------------- |
+| `filesEqual(pathA, pathB)` | Async byte-equality check on pool thread → `Promise<boolean>` |
 
 ---
 
 ## Utility Functions
 
-| Function                                             | Description                                            |
-| ---------------------------------------------------- | ------------------------------------------------------ |
-| `hashToHex(digest)`                                  | Convert a 16-byte digest to a 32-char hex string       |
-| `hashesToHexArray(digests)`                          | Convert an array of digests to hex strings             |
-| `findCommonRootPath(files, baseRoot?, allowedRoot?)` | Longest common parent directory of file paths          |
-| `normalizeFilePaths(rootPath, files)`                | Resolve, sort, deduplicate paths relative to root      |
-| `toRelativePath(rootPath, filePath)`                 | Single path → clean unix-style relative path (or null) |
+| Function                                             | Description                                                          |
+| ---------------------------------------------------- | -------------------------------------------------------------------- |
+| `hashToHex(digest)`                                  | Convert a 16-byte digest to a 32-char hex string                     |
+| `hashesToHexArray(digests)`                          | Convert an array of digests to hex strings                           |
+| `findCommonRootPath(files, baseRoot?, allowedRoot?)` | Longest common parent directory of file paths                        |
+| `normalizeFilePaths(rootPath, files)`                | Resolve, sort, deduplicate paths relative to root                    |
+| `toRelativePath(rootPath, filePath)`                 | Single path → clean unix-style relative path (or null)               |
+| `threadPoolTrim()`                                   | Wake idle native pool threads so they self-terminate and free memory |
 
 ---
 

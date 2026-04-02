@@ -46,21 +46,21 @@ namespace fast_fs_hash {
       const volatile uint8_t * cancelByte = nullptr,
       Napi::ObjectReference && cancelRef = {}) :
       AddonWorker(env, deferred),
-      cachePath_(std::move(cachePath)),
-      rootPath_(std::move(rootPath)),
-      pathsRef_(std::move(pathsRef)),
-      cancelRef_(std::move(cancelRef)),
       encodedPaths_(encodedPaths),
       encodedLen_(encodedLen),
       fileCount_(fileCount),
       version_(version),
       hasFingerprint_(fingerprint != nullptr),
+      timeoutMs_(timeoutMs),
       userValue0_(userValue0),
       userValue1_(userValue1),
       userValue2_(userValue2),
       userValue3_(userValue3),
+      cachePath_(std::move(cachePath)),
+      rootPath_(std::move(rootPath)),
       ud_(std::move(ud)),
-      timeoutMs_(timeoutMs) {
+      pathsRef_(std::move(pathsRef)),
+      cancelRef_(std::move(cancelRef)) {
       if (fingerprint) {
         memcpy(&this->fingerprint_, fingerprint, 16);
       }
@@ -92,31 +92,57 @@ namespace fast_fs_hash {
     }
 
    private:
-    std::string cachePath_;
-    std::string rootPath_;
+    // ── Pool-thread hot fields ──────────────────────────────────────────
 
-    // JS refs (prevent GC)
-    Napi::ObjectReference pathsRef_;
-    Napi::ObjectReference cancelRef_;
-
-    // Inputs
+    // Inputs (read on pool thread)
     const uint8_t * encodedPaths_;
     size_t encodedLen_;
     uint32_t fileCount_;
     uint32_t version_;
     bool hasFingerprint_;
+    int timeoutMs_;
     Hash128 fingerprint_{};
     double userValue0_;
     double userValue1_;
     double userValue2_;
     double userValue3_;
-    ParsedUserData ud_;
-    int timeoutMs_;
 
+    // Paths (used on pool thread for hash loop + disk write)
+    std::string cachePath_;
+    std::string rootPath_;
+
+    // User data (read on pool thread during write)
+    ParsedUserData ud_;
+
+    // Cancellation
     FfshFile::LockCancel cancel_;
 
     // RAII locked fd. Destructor closes if not already closed.
     FfshFile lockedFile_;
+
+    // Hash runner state
+    CacheEntry * runEntries_ = nullptr;
+    const uint32_t * runPathEnds_ = nullptr;
+    const uint8_t * runPackedPaths_ = nullptr;
+    size_t runPackedPathsSize_ = 0;
+    size_t workBatch_ = 0;
+    uint32_t writerFc_ = 0;
+    bool writeSuccess_ = false;
+
+    // Working dataBuf
+    OwnedBuf<> dataBuf_;
+
+    // Work-stealing counter — own cache line to avoid false sharing
+    alignas(64) mutable std::atomic<size_t> nextIndex_{0};
+
+    // ── JS-thread-only fields (cold, never touched by pool threads) ─────
+
+    Napi::ObjectReference pathsRef_;
+    Napi::ObjectReference cancelRef_;
+
+    static_assert(
+      READ_BUFFER_SIZE + sizeof(PathResolver) <= ThreadPool::THREAD_STACK_SIZE - 64 * 1024,
+      "buffers exceed pool thread usable stack");
 
     /** Signal completion and close fd on the current (pool) thread.
      *  Moves lockedFile_ to a stack local so the JS-thread destructor is a no-op,
@@ -130,25 +156,6 @@ namespace fast_fs_hash {
       FfshFile f(std::move(this->lockedFile_));
       this->signal(error);
     }
-
-    // Working dataBuf
-    OwnedBuf<> dataBuf_;
-
-    bool writeSuccess_ = false;
-
-    // Hash runner state
-    size_t workBatch_ = 0;
-    CacheEntry * runEntries_ = nullptr;
-    const uint32_t * runPathEnds_ = nullptr;
-    const uint8_t * runPackedPaths_ = nullptr;
-    size_t runPackedPathsSize_ = 0;
-    uint32_t writerFc_ = 0;
-
-    alignas(64) mutable std::atomic<size_t> nextIndex_{0};
-
-    static_assert(
-      READ_BUFFER_SIZE + sizeof(PathResolver) <= ThreadPool::THREAD_STACK_SIZE - 64 * 1024,
-      "buffers exceed pool thread usable stack");
 
     void doWriteNew_() noexcept {
       const uint32_t fc = this->fileCount_;

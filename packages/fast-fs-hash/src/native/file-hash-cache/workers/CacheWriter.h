@@ -39,21 +39,22 @@ namespace fast_fs_hash {
       const volatile uint8_t * cancelByte = nullptr,
       Napi::ObjectReference && cancelRef = {}) :
       AddonWorker(env, deferred),
-      cachePath_(std::move(cachePath)),
-      rootPath_(std::move(rootPath)),
-      dataRef_(std::move(dataRef)),
-      pathsRef_(std::move(pathsRef)),
-      cancelRef_(std::move(cancelRef)),
       dataBuf_(dataBuf),
       dataLen_(dataLen),
       encodedPaths_(encodedPaths),
       encodedLen_(encodedLen),
       fileCount_(fileCount),
-      ud_(std::move(ud)),
       lockedFile_(std::move(lockedFile)),
-      cancelByte_(cancelByte) {}
+      cachePath_(std::move(cachePath)),
+      rootPath_(std::move(rootPath)),
+      ud_(std::move(ud)),
+      dataRef_(std::move(dataRef)),
+      pathsRef_(std::move(pathsRef)),
+      cancelRef_(std::move(cancelRef)) {
+      this->cancel_.cancelByte_ = cancelByte;
+    }
 
-    ~CacheWriter() override { this->cancel(); }
+    ~CacheWriter() override { this->cancel_.fire(); }
 
     void Execute() override {
       uint8_t * buf = this->dataBuf_;
@@ -85,35 +86,52 @@ namespace fast_fs_hash {
     }
 
    private:
-    // Paths (used on pool thread for hash loop + disk write)
-    std::string cachePath_;
-    std::string rootPath_;
+    // ── Pool-thread hot fields ──────────────────────────────────────────
 
-    // GC refs (prevent JS buffer collection while worker is in-flight)
-    Napi::ObjectReference dataRef_;
-    Napi::ObjectReference pathsRef_;
-    Napi::ObjectReference cancelRef_;
-
-    // Inputs from JS
+    // Input pointers (read on pool thread during remap/hash)
     uint8_t * dataBuf_;
     size_t dataLen_;
     const uint8_t * encodedPaths_;
     size_t encodedLen_;
     uint32_t fileCount_;
+
+    // RAII locked fd. Destructor closes if not already closed.
+    FfshFile lockedFile_;
+
+    // Paths (used on pool thread for hash loop + disk write)
+    std::string cachePath_;
+    std::string rootPath_;
+
+    // User data (read on pool thread during write)
     ParsedUserData ud_;
-    FfshFile lockedFile_;  // RAII locked fd. Destructor closes if not already closed.
-    const volatile uint8_t * cancelByte_;
 
-   public:
-    /** Cancel the hash phase (from any thread). The file write is NOT cancelled. */
-    void cancel() noexcept { this->cancelled_.store(true, std::memory_order_release); }
+    // Cancellation — unified: fire() in dtor, is_fired() in hash loop
+    FfshFile::LockCancel cancel_;
 
-   private:
-    std::atomic<bool> cancelled_{false};
+    // Hash runner state (set before pool.submit, read by worker threads)
+    CacheEntry * runEntries_ = nullptr;
+    const uint32_t * runPathEnds_ = nullptr;
+    const uint8_t * runPackedPaths_ = nullptr;
+    size_t runPackedPathsSize_ = 0;
+    size_t workBatch_ = 0;
+    uint32_t writerFc_ = 0;
+    bool writeSuccess_ = false;
 
-    FSH_FORCE_INLINE bool isCancelled_() const noexcept {
-      return this->cancelled_.load(std::memory_order_relaxed) || (this->cancelByte_ && *this->cancelByte_ != 0);
-    }
+    // Remap output (owned, freed on destruction)
+    OwnedBuf<> newBuf_;
+
+    // Work-stealing counter — own cache line to avoid false sharing
+    alignas(64) mutable std::atomic<size_t> nextIndex_{0};
+
+    // ── JS-thread-only fields (cold, never touched by pool threads) ─────
+
+    Napi::ObjectReference dataRef_;
+    Napi::ObjectReference pathsRef_;
+    Napi::ObjectReference cancelRef_;
+
+    static_assert(
+      READ_BUFFER_SIZE + sizeof(PathResolver) <= ThreadPool::THREAD_STACK_SIZE - 64 * 1024,
+      "buffers exceed pool thread usable stack");
 
     /** Signal completion and close fd on the current (pool) thread.
      *  Moves lockedFile_ to a stack local so the JS-thread destructor is a no-op,
@@ -127,26 +145,6 @@ namespace fast_fs_hash {
       FfshFile f(std::move(this->lockedFile_));
       this->signal(error);
     }
-
-    // Remap output (owned, freed on destruction)
-    OwnedBuf<> newBuf_;
-
-    bool writeSuccess_ = false;
-
-    // Hash runner state (set before pool.submit, read by worker threads)
-    size_t workBatch_ = 0;
-    CacheEntry * runEntries_ = nullptr;
-    const uint32_t * runPathEnds_ = nullptr;
-    const uint8_t * runPackedPaths_ = nullptr;
-    size_t runPackedPathsSize_ = 0;
-    uint32_t writerFc_ = 0;
-
-    // Work-stealing counter — own cache line to avoid false sharing
-    alignas(64) mutable std::atomic<size_t> nextIndex_{0};
-
-    static_assert(
-      READ_BUFFER_SIZE + sizeof(PathResolver) <= ThreadPool::THREAD_STACK_SIZE - 64 * 1024,
-      "buffers exceed pool thread usable stack");
 
     FSH_NO_INLINE bool buildRemappedBuf_(const CacheHeader * prevHdr, uint32_t oldFc, uint32_t newFc) noexcept {
       const uint32_t udCount = prevHdr->udItemCount;
@@ -322,7 +320,7 @@ namespace fast_fs_hash {
       const size_t maxSegCap = FSH_MAX_PATH > resolver.prefix_len + 1 ? FSH_MAX_PATH - resolver.prefix_len - 1 : 0;
 
       for (;;) {
-        if (this->isCancelled_() || this->addon->pool.is_shutdown()) [[unlikely]] {
+        if (this->cancel_.is_fired() || this->addon->pool.is_shutdown()) [[unlikely]] {
           break;
         }
         const size_t baseIdx = this->nextIndex_.fetch_add(workBatch, std::memory_order_relaxed);

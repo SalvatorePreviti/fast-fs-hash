@@ -24,9 +24,9 @@ namespace fast_fs_hash {
       const volatile uint8_t * cancelByte = nullptr,
       Napi::ObjectReference && cancelRef = {}) :
       AddonWorker(env, deferred),
+      timeoutMs_(timeoutMs),
       cachePath_(std::move(cachePath)),
-      cancelRef_(std::move(cancelRef)),
-      timeoutMs_(timeoutMs) {
+      cancelRef_(std::move(cancelRef)) {
       this->cancel_.cancelByte_ = cancelByte;
     }
 
@@ -40,11 +40,14 @@ namespace fast_fs_hash {
     void OnOK() override { this->deferred.Resolve(Napi::Boolean::New(Napi::Env(this->env), this->result_)); }
 
    private:
-    std::string cachePath_;
-    Napi::ObjectReference cancelRef_;
+    // ── Pool-thread fields ──────────────────────────────────────────────
     int timeoutMs_;
     bool result_ = false;
+    std::string cachePath_;
     FfshFile::LockCancel cancel_;
+
+    // ── JS-thread-only fields ───────────────────────────────────────────
+    Napi::ObjectReference cancelRef_;
   };
 
 }  // namespace fast_fs_hash

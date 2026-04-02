@@ -89,6 +89,7 @@ export interface BindingExportNative {
   cacheClose(handle: number): void;
   cacheIsLocked(cachePath: string): boolean;
   cacheWaitUnlocked(cachePath: string, lockTimeoutMs?: number, cancelBuf?: Uint8Array | null): Promise<boolean>;
+  filesEqual(pathA: string, pathB: string): Promise<boolean>;
   poolTrim(): void;
   lz4CompressBlock(input: Uint8Array, offset?: number, length?: number): Buffer;
   lz4CompressBlockTo(
@@ -115,6 +116,8 @@ export interface BindingExportNative {
     length?: number
   ): Promise<Buffer>;
   lz4CompressBound(inputSize: number): number;
+  lz4ReadAndCompress(path: string): Promise<{ data: Buffer; uncompressedSize: number }>;
+  lz4DecompressAndWrite(compressedData: Uint8Array, uncompressedSize: number, path: string): Promise<boolean>;
   getCpuFeatures(): { avx2: boolean; avx512: boolean };
 }
 

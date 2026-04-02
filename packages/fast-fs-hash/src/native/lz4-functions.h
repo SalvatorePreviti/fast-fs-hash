@@ -3,6 +3,8 @@
 
 #include "includes.h"
 #include "AddonWorker.h"
+#include "Lz4CompressFileWorker.h"
+#include "Lz4DecompressAndWriteWorker.h"
 #include <lz4.h>
 
 /**
@@ -403,6 +405,37 @@ namespace lz4_functions {
 
     auto deferred = Napi::Promise::Deferred::New(env);
     auto * worker = new Lz4DecompressWorker(env, deferred, Napi::ObjectReference::New(input, 1), src, srcLen, uncompSize);
+    worker->Queue();
+    return deferred.Promise();
+  }
+
+  /** lz4CompressFile(path) → Promise<{ data: Buffer, uncompressedSize: number }> */
+  static Napi::Value lz4CompressFile(const Napi::CallbackInfo & info) {
+    auto env = info.Env();
+    auto deferred = Napi::Promise::Deferred::New(env);
+    auto * worker =
+      new fast_fs_hash::Lz4CompressFileWorker(env, deferred, info[0].As<Napi::String>().Utf8Value());
+    worker->Queue();
+    return deferred.Promise();
+  }
+
+  /** lz4DecompressAndWrite(compressedData, uncompressedSize, path) → Promise<true> */
+  static Napi::Value lz4DecompressAndWrite(const Napi::CallbackInfo & info) {
+    auto env = info.Env();
+    auto input = info[0].As<Napi::Uint8Array>();
+
+    uint32_t uncompSize = 0;
+    napi_get_value_uint32(env, info[1], &uncompSize);
+
+    auto deferred = Napi::Promise::Deferred::New(env);
+    auto * worker = new fast_fs_hash::Lz4DecompressAndWriteWorker(
+      env,
+      deferred,
+      info[2].As<Napi::String>().Utf8Value(),
+      input.Data(),
+      input.ElementLength(),
+      uncompSize,
+      Napi::ObjectReference::New(input, 1));
     worker->Queue();
     return deferred.Promise();
   }

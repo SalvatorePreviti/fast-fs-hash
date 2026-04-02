@@ -93,32 +93,49 @@ export interface FileHashCacheWriteNewOptions {
 
 const STATUS_MAP: readonly CacheStatus[] = ["upToDate", "changed", "stale", "missing", "statsDirty", "lockFailed"];
 
-const { cacheOpen, cacheWrite, cacheWriteNew, cacheIsLocked, cacheWaitUnlocked, cacheClose, poolTrim } = binding;
+const { cacheOpen, cacheWrite, cacheWriteNew, cacheIsLocked, cacheWaitUnlocked, cacheClose } = binding;
 
 const _emptyBuf = Buffer.alloc(0);
 const _cancelledBuf = new Uint8Array([1]);
 
-type CancelBuf = Uint8Array & { _sig?: AbortSignal; _cb?: () => void };
+/** Abort signal listener cleanup state. Stored as a plain object to avoid
+ *  V8 hidden class transitions on the Uint8Array. */
+interface CancelState {
+  buf: Uint8Array;
+  sig: AbortSignal;
+  cb: () => void;
+}
 
-function cancelBufFromSignal(signal: AbortSignal): CancelBuf {
+let _cancelStates: CancelState[] | undefined;
+
+function cancelBufFromSignal(signal: AbortSignal): Uint8Array {
   if (signal.aborted) {
     return _cancelledBuf;
   }
-  const buf: CancelBuf = new Uint8Array(1);
+  const buf = new Uint8Array(1);
   const cb = () => {
     buf[0] = 1;
   };
   signal.addEventListener("abort", cb, { once: true });
-  buf._sig = signal;
-  buf._cb = cb;
+  (_cancelStates ??= []).push({ buf, sig: signal, cb });
   return buf;
 }
 
-function cleanupCancelBuf(buf: CancelBuf | null | undefined): void {
-  if (buf?._sig) {
-    buf._sig.removeEventListener("abort", buf._cb as EventListener);
-    buf._sig = undefined;
-    buf._cb = undefined;
+function cleanupCancelBuf(buf: Uint8Array | null | undefined): void {
+  if (!buf || !_cancelStates) {
+    return;
+  }
+  const states = _cancelStates;
+  for (let i = states.length - 1; i >= 0; --i) {
+    if (states[i].buf === buf) {
+      const { sig, cb } = states[i];
+      states.splice(i, 1);
+      if (states.length === 0) {
+        _cancelStates = undefined;
+      }
+      sig.removeEventListener("abort", cb as EventListener);
+      return;
+    }
   }
 }
 
@@ -225,12 +242,12 @@ export class FileHashCache {
   /** User data items loaded from the old cache (eagerly, synchronous access). */
   public readonly userData: readonly Buffer[];
 
+  #closed: boolean;
   readonly #dataBuf: Buffer;
   readonly #encodedPaths: Buffer;
   readonly #lockTimeoutMs: number;
   readonly #cancelBuf: Uint8Array | null;
   #files: readonly string[] | null;
-  #closed: boolean;
 
   /** @internal */
   public constructor(
@@ -244,16 +261,17 @@ export class FileHashCache {
     lockTimeoutMs: number,
     cancelBuf: Uint8Array | null
   ) {
+    this.#closed = false;
+    this.#dataBuf = dataBuf;
     this.#encodedPaths = encodedPaths;
-    this.#files = openFiles ?? null;
     this.#lockTimeoutMs = lockTimeoutMs;
     this.#cancelBuf = cancelBuf;
+    this.#files = openFiles ?? null;
+
     this.cachePath = cachePath;
     this.version = version;
     this.rootPath = rootPath;
     this.fingerprint = fingerprint;
-    this.#dataBuf = dataBuf;
-    this.#closed = false;
 
     const hdrFc = dataBuf.readUInt32LE(H_FILE_COUNT);
     const pathsLen = dataBuf.readUInt32LE(H_PATHS_LEN);
@@ -359,7 +377,13 @@ export class FileHashCache {
 
     const timeout = lockTimeoutMs ?? -1;
     const cancelBuf = signal ? cancelBufFromSignal(signal) : null;
-    const dataBuf = await cacheOpen(encoded, fileCount, resolvedCachePath, root, ver, fp, timeout, cancelBuf);
+    let dataBuf: Buffer;
+    try {
+      dataBuf = await cacheOpen(encoded, fileCount, resolvedCachePath, root, ver, fp, timeout, cancelBuf);
+    } catch (e) {
+      cleanupCancelBuf(cancelBuf);
+      throw e;
+    }
 
     return new FileHashCache(resolvedCachePath, ver, root, fp, dataBuf, encoded, normalizedFiles, timeout, cancelBuf);
   }
@@ -438,12 +462,6 @@ export class FileHashCache {
       cleanupCancelBuf(cancelBuf);
     }
   }
-
-  /**
-   * Wake idle pool threads so they can self-terminate and free memory.
-   * Threads with pending work will continue running. This is not a shutdown.
-   */
-  public static poolTrim: () => void = poolTrim;
 
   /**
    * Write a brand-new cache file without reading the old one.
@@ -540,31 +558,17 @@ export class FileHashCache {
 
     const dataBuf = this.#dataBuf;
 
-    const uv0 = options?.userValue0 ?? this.userValue0;
-    const uv1 = options?.userValue1 ?? this.userValue1;
-    const uv2 = options?.userValue2 ?? this.userValue2;
-    const uv3 = options?.userValue3 ?? this.userValue3;
+    // Always write user values — 4 writeDoubleLE calls are cheaper than 4 comparisons.
+    dataBuf.writeDoubleLE(options?.userValue0 ?? this.userValue0, H_USER_VALUE0_BYTE);
+    dataBuf.writeDoubleLE(options?.userValue1 ?? this.userValue1, H_USER_VALUE1_BYTE);
+    dataBuf.writeDoubleLE(options?.userValue2 ?? this.userValue2, H_USER_VALUE2_BYTE);
+    dataBuf.writeDoubleLE(options?.userValue3 ?? this.userValue3, H_USER_VALUE3_BYTE);
 
-    if (uv0 !== this.userValue0 || uv1 !== this.userValue1 || uv2 !== this.userValue2 || uv3 !== this.userValue3) {
-      dataBuf.writeDoubleLE(uv0, H_USER_VALUE0_BYTE);
-      dataBuf.writeDoubleLE(uv1, H_USER_VALUE1_BYTE);
-      dataBuf.writeDoubleLE(uv2, H_USER_VALUE2_BYTE);
-      dataBuf.writeDoubleLE(uv3, H_USER_VALUE3_BYTE);
-    }
-
-    let fp: Uint8Array | null;
-    if (options?.fingerprint !== undefined) {
-      if (
-        options.fingerprint !== null &&
-        (!(options.fingerprint instanceof Uint8Array) || options.fingerprint.length !== 16)
-      ) {
+    const fp = options?.fingerprint !== undefined ? options.fingerprint : this.fingerprint;
+    if (fp) {
+      if (!(fp instanceof Uint8Array) || fp.length !== 16) {
         throw new TypeError("FileHashCache: fingerprint must be a Uint8Array of exactly 16 bytes");
       }
-      fp = options.fingerprint;
-    } else {
-      fp = this.fingerprint;
-    }
-    if (fp) {
       dataBuf.set(fp, H_FINGERPRINT_BYTE);
     } else {
       dataBuf.fill(0, H_FINGERPRINT_BYTE, H_FINGERPRINT_BYTE + 16);
