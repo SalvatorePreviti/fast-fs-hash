@@ -448,6 +448,19 @@ git submodule update --init --recursive
 
 See `package.json` for the full list of available build scripts.
 
+## Release process
+
+- **`main`** — development branch. CI runs lint, typecheck, tests, and builds native binaries for all platforms on every push and PR.
+- **`publish`** — release branch. Pushing to `publish` triggers the full CI pipeline. After all builds and tests pass, a dry-run publish verifies all packages. An admin must then manually approve the publish job (via the `npm-publish` GitHub environment) to publish to npm, create a git tag, and deploy docs.
+
+npm packages are published with [provenance attestations](https://docs.npmjs.com/generating-provenance-statements) via GitHub Actions OIDC — no npm tokens are stored in CI.
+
+### Required GitHub repository settings
+
+- **Branch protection on `publish`**: require PR reviews, require status checks to pass, restrict push access to admins only.
+- **Environment `npm-publish`**: create under Settings → Environments with "Required reviewers" restricted to trusted maintainers.
+- **npm trusted publishing**: configure each `@fast-fs-hash/*` package on npmjs.com to trust the `npm-publish` environment from this repository.
+
 ## License
 
 [MIT](LICENSE) — Copyright (c) 2025-present Salvatore Previti

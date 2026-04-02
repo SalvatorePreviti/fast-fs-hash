@@ -1,6 +1,6 @@
 {
   "name": "@fast-fs-hash/fast-fs-hash-node-darwin-arm64",
-  "version": "0.0.0",
+  "version": "0.0.0-rc0",
   "description": "fast-fs-hash native binding for macOS arm64",
   "os": [
     "darwin"
@@ -19,5 +19,12 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/SalvatorePreviti/fast-fs-hash.git"
+  },
+  "homepage": "https://github.com/SalvatorePreviti/fast-fs-hash#readme",
+  "bugs": {
+    "url": "https://github.com/SalvatorePreviti/fast-fs-hash/issues"
+  },
+  "engines": {
+    "node": ">=22.0.0"
   }
 }

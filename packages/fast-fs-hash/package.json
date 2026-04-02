@@ -1,6 +1,6 @@
 {
   "name": "fast-fs-hash",
-  "version": "0.0.0",
+  "version": "0.0.0-rc0",
   "description": "Blazing fast filesystem hashing library for Node.js",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -16,10 +16,10 @@
         "types": "./dist/index.d.cts",
         "default": "./dist/index.cjs"
       }
-    }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
-    "package.json",
     "README.md",
     "LICENSE",
     "NOTICES.md",
@@ -40,10 +40,18 @@
     "file-hash",
     "napi"
   ],
+  "sideEffects": false,
   "license": "MIT",
   "author": "Salvatore Previti",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/SalvatorePreviti/fast-fs-hash.git"
+  },
+  "homepage": "https://github.com/SalvatorePreviti/fast-fs-hash#readme",
+  "bugs": {
+    "url": "https://github.com/SalvatorePreviti/fast-fs-hash/issues"
+  },
+  "engines": {
+    "node": ">=22.0.0"
   }
 }

@@ -277,37 +277,30 @@ jobs:
           path: packages/fast-fs-hash/build/Release/fast_fs_hash*.node
           if-no-files-found: error
 
-  #  - Publish (ONLY after ALL builds + tests pass)
+  #  - Verify publish (runs automatically on publish branch)
   #
-  # Triggered only on the publish branch.
-  # Downloads every platform artifact, verifies all platform .node binaries are present, then publishes:
-  #   1) All platform packages (@fast-fs-hash/fast-fs-hash-node-<platform>)
-  #   2) The main package (fast-fs-hash) — last, so optionalDeps exist
+  # Downloads every platform artifact, packages binaries, injects optionalDeps,
+  # and runs npm publish --dry-run on all packages. Uploads the fully prepared
+  # publish-ready tree as an artifact for the real publish job.
   #
-  publish:
-    name: Publish to npm + Deploy docs
+  publish-dry-run:
+    name: Verify publish (dry-run)
     if: github.ref == 'refs/heads/publish'
     needs: [lint-and-test, build-native, build-freebsd, test-musl]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      id-token: write
-      pages: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Check triggering actor is a collaborator
+      - name: Check triggering actor is a repo admin
         uses: actions/github-script@v7
         with:
           script: |
             const { owner, repo } = context.repo;
             const username = context.actor;
-            try {
-              await github.rest.repos.checkCollaborator({ owner, repo, username });
-              core.info(`User ${username} is a collaborator`);
-            } catch (err) {
-              core.setFailed(`User ${username} is not a repository collaborator. Only collaborators can run this workflow.`);
+            const { data } = await github.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username });
+            const perm = data.permission;
+            if (perm === 'admin') {
+              core.info(`User ${username} has admin permission`);
+            } else {
+              core.setFailed(`User ${username} has '${perm}' permission — only admins can publish.`);
             }
 
       - uses: actions/checkout@v4
@@ -375,6 +368,68 @@ jobs:
           npm publish packages/fast-fs-hash --dry-run --access public 2>&1 | tail -5
           echo "── Dry-run passed ──"
 
+      - name: Upload publish-ready packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: publish-ready
+          path: |
+            npm/
+            packages/fast-fs-hash/dist/
+            packages/fast-fs-hash/package.json
+          if-no-files-found: error
+
+  #  - Publish (requires manual approval)
+  #
+  # Uses the "npm-publish" environment which must have "Required reviewers"
+  # enabled in GitHub repo settings (Settings → Environments → npm-publish).
+  # After dry-run passes, a collaborator must approve this job to publish.
+  #
+  publish:
+    name: Publish to npm + Deploy docs
+    needs: [publish-dry-run]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      pages: write
+    environment:
+      name: npm-publish
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          registry-url: "https://registry.npmjs.org"
+
+      - run: npm ci
+
+      - name: Build JS bundles
+        run: npm run build:ts
+
+      - name: Sync versions
+        run: node scripts/update-versions.js
+
+      - name: Download publish-ready packages
+        uses: actions/download-artifact@v4
+        with:
+          name: publish-ready
+          path: .
+
+      - name: Inject optionalDependencies for publish
+        run: node scripts/prepublish.js
+
+      - name: Resolve release version
+        id: release
+        run: |
+          version=$(node -p "require('./package.json').version")
+          tag="v${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
       - name: Publish all packages
         shell: bash
         run: |
@@ -416,7 +471,7 @@ jobs:
           git tag -a "${tag}" -m "Release ${tag}"
           git push origin "${tag}"
 
-      #  - Deploy docs to GitHub Pages (only after npm publish succeeds)
+      #  - Deploy docs to GitHub Pages
 
       - name: Generate API docs
         run: npm run docs
