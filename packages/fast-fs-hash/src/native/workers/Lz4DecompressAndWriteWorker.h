@@ -40,6 +40,13 @@ namespace fast_fs_hash {
       // Decompress first (before touching the file)
       uint8_t * outBuf = nullptr;
       if (this->uncompSize_ > 0) {
+        // LZ4_decompress_safe takes int — reject sizes that would overflow.
+        if (this->uncompSize_ > static_cast<uint32_t>(INT_MAX) ||
+            this->compLen_ > static_cast<size_t>(INT_MAX)) [[unlikely]] {
+          this->signal("lz4DecompressAndWrite: size exceeds INT_MAX");
+          return;
+        }
+
         outBuf = static_cast<uint8_t *>(malloc(this->uncompSize_));
         if (!outBuf) [[unlikely]] {
           this->signal("lz4DecompressAndWrite: out of memory");

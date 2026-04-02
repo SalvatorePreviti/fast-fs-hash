@@ -31,6 +31,14 @@ FSH_NO_INLINE static size_t fast_encode_string(
   size_t written = 0;
   napi_get_value_string_utf8(env, str_val, small_buf, STRING_SMALL_BUF, &written);
 
+  // Heuristic: if napi wrote fewer than capacity - 5, the string fit entirely.
+  // The -5 margin covers the worst case where a 4-byte UTF-8 character straddles
+  // the buffer boundary. napi_get_value_string_utf8 only writes complete
+  // characters, so truncation always lands on a character boundary — but if
+  // the real string is exactly capacity-1 bytes, `written` equals capacity-2
+  // (napi reserves 1 for NUL) and would be misclassified as truncated.
+  // The -5 margin is conservative: it may trigger the slow path for strings
+  // of exactly ~8187 bytes, but this avoids any chance of silent truncation.
   if (written < STRING_SMALL_BUF - 5) [[likely]] {
     out_ptr = small_buf;
     return written;

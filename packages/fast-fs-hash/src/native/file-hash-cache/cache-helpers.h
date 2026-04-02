@@ -89,13 +89,19 @@ namespace fast_fs_hash {
    * Assemble the on-disk body (entries + ud directory + pathEnds + paths + ud payloads),
    * then LZ4-compress and write to the locked fd.
    *
+   * The in-memory dataBuf layout depends on how many user data items were present
+   * when it was built (this affects where pathEnds and paths are located, because
+   * the udDir sits between entries and pathEnds). When writing, the new udCount
+   * may differ — so this function reads pathEnds/paths using the OLD layout offset
+   * (prevUdCount) and assembles a fresh body with the NEW udCount layout.
+   *
    * @param buf          In-memory dataBuf (header + entries + paths).
    * @param hdr          Header within buf. Updated in-place (udItemCount, udPayloadsLen, magic, status).
    * @param fc           File count.
-   * @param prevUdCount  The udItemCount that was in the header when the in-memory layout was built.
-   *                     For CacheWriter this is the old header's udItemCount; for CacheWriteNew this is 0.
-   * @param ud           Parsed user data to embed.
-   * @param file         Locked fd — closed by this function.
+   * @param prevUdCount  The udItemCount used when the in-memory layout was built.
+   *                     CacheWriter: the old cache's udItemCount. CacheWriteNew: 0.
+   * @param ud           Parsed user data to embed (may have different count than prevUdCount).
+   * @param file         Locked fd — closed by this function regardless of success/failure.
    * @return true on successful write.
    */
   inline bool assembleAndWriteCache(

@@ -324,8 +324,9 @@ namespace lz4_functions {
         this->signal();
         return;
       }
-      if (this->len_ > static_cast<size_t>(INT32_MAX)) [[unlikely]] {
-        this->signal("lz4DecompressBlockAsync: input exceeds 2 GiB");
+      if (this->len_ > static_cast<size_t>(INT32_MAX) ||
+          this->uncompSize_ > static_cast<uint32_t>(INT32_MAX)) [[unlikely]] {
+        this->signal("lz4DecompressBlockAsync: size exceeds INT_MAX");
         return;
       }
       this->outBuf_ = static_cast<uint8_t *>(malloc(this->uncompSize_));

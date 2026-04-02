@@ -1,6 +1,6 @@
 {
   "_description": "SHA-256 hashes of build artifacts and source code. Regenerated on every build.",
-  "generatedAt": "2026-04-02T21:30:17.639Z",
+  "generatedAt": "2026-04-02T21:56:53.754Z",
   "distArtifacts": {
     "index.cjs": {
       "sha256": "575d6f04f68c8488a1de31444d50b405580199f0a8a730482ddec442beb699df",
@@ -38,8 +38,8 @@
         "lines": 388
       },
       "file-hash-cache-format.ts": {
-        "sha256": "44f290a5e633bfcad6ba97020d0dabda1cef4dd6e5f3146ff8c73590ae32c4cf",
-        "bytes": 2146,
+        "sha256": "e9f978ea012f44ea9ea074f868c989b8d39e46a0208a9e935879941d16bedf68",
+        "bytes": 2192,
         "lines": 73
       },
       "file-hash-cache-utils.ts": {
@@ -95,19 +95,19 @@
         "lines": 136
       },
       "lz4-functions.h": {
-        "sha256": "dda65cd39d275e6238c8f9005187f733d11b44f4828c7cbfe750b300732f2eac",
-        "bytes": 15669,
-        "lines": 446
+        "sha256": "f99c7ce37b2a5f0dd24b3a37ac8b80434925f1600c2b1410385045fe45d9fc71",
+        "bytes": 15736,
+        "lines": 447
       },
       "napi-helpers.h": {
-        "sha256": "dc6bff4f165a8723103615f1651293507e0ee312af120f4d7810f84a5d2a48c2",
-        "bytes": 3802,
-        "lines": 111
+        "sha256": "24bf725ab25f935dba869bf8cb03a028f215335d531ead5e975220734d285854",
+        "bytes": 4422,
+        "lines": 119
       },
       "stream-functions.h": {
-        "sha256": "eebaf7f732939c0a804fbb5dab89222cd0eada934152342370d7428a1db41695",
-        "bytes": 11037,
-        "lines": 288
+        "sha256": "a03642e4766e43b65008e08dfd81e561cb59e8b1e01526d5fb48b05b8d5b6379",
+        "bytes": 11163,
+        "lines": 306
       }
     },
     "xxhash": {

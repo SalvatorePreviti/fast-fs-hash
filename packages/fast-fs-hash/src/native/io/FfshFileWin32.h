@@ -756,6 +756,18 @@ namespace fast_fs_hash {
     explicit DirFd(const char *, size_t) noexcept {}
   };
 
+#  include "hash-file-helpers.h"
+
+  /**
+   * Per-thread path resolver for cache stat/hash workers (Windows).
+   *
+   * Concatenates a root prefix with relative packed paths into a fixed
+   * path_buf: [rootPath\\][relativePath\0], converting '/' to '\\'.
+   * A pre-allocated wpath_scratch avoids per-file heap allocation when
+   * converting UTF-8 → UTF-16 via WPath.
+   *
+   * Lifecycle: init() once with root path, then resolve()+stat/hash per file.
+   */
   struct PathResolver : NonCopyable {
     char path_buf[FSH_MAX_PATH];
     wchar_t wpath_scratch[FSH_MAX_PATH];
@@ -799,7 +811,7 @@ namespace fast_fs_hash {
         dest.set_zero();
         return;
       }
-      hash_open_file_(rf, dest, rbuf, rbs);
+      hash_open_file(rf, dest, rbuf, rbs);
     }
 
     /** Combined stat + hash: opens file once, fstats the fd, then reads and hashes.
@@ -816,37 +828,8 @@ namespace fast_fs_hash {
         dest.set_zero();
         return false;
       }
-      hash_open_file_(rf, dest, rbuf, rbs);
+      hash_open_file(rf, dest, rbuf, rbs);
       return true;
-    }
-
-   private:
-    static FSH_FORCE_INLINE void hash_open_file_(FfshFile & rf, Hash128 & dest, unsigned char * rbuf, size_t rbs) noexcept {
-      const int64_t n = rf.read_at_most(rbuf, rbs);
-      if (n < 0) [[unlikely]] {
-        dest.set_zero();
-        return;
-      }
-      const size_t bytes = static_cast<size_t>(n);
-      if (bytes < rbs) [[likely]] {
-        dest.from_xxh128(XXH3_128bits(rbuf, bytes));
-        return;
-      }
-      XXH3_state_t state;
-      XXH3_128bits_reset(&state);
-      XXH3_128bits_update(&state, rbuf, rbs);
-      for (;;) {
-        const int64_t nr = rf.read(rbuf, rbs);
-        if (nr <= 0) [[unlikely]] {
-          if (nr == 0) [[likely]] {
-            dest.from_xxh128(XXH3_128bits_digest(&state));
-          } else {
-            dest.set_zero();
-          }
-          return;
-        }
-        XXH3_128bits_update(&state, rbuf, static_cast<size_t>(nr));
-      }
     }
   };
 

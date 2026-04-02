@@ -13,8 +13,20 @@ namespace fast_fs_hash {
 
   /**
    * Check if encoded paths match the pathEnds+paths in a dataBuf.
-   * Single pass: uses pathEnds to know segment lengths (no memchr needed),
-   * then compares each segment + verifies NUL separator position.
+   *
+   * Two representations of the same file list:
+   *   - `encoded`: NUL-separated flat buffer ("a.ts\0b.ts\0c.ts\0")
+   *   - `dataBuf`: header + entries + pathEnds[] + packed paths (no NULs)
+   *
+   * Single pass using pathEnds offsets for O(1) per-segment length,
+   * then memcmp + NUL-position verification. This double-checks that
+   * the encoded input is well-formed (correct NUL placement).
+   *
+   * @param encoded     NUL-separated file paths from JS.
+   * @param encodedLen  Total byte length of encoded (paths + NULs).
+   * @param fileCount   Expected number of files.
+   * @param dataBuf     Existing in-memory cache buffer.
+   * @return true if the file lists are identical.
    */
   inline bool pathsMatch(
       const uint8_t * encoded, size_t encodedLen, uint32_t fileCount,

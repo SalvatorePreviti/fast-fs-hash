@@ -98,7 +98,9 @@ namespace stream_functions {
     napi_env env = info.Env();
 
     auto * state = getState(env, info[0]);
-    if (!state) [[unlikely]] return Napi::Value(env, nullptr);
+    if (!state) [[unlikely]] {
+      return Napi::Value(env, nullptr);
+    }
 
     uint32_t lo = 0, hi = 0;
     napi_get_value_uint32(env, info[1], &lo);
@@ -114,7 +116,9 @@ namespace stream_functions {
     napi_env env = info.Env();
 
     auto * state = getState(env, info[0]);
-    if (!state) [[unlikely]] return Napi::Value(env, nullptr);
+    if (!state) [[unlikely]] {
+      return Napi::Value(env, nullptr);
+    }
 
     void * buf_ptr = nullptr;
     size_t buf_len = 0;
@@ -154,7 +158,9 @@ namespace stream_functions {
   static Napi::Value streamAddString(const Napi::CallbackInfo & info) {
     napi_env env = info.Env();
     auto * state = getState(env, info[0]);
-    if (!state) [[unlikely]] return Napi::Value(env, nullptr);
+    if (!state) [[unlikely]] {
+      return Napi::Value(env, nullptr);
+    }
 
     // Fast path: try small buffer only (covers vast majority of strings).
     char small_buf[STRING_SMALL_BUF];
@@ -183,7 +189,9 @@ namespace stream_functions {
     napi_env env = info.Env();
 
     auto * state = getState(env, info[0]);
-    if (!state) [[unlikely]] return Napi::Value(env, nullptr);
+    if (!state) [[unlikely]] {
+      return Napi::Value(env, nullptr);
+    }
 
     void * out_ptr = nullptr;
     size_t out_len = 0;
@@ -210,7 +218,9 @@ namespace stream_functions {
   static Napi::Value streamAddFile(const Napi::CallbackInfo & info) {
     auto env = info.Env();
     auto * state_ptr = getStateRawPtr(env, info[0]);
-    if (!state_ptr) [[unlikely]] return Napi::Value(env, nullptr);
+    if (!state_ptr) [[unlikely]] {
+      return Napi::Value(env, nullptr);
+    }
 
     bool throw_on_error = true;
     if (info.Length() > 2) {
@@ -229,7 +239,9 @@ namespace stream_functions {
   static Napi::Value streamAddFilesParallel(const Napi::CallbackInfo & info) {
     auto env = info.Env();
     auto * state_ptr = getStateRawPtr(env, info[0]);
-    if (!state_ptr) [[unlikely]] return Napi::Value(env, nullptr);
+    if (!state_ptr) [[unlikely]] {
+      return Napi::Value(env, nullptr);
+    }
 
     bool throw_on_error = true;
     if (info.Length() > 3) {
@@ -250,7 +262,9 @@ namespace stream_functions {
   static Napi::Value streamAddFilesSequential(const Napi::CallbackInfo & info) {
     auto env = info.Env();
     auto * state_ptr = getStateRawPtr(env, info[0]);
-    if (!state_ptr) [[unlikely]] return Napi::Value(env, nullptr);
+    if (!state_ptr) [[unlikely]] {
+      return Napi::Value(env, nullptr);
+    }
 
     auto paths = info[1].As<Napi::Uint8Array>();
 
@@ -273,10 +287,14 @@ namespace stream_functions {
     auto env = info.Env();
 
     auto * dst_state = getState(env, info[0]);
-    if (!dst_state) [[unlikely]] return Napi::Value(env, nullptr);
+    if (!dst_state) [[unlikely]] {
+      return Napi::Value(env, nullptr);
+    }
 
     auto * src_state = getState(env, info[1]);
-    if (!src_state) [[unlikely]] return Napi::Value(env, nullptr);
+    if (!src_state) [[unlikely]] {
+      return Napi::Value(env, nullptr);
+    }
 
     XXH3_copyState(dst_state, src_state);
     return Napi::Env(env).Undefined();

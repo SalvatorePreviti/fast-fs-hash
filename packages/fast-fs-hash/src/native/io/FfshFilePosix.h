@@ -37,10 +37,7 @@ namespace fast_fs_hash {
     int fd = -1;
 
     /** Open by absolute path (UTF-8) for sequential reading. */
-    explicit FfshFile(const char * path) noexcept {
-      this->fd = open_rd(path);
-      hint_sequential_if_open_();
-    }
+    explicit FfshFile(const char * path) noexcept { this->fd = open_rd(path); }
 
     /** Open relative to a directory fd via openat().
      *  Avoids a second full path resolution when the file has already been
@@ -54,7 +51,6 @@ namespace fast_fs_hash {
 #  else
       this->fd = ::openat(dir_fd, rel_path, O_RDONLY | O_CLOEXEC);
 #  endif
-      hint_sequential_if_open_();
     }
 
     FfshFile() noexcept = default;
@@ -372,19 +368,19 @@ namespace fast_fs_hash {
       return static_cast<int64_t>(st.st_size);
     }
 
-    /** Write all bytes. Returns true on success. */
+    /** Write all bytes. Returns true on success.
+     *  Retries on EINTR. Treats n <= 0 (other than EINTR) as fatal. */
     inline bool write_all(const uint8_t * data, size_t len) noexcept {
       size_t total = 0;
       while (total < len) {
         const ssize_t n = ::write(this->fd, data + total, len - total);
-        if (n > 0) {
+        if (n > 0) [[likely]] {
           total += static_cast<size_t>(n);
           continue;
         }
-        if (errno == EINTR) [[unlikely]] {
-          continue;
+        if (n == 0 || errno != EINTR) [[likely]] {
+          return false;
         }
-        return false;
       }
       return true;
     }
@@ -442,18 +438,6 @@ namespace fast_fs_hash {
     }
 
    private:
-    /** Hint sequential access immediately after open (read-only constructors). */
-    FSH_FORCE_INLINE void hint_sequential_if_open_() noexcept {
-      if (this->fd < 0) [[unlikely]] {
-        return;
-      }
-#  if defined(__APPLE__) && defined(F_RDAHEAD)
-      ::fcntl(this->fd, F_RDAHEAD, 1);
-#  elif defined(POSIX_FADV_SEQUENTIAL)
-      ::posix_fadvise(this->fd, 0, 0, POSIX_FADV_SEQUENTIAL);
-#  endif
-    }
-
     /** Apply or try a fcntl lock on byte 0 of fd. Retries on EINTR. */
     static FSH_FORCE_INLINE int fcntl_lock_type_(int fd, int cmd, short lock_type) noexcept {
       struct flock fl{};
@@ -634,6 +618,18 @@ namespace fast_fs_hash {
     }
   };
 
+#  include "hash-file-helpers.h"
+
+  /**
+   * Per-thread path resolver for cache stat/hash workers.
+   *
+   * Concatenates a root prefix with relative packed paths into a fixed
+   * path_buf: [rootPath/][relativePath\0]. On POSIX, optionally uses a
+   * DirFd for fstatat()/openat() — avoids repeated kernel path resolution
+   * of the root prefix when many files share the same directory.
+   *
+   * Lifecycle: init() once with root path, then resolve()+stat/hash per file.
+   */
   struct PathResolver : NonCopyable {
     char path_buf[FSH_MAX_PATH];
     const DirFd * dir;
@@ -677,7 +673,7 @@ namespace fast_fs_hash {
         dest.set_zero();
         return;
       }
-      hash_open_file_(rf, dest, rbuf, rbs);
+      hash_open_file(rf, dest, rbuf, rbs);
     }
 
     /** Combined stat + hash: opens file once, fstats the fd, then reads and hashes.
@@ -703,37 +699,8 @@ namespace fast_fs_hash {
         ::fcntl(rf.fd, F_RDADVISE, &ra);
       }
 #  endif
-      hash_open_file_(rf, dest, rbuf, rbs);
+      hash_open_file(rf, dest, rbuf, rbs);
       return true;
-    }
-
-   private:
-    static FSH_FORCE_INLINE void hash_open_file_(FfshFile & rf, Hash128 & dest, unsigned char * rbuf, size_t rbs) noexcept {
-      const int64_t n = rf.read_at_most(rbuf, rbs);
-      if (n < 0) [[unlikely]] {
-        dest.set_zero();
-        return;
-      }
-      const size_t bytes = static_cast<size_t>(n);
-      if (bytes < rbs) [[likely]] {
-        dest.from_xxh128(XXH3_128bits(rbuf, bytes));
-        return;
-      }
-      XXH3_state_t state;
-      XXH3_128bits_reset(&state);
-      XXH3_128bits_update(&state, rbuf, rbs);
-      for (;;) {
-        const int64_t nr = rf.read(rbuf, rbs);
-        if (nr <= 0) [[unlikely]] {
-          if (nr == 0) [[likely]] {
-            dest.from_xxh128(XXH3_128bits_digest(&state));
-          } else {
-            dest.set_zero();
-          }
-          return;
-        }
-        XXH3_128bits_update(&state, rbuf, static_cast<size_t>(nr));
-      }
     }
   };
 

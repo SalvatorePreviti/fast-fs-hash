@@ -68,5 +68,5 @@ export const H_FILE_HANDLE = 76;
 /** Fixed byte size of each file entry (48 bytes, 16-byte aligned). */
 export const ENTRY_STRIDE = 48;
 
-/** Maximum total user data payload size. */
-export const CACHE_MAX_USER_DATA_SIZE = 64 * 1024 * 1024;
+/** Maximum total user data payload size (128 MiB, matches C++ CACHE_MAX_UD_PAYLOADS). */
+export const CACHE_MAX_USER_DATA_SIZE = 128 * 1024 * 1024;
