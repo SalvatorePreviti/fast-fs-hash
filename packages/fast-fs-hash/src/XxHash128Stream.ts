@@ -76,7 +76,10 @@ export class XxHash128Stream {
     this.#state = streamAllocState(seedLow, seedHigh);
   }
 
-  /** Feeds an entire binary buffer into the running hash state. */
+  /**
+   * Feeds an entire binary buffer into the running hash state.
+   * @param input Binary data to feed.
+   */
   public addBuffer(input: Uint8Array): void {
     streamAddBuffer(this.#state, input);
   }
@@ -92,7 +95,10 @@ export class XxHash128Stream {
     streamAddBuffer(this.#state, input, offset, length);
   }
 
-  /** Feeds a UTF-8 string into the running hash state. */
+  /**
+   * Feeds a UTF-8 string into the running hash state.
+   * @param input String to feed.
+   */
   public addString(input: string): void {
     streamAddString(this.#state, input);
   }
@@ -207,12 +213,20 @@ export class XxHash128Stream {
     return out as Buffer;
   }
 
-  /** Hashes an entire binary buffer and returns the 128-bit digest. */
+  /**
+   * Hashes an entire binary buffer and returns the 128-bit digest.
+   * @param input The buffer to hash.
+   */
   public static digestBuffer(input: Uint8Array): Buffer {
     return digestBufferTo(input, bufferAllocUnsafe(16)) as Buffer;
   }
 
-  /** Hashes a sub-range of a binary buffer and returns the 128-bit digest. */
+  /**
+   * Hashes a sub-range of a binary buffer and returns the 128-bit digest.
+   * @param input The buffer to hash.
+   * @param offset Start offset in bytes.
+   * @param length Number of bytes to hash. Defaults to the rest of the buffer.
+   */
   public static digestBufferRange(input: Uint8Array, offset: number, length?: number): Buffer {
     return digestBufferRangeTo(
       input,
@@ -222,7 +236,12 @@ export class XxHash128Stream {
     ) as Buffer;
   }
 
-  /** Hashes an entire binary buffer and writes the digest into `out`. */
+  /**
+   * Hashes an entire binary buffer and writes the digest into `out`.
+   * @param input The buffer to hash.
+   * @param out Destination buffer (must have at least 16 bytes from outOffset).
+   * @param outOffset Byte offset into `out`. Default 0.
+   */
   public static digestBufferTo<TOut extends Uint8Array = Buffer>(
     input: Uint8Array,
     out: TOut,
@@ -231,7 +250,14 @@ export class XxHash128Stream {
     return digestBufferTo(input, out, outOffset) as TOut;
   }
 
-  /** Hashes a sub-range of a binary buffer and writes the digest into `out`. */
+  /**
+   * Hashes a sub-range of a binary buffer and writes the digest into `out`.
+   * @param input The buffer to hash.
+   * @param offset Start offset in bytes.
+   * @param length Number of bytes to hash.
+   * @param out Destination buffer.
+   * @param outOffset Byte offset into `out`. Default 0.
+   */
   public static digestBufferRangeTo<TOut extends Uint8Array = Buffer>(
     input: Uint8Array,
     offset: number,
@@ -242,22 +268,40 @@ export class XxHash128Stream {
     return digestBufferRangeTo(input, offset, length, out, outOffset) as TOut;
   }
 
-  /** Hashes a UTF-8 string and returns the 128-bit digest. */
+  /**
+   * Hashes a UTF-8 string and returns the 128-bit digest.
+   * @param input The string to hash.
+   */
   public static digestString(input: string): Buffer {
     return digestStringTo(input, bufferAllocUnsafe(16)) as Buffer;
   }
 
-  /** Hashes a UTF-8 string and writes the digest into `out`. */
+  /**
+   * Hashes a UTF-8 string and writes the digest into `out`.
+   * @param input The string to hash.
+   * @param out Destination buffer.
+   * @param outOffset Byte offset into `out`. Default 0.
+   */
   public static digestStringTo<TOut extends Uint8Array = Buffer>(input: string, out: TOut, outOffset?: number): TOut {
     return digestStringTo(input, out, outOffset) as TOut;
   }
 
-  /** Reads a file and returns its 128-bit content hash. */
+  /**
+   * Reads a file and returns its 128-bit content hash.
+   * @param path File path.
+   * @param throwOnError If false, returns a zeroed digest on error. Default true.
+   */
   public static digestFile(path: string, throwOnError?: boolean): Promise<Buffer> {
     return digestFileTo(path, bufferAllocUnsafe(16), undefined, throwOnError) as Promise<Buffer>;
   }
 
-  /** Reads a file and writes its 128-bit content hash into `out`. */
+  /**
+   * Reads a file and writes its 128-bit content hash into `out`.
+   * @param path File path.
+   * @param out Destination buffer.
+   * @param outOffset Byte offset into `out`. Default 0.
+   * @param throwOnError If false, writes a zeroed digest on error. Default true.
+   */
   public static digestFileTo<TOut extends Uint8Array = Buffer>(
     path: string,
     out: TOut,
@@ -267,7 +311,11 @@ export class XxHash128Stream {
     return digestFileTo(path, out, outOffset, throwOnError);
   }
 
-  /** Reads multiple files sequentially and returns the aggregate 128-bit digest. */
+  /**
+   * Reads multiple files sequentially and returns the aggregate 128-bit digest.
+   * @param paths Array of file paths.
+   * @param throwOnError If false, skips unreadable files. Default true.
+   */
   public static digestFilesSequential(paths: readonly string[], throwOnError?: boolean): Promise<Buffer> {
     return encodedPathsDigestFilesSequentialTo(
       encodeFilePaths(paths),
@@ -277,7 +325,13 @@ export class XxHash128Stream {
     ) as Promise<Buffer>;
   }
 
-  /** Reads multiple files sequentially and writes the aggregate digest into `out`. */
+  /**
+   * Reads multiple files sequentially and writes the aggregate digest into `out`.
+   * @param paths Array of file paths.
+   * @param out Destination buffer.
+   * @param outOffset Byte offset into `out`. Default 0.
+   * @param throwOnError If false, skips unreadable files. Default true.
+   */
   public static digestFilesSequentialTo<TOut extends Uint8Array>(
     paths: readonly string[],
     out: TOut,
@@ -287,7 +341,12 @@ export class XxHash128Stream {
     return encodedPathsDigestFilesSequentialTo(encodeFilePaths(paths), out, outOffset, throwOnError) as Promise<TOut>;
   }
 
-  /** Reads multiple files in parallel and returns the aggregate 128-bit digest. */
+  /**
+   * Reads multiple files in parallel and returns the aggregate 128-bit digest.
+   * @param paths Array of file paths.
+   * @param concurrency Max parallel reads. Default 8.
+   * @param throwOnError If false, skips unreadable files. Default true.
+   */
   public static digestFilesParallel(
     paths: readonly string[],
     concurrency = 0,
@@ -302,7 +361,14 @@ export class XxHash128Stream {
     ) as Promise<Buffer>;
   }
 
-  /** Reads multiple files in parallel and writes the aggregate digest into `out`. */
+  /**
+   * Reads multiple files in parallel and writes the aggregate digest into `out`.
+   * @param paths Array of file paths.
+   * @param out Destination buffer.
+   * @param outOffset Byte offset into `out`. Default 0.
+   * @param concurrency Max parallel reads. Default 8.
+   * @param throwOnError If false, skips unreadable files. Default true.
+   */
   public static digestFilesParallelTo<TOut extends Uint8Array>(
     paths: readonly string[],
     out: TOut,

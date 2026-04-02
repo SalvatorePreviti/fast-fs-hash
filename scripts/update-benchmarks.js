@@ -131,6 +131,7 @@ const README_BENCH_FILES = [
   "test/bench/file-hash-cache-serialize.bench.ts",
   "test/bench/file-hash-cache-validate-serialize.bench.ts",
   "test/bench/file-hash-cache-validate-serialize-many.bench.ts",
+  "test/bench/file-hash-cache-write-new.bench.ts",
   "test/bench/lz4.bench.ts",
   "test/bench/file-hash-cache-locked.bench.ts",
 ];
@@ -406,6 +407,7 @@ const FHC_GROUPS = [
   "FileHashCache — 1 file changed",
   "FileHashCache — many files changed",
   "FileHashCache — no existing cache",
+  "FileHashCache — writeNew",
 ];
 
 const fhcGroups = FHC_GROUPS.map((g) => findBenchesInGroup(benchData, g));

@@ -24,7 +24,7 @@ import {
   H_USER_VALUE3_BYTE,
   HEADER_SIZE,
 } from "./file-hash-cache-format";
-import { resolveRoot, setFingerprint, validateUserData } from "./file-hash-cache-utils";
+import { resolveRoot } from "./file-hash-cache-utils";
 import { binding } from "./init-native";
 import { encodeNormalizedPaths, normalizeFilePaths, pathResolve } from "./utils";
 
@@ -41,19 +41,51 @@ export type CacheStatus = "upToDate" | "statsDirty" | "changed" | "stale" | "mis
 
 /** Options for {@link FileHashCache.write}. */
 export interface FileHashCacheWriteOptions {
+  /** New file list to track. When provided, remaps entries from the current cache
+   *  (preserving hashes for unchanged files). Omit to keep the current file list. */
   files?: Iterable<string> | null;
+  /** Root directory for the new file list. Required when `files` is provided and
+   *  paths are absolute. Pass `true` to auto-detect from the file paths. */
   rootPath?: string | true | null;
+  /** User-defined f64 value (slot 0). Preserved from old cache when omitted. */
   userValue0?: number;
+  /** User-defined f64 value (slot 1). Preserved from old cache when omitted. */
   userValue1?: number;
+  /** User-defined f64 value (slot 2). Preserved from old cache when omitted. */
   userValue2?: number;
+  /** User-defined f64 value (slot 3). Preserved from old cache when omitted. */
   userValue3?: number;
+  /** 16-byte fingerprint for fast cache rejection. Pass `null` to clear. Omit to preserve. */
   fingerprint?: Uint8Array | null;
+  /** Opaque binary payloads stored alongside the cache. Pass `null` to clear.
+   *  Omit (`undefined`) to preserve old user data from the existing cache. */
   userData?: readonly Uint8Array[] | null;
+}
+
+/** Options for the static {@link FileHashCache.writeNew}. */
+export interface FileHashCacheWriteNewOptions {
+  /** User-defined cache version (u32, 0-4294967295). Default: `0`. */
+  version?: number;
+  /** 16-byte fingerprint for fast cache rejection. `null` or omit for none. */
+  fingerprint?: Uint8Array | null;
+  /** User-defined f64 value (slot 0). Default: `0`. */
+  userValue0?: number;
+  /** User-defined f64 value (slot 1). Default: `0`. */
+  userValue1?: number;
+  /** User-defined f64 value (slot 2). Default: `0`. */
+  userValue2?: number;
+  /** User-defined f64 value (slot 3). Default: `0`. */
+  userValue3?: number;
+  /** Opaque binary payloads stored alongside the cache. `null` or omit for none. */
+  userData?: readonly Uint8Array[] | null;
+  /** Lock acquisition timeout in ms. `-1` (default) = block forever,
+   *  `0` = non-blocking try, `>0` = timeout. */
+  timeoutMs?: number;
 }
 
 const STATUS_MAP: readonly CacheStatus[] = ["upToDate", "changed", "stale", "missing", "statsDirty"];
 
-const { cacheOpen, cacheWrite } = binding;
+const { cacheOpen, cacheWrite, cacheWriteNew, cacheIsLocked, cacheClose } = binding;
 
 const _emptyBuf = Buffer.alloc(0);
 
@@ -269,7 +301,7 @@ export class FileHashCache {
     const root = resolveRoot(rootPath ?? null, files ?? null);
     const resolvedCachePath = pathResolve(root, cachePath);
     const ver = (version ?? 0) >>> 0;
-    const fp = setFingerprint(fingerprint) ?? null;
+    const fp = fingerprint ?? null;
     const normalizedFiles = files ? normalizeFilePaths(root, files) : null;
     const encoded = normalizedFiles ? encodeNormalizedPaths(normalizedFiles) : _emptyBuf;
     const fileCount = normalizedFiles ? normalizedFiles.length : 0;
@@ -294,7 +326,7 @@ export class FileHashCache {
     const h = buf.readInt32LE(H_FILE_HANDLE);
     buf.writeInt32LE(-1, H_FILE_HANDLE);
     if (h !== -1) {
-      binding.cacheClose(h);
+      cacheClose(h);
     }
   }
 
@@ -312,9 +344,49 @@ export class FileHashCache {
   /**
    * Check whether any process currently holds an exclusive lock on `cachePath`.
    * Non-blocking — does not acquire the lock.
+   * @param cachePath Path to the cache file to check.
    */
-  public static isLocked(cachePath: string): boolean {
-    return binding.cacheIsLocked(cachePath);
+  public static isLocked: (cachePath: string) => boolean = cacheIsLocked;
+
+  /**
+   * Write a brand-new cache file without reading the old one.
+   *
+   * Acquires an exclusive lock, hashes all files, LZ4-compresses, and writes
+   * directly to the cache file. This is equivalent to `open()` + `write()` but
+   * skips the read/decompress/validate step entirely — useful when you know the
+   * cache must be rebuilt (e.g., after a full build) and want to avoid the
+   * overhead of reading + decompressing the old cache.
+   *
+   * @param cachePath Path to the cache file. If relative, resolved from `rootPath`.
+   * @param rootPath Root directory for file path resolution.
+   * @param files Absolute file paths to track. Required (cannot reuse from disk).
+   * @param options Version, fingerprint, user values, user data, and timeout.
+   * @returns `true` if the write succeeded, `false` on failure.
+   */
+  public static async writeNew(
+    cachePath: string,
+    rootPath: string | null,
+    files: Iterable<string>,
+    options?: FileHashCacheWriteNewOptions
+  ): Promise<boolean> {
+    const root = resolveRoot(rootPath, files);
+    const normalizedFiles = normalizeFilePaths(root, files);
+    return (
+      (await cacheWriteNew(
+        encodeNormalizedPaths(normalizedFiles),
+        normalizedFiles.length,
+        pathResolve(root, cachePath),
+        root,
+        (options?.version ?? 0) >>> 0,
+        options?.fingerprint ?? null,
+        options?.userValue0 ?? 0,
+        options?.userValue1 ?? 0,
+        options?.userValue2 ?? 0,
+        options?.userValue3 ?? 0,
+        options?.userData ?? null,
+        options?.timeoutMs ?? -1
+      )) === 0
+    );
   }
 
   /**
@@ -327,6 +399,7 @@ export class FileHashCache {
    * If `options.files` is provided, builds a new file list and remaps entries
    * from the current dataBuf (preserving hashes for unchanged files).
    *
+   * @param options Optional write options: new file list, user values, fingerprint, userData.
    * @throws If this instance has already been closed or written.
    * @returns `true` if the write succeeded, `false` on failure.
    */
@@ -336,12 +409,11 @@ export class FileHashCache {
     }
 
     const dataBuf = this.#dataBuf;
-    const opts = options ?? {};
 
-    const uv0 = opts.userValue0 ?? this.userValue0;
-    const uv1 = opts.userValue1 ?? this.userValue1;
-    const uv2 = opts.userValue2 ?? this.userValue2;
-    const uv3 = opts.userValue3 ?? this.userValue3;
+    const uv0 = options?.userValue0 ?? this.userValue0;
+    const uv1 = options?.userValue1 ?? this.userValue1;
+    const uv2 = options?.userValue2 ?? this.userValue2;
+    const uv3 = options?.userValue3 ?? this.userValue3;
 
     if (uv0 !== this.userValue0 || uv1 !== this.userValue1 || uv2 !== this.userValue2 || uv3 !== this.userValue3) {
       dataBuf.writeDoubleLE(uv0, H_USER_VALUE0_BYTE);
@@ -350,24 +422,32 @@ export class FileHashCache {
       dataBuf.writeDoubleLE(uv3, H_USER_VALUE3_BYTE);
     }
 
-    const fp = opts.fingerprint !== undefined ? setFingerprint(opts.fingerprint) : this.fingerprint;
+    let fp: Uint8Array | null;
+    if (options?.fingerprint !== undefined) {
+      if (
+        options.fingerprint !== null &&
+        (!(options.fingerprint instanceof Uint8Array) || options.fingerprint.length !== 16)
+      ) {
+        throw new TypeError("FileHashCache: fingerprint must be a Uint8Array of exactly 16 bytes");
+      }
+      fp = options.fingerprint;
+    } else {
+      fp = this.fingerprint;
+    }
     if (fp) {
       dataBuf.set(fp, H_FINGERPRINT_BYTE);
     } else {
       dataBuf.fill(0, H_FINGERPRINT_BYTE, H_FINGERPRINT_BYTE + 16);
     }
 
-    const ud = opts.userData !== undefined ? opts.userData : this.userData;
-    if (ud !== null && ud !== this.userData) {
-      validateUserData(ud);
-    }
+    const ud = options?.userData !== undefined ? options.userData : this.userData;
 
-    const resultFiles = opts.files;
+    const resultFiles = options?.files;
     const root = this.rootPath;
     let result: number;
     try {
       if (resultFiles) {
-        const newRoot = resolveRoot(null, resultFiles, opts.rootPath ?? root);
+        const newRoot = resolveRoot(null, resultFiles, options?.rootPath ?? root);
         const newNormalized = normalizeFilePaths(newRoot, resultFiles);
         const newEncoded = encodeNormalizedPaths(newNormalized);
         result = await cacheWrite(dataBuf, newEncoded, newNormalized.length, this.cachePath, newRoot, ud);

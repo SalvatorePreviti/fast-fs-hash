@@ -91,6 +91,7 @@ const _fromCharCode = String.fromCharCode;
 /**
  * Split a buffer of concatenated 16-byte hashes into an array of hex strings.
  * Returns an empty array if input is null/undefined or length is not a multiple of 16.
+ * @param hashes Buffer of concatenated 16-byte hashes.
  */
 export function hashesToHexArray(hashes: Uint8Array): string[] {
   if (!hashes) {
@@ -160,6 +161,8 @@ export function hashesToHexArray(hashes: Uint8Array): string[] {
 /**
  * Convert a single 16-byte hash to a 32-character lowercase hex string.
  * Returns an empty string if input is null/undefined or too short.
+ * @param hash 16-byte hash digest.
+ * @param offset Byte offset into `hash`. Default 0.
  */
 export function hashToHex(hash: Uint8Array, offset = 0): string {
   if (!hash || offset < 0 || offset + 16 > hash.length) {

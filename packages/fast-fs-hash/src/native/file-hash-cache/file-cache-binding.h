@@ -3,6 +3,7 @@
 
 #include "CacheOpen.h"
 #include "CacheWriter.h"
+#include "CacheWriteNew.h"
 #include "../napi-helpers.h"
 
 namespace fast_fs_hash {
@@ -15,8 +16,7 @@ namespace fast_fs_hash {
    * version/fingerprint/file list, and stat-matches entries.
    * Resolves with a single Buffer whose header (offset 76) holds the FfshFileHandle
    * in-memory (-1 before any disk write).
-   * Runs on a dedicated detached thread so blocking on lock acquisition
-   * never stalls the compute pool.
+   * Runs on a pool thread. Lock acquisition is bounded by timeoutMs.
    */
   inline Napi::Value bindCacheOpen(const Napi::CallbackInfo & info) {
     auto env = info.Env();
@@ -44,11 +44,13 @@ namespace fast_fs_hash {
     napi_get_value_uint32(env, info[4], &version);
 
     const uint8_t * fingerprint = nullptr;
-    if (!info[5].IsNull() && !info[5].IsUndefined() && info[5].IsTypedArray()) {
-      auto fp = info[5].As<Napi::Uint8Array>();
-      if (fp.ByteLength() >= 16) {
-        fingerprint = fp.Data();
+    if (!info[5].IsNull() && !info[5].IsUndefined()) {
+      if (!info[5].IsTypedArray() || info[5].As<Napi::Uint8Array>().ByteLength() != 16) {
+        Napi::TypeError::New(env, "FileHashCache: fingerprint must be a Uint8Array of exactly 16 bytes")
+          .ThrowAsJavaScriptException();
+        return env.Undefined();
       }
+      fingerprint = info[5].As<Napi::Uint8Array>().Data();
     }
 
     int timeoutMs = -1;
@@ -80,7 +82,8 @@ namespace fast_fs_hash {
    *
    * Hashes any unresolved entries, LZ4-compresses, and writes directly to the
    * locked cache fd (seek + write + truncate, no atomic rename).
-   * The lock handle is read from dataBuf header offset 76.
+   * The lock handle is extracted from dataBuf header (offset 76) and invalidated
+   * in the buffer before queuing — this makes close()/dispose() safe during await.
    */
   inline Napi::Value bindCacheWrite(const Napi::CallbackInfo & info) {
     auto env = info.Env();
@@ -93,6 +96,8 @@ namespace fast_fs_hash {
 
     auto dataBuf = info[0].As<Napi::Uint8Array>();
     auto data_ref = Napi::ObjectReference::New(dataBuf, 1);
+    uint8_t * dataPtr = dataBuf.Data();
+    const size_t dataLen = dataBuf.ByteLength();
 
     const uint8_t * encoded_paths = nullptr;
     size_t encoded_len = 0;
@@ -115,12 +120,16 @@ namespace fast_fs_hash {
       return env.Undefined();
     }
 
-    // Lock handle is read from dataBuf header at offset 76 (in-memory field, -1 on disk)
+    // Extract file handle from dataBuf header and invalidate it — close() becomes a no-op.
+    auto * hdr = reinterpret_cast<CacheHeader *>(dataPtr);
+    const int32_t fileHandle = hdr->getFileHandle();
+    hdr->setFileHandle(FFSH_FILE_HANDLE_INVALID);
+
     auto * worker = new CacheWriter(
       env,
       deferred,
-      dataBuf.Data(),
-      dataBuf.ByteLength(),
+      dataPtr,
+      dataLen,
       std::move(data_ref),
       encoded_paths,
       encoded_len,
@@ -128,8 +137,82 @@ namespace fast_fs_hash {
       fileCount,
       std::move(cachePath),
       std::move(rootPath),
-      std::move(ud));
+      std::move(ud),
+      fileHandle);
     worker->Queue();
+    return deferred.Promise();
+  }
+
+  /**
+   * cacheWriteNew(encodedPaths, fileCount, cachePath, rootPath, version, fingerprint,
+   *               userValue0, userValue1, userValue2, userValue3, userData, timeoutMs)
+   *   → Promise<number>
+   *
+   * Static write: acquires an exclusive lock, hashes all files, LZ4-compresses,
+   * and writes a brand-new cache file without reading the old one.
+   */
+  inline Napi::Value bindCacheWriteNew(const Napi::CallbackInfo & info) {
+    auto env = info.Env();
+    auto deferred = Napi::Promise::Deferred::New(env);
+
+    if (info.Length() < 12 || !info[0].IsTypedArray() || !info[2].IsString() || !info[3].IsString()) [[unlikely]] {
+      deferred.Resolve(Napi::Number::New(env, -1));
+      return deferred.Promise();
+    }
+
+    auto pathsBuf = info[0].As<Napi::Uint8Array>();
+    auto paths_ref = Napi::ObjectReference::New(pathsBuf, 1);
+
+    uint32_t fileCount = 0;
+    napi_get_value_uint32(env, info[1], &fileCount);
+
+    std::string cachePath = info[2].As<Napi::String>().Utf8Value();
+    std::string rootPath = info[3].As<Napi::String>().Utf8Value();
+
+    uint32_t version = 0;
+    napi_get_value_uint32(env, info[4], &version);
+
+    const uint8_t * fingerprint = nullptr;
+    if (!info[5].IsNull() && !info[5].IsUndefined()) {
+      if (!info[5].IsTypedArray() || info[5].As<Napi::Uint8Array>().ByteLength() != 16) {
+        Napi::TypeError::New(env, "FileHashCache: fingerprint must be a Uint8Array of exactly 16 bytes")
+          .ThrowAsJavaScriptException();
+        return env.Undefined();
+      }
+      fingerprint = info[5].As<Napi::Uint8Array>().Data();
+    }
+
+    double uv0 = 0, uv1 = 0, uv2 = 0, uv3 = 0;
+    napi_get_value_double(env, info[6], &uv0);
+    napi_get_value_double(env, info[7], &uv1);
+    napi_get_value_double(env, info[8], &uv2);
+    napi_get_value_double(env, info[9], &uv3);
+
+    ParsedUserData ud(info, 10);
+    if (ud.has_error) {
+      return env.Undefined();
+    }
+
+    int timeoutMs = -1;
+    if (!info[11].IsNull() && !info[11].IsUndefined()) {
+      napi_get_value_int32(env, info[11], &timeoutMs);
+    }
+
+    auto * worker = new CacheWriteNew(
+      env,
+      deferred,
+      pathsBuf.Data(),
+      pathsBuf.ByteLength(),
+      std::move(paths_ref),
+      fileCount,
+      std::move(cachePath),
+      std::move(rootPath),
+      version,
+      fingerprint,
+      uv0, uv1, uv2, uv3,
+      std::move(ud),
+      timeoutMs);
+    worker->Start();
     return deferred.Promise();
   }
 

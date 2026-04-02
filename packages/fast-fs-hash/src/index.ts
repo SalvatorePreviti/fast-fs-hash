@@ -19,7 +19,7 @@ import { binding } from "./init-native";
 import { findCommonRootPath, normalizeFilePaths, toRelativePath } from "./utils";
 import { XxHash128Stream } from "./XxHash128Stream";
 
-export type { CacheStatus, FileHashCacheWriteOptions } from "./FileHashCache";
+export type { CacheStatus, FileHashCacheWriteNewOptions, FileHashCacheWriteOptions } from "./FileHashCache";
 export { FileHashCache } from "./FileHashCache";
 export type { FileHashCacheOptions, IXxHash128Functions } from "./public-types";
 export { XxHash128Stream };
@@ -153,14 +153,29 @@ export const digestFilesParallelTo: <TOut extends Uint8Array>(
   throwOnError?: boolean
 ) => Promise<TOut> = XxHash128Stream.digestFilesParallelTo;
 
-/** Returns the maximum compressed size for a given input size. */
+/**
+ * Returns the maximum compressed size for a given input size.
+ * @param inputSize Uncompressed input size in bytes.
+ */
 export const lz4CompressBound: (inputSize: number) => number = binding.lz4CompressBound;
 
-/** Compress a buffer (synchronous, new allocation). */
+/**
+ * Compress a buffer (synchronous, new allocation).
+ * @param input Data to compress.
+ * @param offset Start offset in bytes. Default 0.
+ * @param length Number of bytes to compress. Default rest of buffer.
+ */
 export const lz4CompressBlock: (input: Uint8Array, offset?: number, length?: number) => Buffer =
   binding.lz4CompressBlock;
 
-/** Compress into a pre-allocated output buffer (synchronous, zero-alloc). Returns bytes written. */
+/**
+ * Compress into a pre-allocated output buffer (synchronous, zero-alloc). Returns bytes written.
+ * @param input Data to compress.
+ * @param output Pre-allocated destination buffer.
+ * @param outputOffset Byte offset into `output`. Default 0.
+ * @param inputOffset Start offset in `input`. Default 0.
+ * @param inputLength Number of bytes to compress from `input`. Default rest of buffer.
+ */
 export const lz4CompressBlockTo: (
   input: Uint8Array,
   output: Uint8Array,
@@ -169,11 +184,22 @@ export const lz4CompressBlockTo: (
   inputLength?: number
 ) => number = binding.lz4CompressBlockTo;
 
-/** Compress on a pool thread (asynchronous, non-blocking). */
+/**
+ * Compress on a pool thread (asynchronous, non-blocking).
+ * @param input Data to compress.
+ * @param offset Start offset in bytes. Default 0.
+ * @param length Number of bytes to compress. Default rest of buffer.
+ */
 export const lz4CompressBlockAsync: (input: Uint8Array, offset?: number, length?: number) => Promise<Buffer> =
   binding.lz4CompressBlockAsync;
 
-/** Decompress LZ4 block data (synchronous, new allocation). `uncompressedSize` must match exactly. */
+/**
+ * Decompress LZ4 block data (synchronous, new allocation). `uncompressedSize` must match exactly.
+ * @param input Compressed data.
+ * @param uncompressedSize Expected decompressed size in bytes.
+ * @param offset Start offset in `input`. Default 0.
+ * @param length Number of compressed bytes. Default rest of buffer.
+ */
 export const lz4DecompressBlock: (
   input: Uint8Array,
   uncompressedSize: number,
@@ -181,7 +207,15 @@ export const lz4DecompressBlock: (
   length?: number
 ) => Buffer = binding.lz4DecompressBlock;
 
-/** Decompress into a pre-allocated output buffer (synchronous, zero-alloc). Returns bytes written. */
+/**
+ * Decompress into a pre-allocated output buffer (synchronous, zero-alloc). Returns bytes written.
+ * @param input Compressed data.
+ * @param uncompressedSize Expected decompressed size in bytes.
+ * @param output Pre-allocated destination buffer.
+ * @param outputOffset Byte offset into `output`. Default 0.
+ * @param inputOffset Start offset in `input`. Default 0.
+ * @param inputLength Number of compressed bytes from `input`. Default rest of buffer.
+ */
 export const lz4DecompressBlockTo: (
   input: Uint8Array,
   uncompressedSize: number,
@@ -191,7 +225,13 @@ export const lz4DecompressBlockTo: (
   inputLength?: number
 ) => number = binding.lz4DecompressBlockTo;
 
-/** Decompress on a pool thread (asynchronous, non-blocking). `uncompressedSize` must match exactly. */
+/**
+ * Decompress on a pool thread (asynchronous, non-blocking). `uncompressedSize` must match exactly.
+ * @param input Compressed data.
+ * @param uncompressedSize Expected decompressed size in bytes.
+ * @param offset Start offset in `input`. Default 0.
+ * @param length Number of compressed bytes. Default rest of buffer.
+ */
 export const lz4DecompressBlockAsync: (
   input: Uint8Array,
   uncompressedSize: number,

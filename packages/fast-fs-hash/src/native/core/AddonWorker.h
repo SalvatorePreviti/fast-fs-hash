@@ -8,18 +8,13 @@
  * IMPORTANT: After signal(), `this` may be deleted by the JS thread
  * at any time. Do not access any member after calling it.
  *
- * Two ways to run:
- *   Queue()            — on the compute ThreadPool (for CPU-bound work).
- *   QueueDetached(sz)  — on a dedicated thread with custom stack size
- *                         (for blocking I/O or lock waits — does not
- *                         consume a pool thread).
+ * Use Queue() to run on the compute ThreadPool.
  */
 
 #ifndef _FAST_FS_HASH_ADDON_WORKER_H
 #define _FAST_FS_HASH_ADDON_WORKER_H
 
 #include "AddonData.h"
-#include "spawn-thread.h"
 
 namespace fast_fs_hash {
 
@@ -37,21 +32,6 @@ namespace fast_fs_hash {
       }
       d->ref_pending();
       d->pool.enqueue(*this);
-    }
-
-    /** Spawn a dedicated detached thread with the given stack size. */
-    void QueueDetached(size_t stackSize) {
-      auto * d = this->addon;
-      if (!d) [[unlikely]] {
-        delete this;
-        return;
-      }
-      d->ref_pending();
-      if (spawnDetachedThread(detachedEntry_, this, stackSize)) [[likely]] {
-        return;
-      }
-      // Thread creation failed — signal error instead of blocking the JS thread
-      this->signal("QueueDetached: failed to spawn thread");
     }
 
     void run() noexcept override {
@@ -100,21 +80,6 @@ namespace fast_fs_hash {
 
     void OnError(const Napi::Error & e) {
       this->deferred.Reject(e.Value());
-    }
-
-    static
-#ifdef _WIN32
-    unsigned __stdcall
-#else
-    void *
-#endif
-    detachedEntry_(void * arg) {
-      static_cast<AddonWorker *>(arg)->Execute();
-#ifdef _WIN32
-      return 0;
-#else
-      return nullptr;
-#endif
     }
   };
 

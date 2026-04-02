@@ -36,7 +36,8 @@ namespace fast_fs_hash {
       uint32_t fileCount,
       std::string cachePath,
       std::string rootPath,
-      ParsedUserData && ud) :
+      ParsedUserData && ud,
+      int32_t fileHandle) :
       AddonWorker(env, deferred),
       cachePath_(std::move(cachePath)),
       rootPath_(std::move(rootPath)),
@@ -47,7 +48,8 @@ namespace fast_fs_hash {
       encodedPaths_(encodedPaths),
       encodedLen_(encodedLen),
       fileCount_(fileCount),
-      ud_(std::move(ud)) {}
+      ud_(std::move(ud)),
+      fileHandle_(fileHandle) {}
 
     void Execute() override {
       uint8_t * buf = this->dataBuf_;
@@ -94,6 +96,7 @@ namespace fast_fs_hash {
     size_t encodedLen_;
     uint32_t fileCount_;
     ParsedUserData ud_;
+    int32_t fileHandle_;  // Extracted from dataBuf by JS before queuing (JS writes -1 to dataBuf)
 
     // Remap output (owned, freed on destruction)
     OwnedBuf<> newBuf_;
@@ -133,7 +136,7 @@ namespace fast_fs_hash {
       newHdr->userValue1 = prevHdr->userValue1;
       newHdr->userValue2 = prevHdr->userValue2;
       newHdr->userValue3 = prevHdr->userValue3;
-      newHdr->setFileHandle(prevHdr->getFileHandle());
+      newHdr->setFileHandle(FFSH_FILE_HANDLE_INVALID);  // Handle is owned by fileHandle_ field
       newHdr->status = static_cast<uint32_t>(CacheStatus::CHANGED);
 
       // Merge-join: copy matched entries from old, stamp CACHE_S_HAS_OLD
@@ -280,9 +283,9 @@ namespace fast_fs_hash {
     }
 
     void compressAndWrite_(CacheHeader * hdr, const uint8_t * body, size_t bodyLen) noexcept {
-      // Always close the fd on this pool thread — saves a main-thread syscall.
-      const FfshFileHandle lh = hdr->getFileHandle();
-      hdr->setFileHandle(FFSH_FILE_HANDLE_INVALID);
+      // File handle was extracted from dataBuf by JS and passed as a constructor param.
+      // JS wrote -1 into dataBuf before queuing, so close() is a no-op during the await.
+      const FfshFileHandle lh = static_cast<FfshFileHandle>(this->fileHandle_);
 
       if (bodyLen > CACHE_MAX_BODY_SIZE || bodyLen > static_cast<size_t>(LZ4_MAX_INPUT_SIZE)) [[unlikely]] {
         this->addon->closeHeldFileHandle(lh);

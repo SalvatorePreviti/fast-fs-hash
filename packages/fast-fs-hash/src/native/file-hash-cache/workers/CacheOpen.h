@@ -6,8 +6,8 @@
  * The lock handle is embedded in the header at offset 76 (in-memory only).
  * The lock handle is registered with AddonData for crash-safe cleanup.
  *
- * Runs on a dedicated detached thread so blocking on lock acquisition
- * does not stall the compute pool.
+ * Runs on a pool thread. Lock acquisition is bounded by timeoutMs
+ * (non-blocking or short-lived in the common no-contention case).
  */
 
 #ifndef _FAST_FS_HASH_CACHE_OPEN_H
@@ -21,8 +21,6 @@
 #include <lz4.h>
 
 namespace fast_fs_hash {
-
-  static constexpr size_t CACHE_LOCK_STACK_SIZE = 32 * 1024;
 
   class CacheOpen final : public AddonWorker {
    public:
@@ -53,8 +51,7 @@ namespace fast_fs_hash {
       }
     }
 
-    /** Must be queued on a detached thread — may block on lock acquisition. */
-    void Start() { this->QueueDetached(CACHE_LOCK_STACK_SIZE); }
+    void Start() { this->Queue(); }
 
     void Execute() override {
       const char * error = nullptr;
