@@ -13,33 +13,49 @@
  * Mirrors the JS `isUnsafeRelativePath()` in path-utils.ts.
  */
 FSH_FORCE_INLINE bool is_unsafe_relative_path(const uint8_t * seg, size_t len) noexcept {
-  if (len == 0) return false;
+  if (len == 0) {
+    return false;
+  }
 
   // Absolute paths: leading '/' or '\'
-  if (seg[0] == '/' || seg[0] == '\\') return true;
+  if (seg[0] == '/' || seg[0] == '\\') {
+    return true;
+  }
 
   // Windows drive letter (e.g. "C:")
-  if (len >= 2 && seg[1] == ':') return true;
+  if (len >= 2 && seg[1] == ':') {
+    return true;
+  }
 
   // ".." at start
   if (seg[0] == '.' && len >= 2 && seg[1] == '.') {
-    if (len == 2) return true;
-    if (seg[2] == '/' || seg[2] == '\\') return true;
+    if (len == 2) {
+      return true;
+    }
+    if (seg[2] == '/' || seg[2] == '\\') {
+      return true;
+    }
   }
 
   // Scan for embedded traversal: /../, \..\, /..\ , \../ , trailing /.. or \..
   // Also reject interior NUL bytes (should not appear in valid paths).
   for (size_t i = 1; i < len; ++i) {
     const uint8_t c = seg[i];
-    if (c == '\0') return true;
+    if (c == '\0') {
+      return true;
+    }
     // Check for "/.." or "\.." starting at i-1
     if (c == '.' && i + 1 < len && seg[i + 1] == '.') {
       const uint8_t prev = seg[i - 1];
       if (prev == '/' || prev == '\\') {
         // "/.." or "\.." found — check what follows
-        if (i + 2 >= len) return true;  // trailing "/.."|"\.."
+        if (i + 2 >= len) {
+          return true;  // trailing "/.."|"\.."
+        }
         const uint8_t next = seg[i + 2];
-        if (next == '/' || next == '\\') return true;  // "/../"|"/..\"|"\..\"|"\\../"
+        if (next == '/' || next == '\\') {
+          return true;  // "/../"|"/..\"|"\..\"|"\\../"
+        }
       }
     }
   }

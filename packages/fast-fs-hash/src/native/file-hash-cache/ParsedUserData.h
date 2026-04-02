@@ -68,7 +68,7 @@ namespace fast_fs_hash {
           this->refs.clear();
           this->has_error = true;
           Napi::RangeError::New(info.Env(),
-            "FileHashCache: total user data size exceeds 2147483647 bytes")
+            "FileHashCache: total user data size exceeds 128 MiB")
             .ThrowAsJavaScriptException();
           return;
         }

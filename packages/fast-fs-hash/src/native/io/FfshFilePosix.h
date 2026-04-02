@@ -104,10 +104,15 @@ namespace fast_fs_hash {
      * Another thread calls fire() to close the fd and interrupt the wait.
      * Thread-safe — fire() is callable from any thread (e.g. shutdown).
      */
+    struct LockCancelList;
+
     struct LockCancel : NonCopyable {
       std::atomic<int> fd_{-1};
       std::atomic<bool> fired_{false};
       const volatile uint8_t * cancelByte_ = nullptr;
+      LockCancel * prev_ = nullptr;
+      LockCancel * next_ = nullptr;
+      LockCancelList * list_ = nullptr;
 
       void set(int lockFd) noexcept { this->fd_.store(lockFd, std::memory_order_release); }
 
@@ -123,6 +128,45 @@ namespace fast_fs_hash {
         const int f = this->fd_.exchange(-1, std::memory_order_acq_rel);
         if (f >= 0) {
           ::close(f);
+        }
+      }
+    };
+
+    /** JS-thread-only doubly-linked list of active LockCancel tokens.
+     *  Workers register on construction, unregister on destruction.
+     *  fire_all() is called before pool.shutdown() to unblock any threads
+     *  stuck in fcntl(F_SETLKW). */
+    struct LockCancelList {
+      LockCancel * head_ = nullptr;
+
+      void add(LockCancel * c) noexcept {
+        c->list_ = this;
+        c->prev_ = nullptr;
+        c->next_ = this->head_;
+        if (this->head_) {
+          this->head_->prev_ = c;
+        }
+        this->head_ = c;
+      }
+
+      void remove(LockCancel * c) noexcept {
+        if (c->list_ != this) {
+          return;
+        }
+        if (c->prev_) {
+          c->prev_->next_ = c->next_;
+        } else {
+          this->head_ = c->next_;
+        }
+        if (c->next_) {
+          c->next_->prev_ = c->prev_;
+        }
+        c->list_ = nullptr;
+      }
+
+      void fire_all() noexcept {
+        for (LockCancel * c = this->head_; c; c = c->next_) {
+          c->fire();
         }
       }
     };
@@ -173,26 +217,14 @@ namespace fast_fs_hash {
             outError = "CacheLock: failed to acquire exclusive lock";
             return f;
           }
-        } else if (cancel->cancelByte_) {
-          // Infinite wait with cancelByte: poll with cancel check (cancelByte can't
-          // close the fd, so we can't use F_SETLKW — poll with INT_MAX timeout instead).
+        } else {
+          // Infinite wait with cancel: use poll_lock_ so the thread remains
+          // interruptible via cancel->is_fired(). Never use blocking F_SETLKW
+          // with a cancel token — pool.shutdown() must be able to join all threads.
           if (poll_lock_(f.fd, F_WRLCK, INT_MAX, cancel) != 0) [[unlikely]] {
             f.close();
             outError = cancel->is_fired() ? "CacheLock: lock acquisition cancelled"
                                           : "CacheLock: failed to acquire exclusive lock";
-            return f;
-          }
-        } else {
-          // Infinite wait with LockCancel (no cancelByte): register fd with LockCancel
-          // so fire() can close it from another thread, causing EBADF.
-          if (fcntl_lock_cancellable_(f.fd, F_WRLCK, cancel) != 0) [[unlikely]] {
-            if (cancel->is_fired()) {
-              f.fd = -1;  // fire() already closed — disown to prevent double-close
-              outError = "CacheLock: lock acquisition cancelled";
-            } else {
-              f.close();
-              outError = "CacheLock: failed to acquire exclusive lock";
-            }
             return f;
           }
         }
@@ -281,7 +313,9 @@ namespace fast_fs_hash {
         } else {
           // fire() can close the fd from another thread → track fd_stolen.
           acquired = fcntl_lock_cancellable_(fd, F_RDLCK, cancel) == 0;
-          fd_stolen = cancel->is_fired();
+          // Only check fd_stolen when acquisition failed — on success, clear()
+          // already disarmed the fd before fire() could close it.
+          fd_stolen = !acquired && cancel->is_fired();
         }
       } else {
         acquired = poll_lock_(fd, F_RDLCK, timeoutMs, cancel) == 0;
@@ -332,7 +366,9 @@ namespace fast_fs_hash {
     /** Return the file size in bytes, or -1 on error. */
     inline int64_t fsize() const noexcept {
       struct stat st{};
-      if (::fstat(this->fd, &st) != 0) return -1;
+      if (::fstat(this->fd, &st) != 0) {
+        return -1;
+      }
       return static_cast<int64_t>(st.st_size);
     }
 
@@ -345,8 +381,9 @@ namespace fast_fs_hash {
           total += static_cast<size_t>(n);
           continue;
         }
-        if (errno == EINTR) [[unlikely]]
+        if (errno == EINTR) [[unlikely]] {
           continue;
+        }
         return false;
       }
       return true;
@@ -407,8 +444,9 @@ namespace fast_fs_hash {
    private:
     /** Hint sequential access immediately after open (read-only constructors). */
     FSH_FORCE_INLINE void hint_sequential_if_open_() noexcept {
-      if (this->fd < 0) [[unlikely]]
+      if (this->fd < 0) [[unlikely]] {
         return;
+      }
 #  if defined(__APPLE__) && defined(F_RDAHEAD)
       ::fcntl(this->fd, F_RDAHEAD, 1);
 #  elif defined(POSIX_FADV_SEQUENTIAL)
@@ -529,13 +567,17 @@ namespace fast_fs_hash {
 
     static inline int mkdir_p(const char * path, size_t len) noexcept {
       char buf[FSH_MAX_PATH];
-      if (len >= sizeof(buf)) return -1;
+      if (len >= sizeof(buf)) {
+        return -1;
+      }
       memcpy(buf, path, len);
       buf[len] = '\0';
       for (size_t i = 1; i < len; ++i) {
         if (buf[i] == '/') {
           buf[i] = '\0';
-          if (::mkdir(buf, 0777) != 0 && errno != EEXIST) return -1;
+          if (::mkdir(buf, 0777) != 0 && errno != EEXIST) {
+            return -1;
+          }
           buf[i] = '/';
         }
       }
@@ -544,8 +586,9 @@ namespace fast_fs_hash {
 
     static inline int open_rw_mkdir(const char * path) noexcept {
       int f = open_rw(path);
-      if (f >= 0 || errno != ENOENT) [[likely]]
+      if (f >= 0 || errno != ENOENT) [[likely]] {
         return f;
+      }
       const size_t len = strlen(path);
       size_t sep = len;
       while (sep > 0 && path[sep - 1] != '/')
@@ -601,6 +644,9 @@ namespace fast_fs_hash {
       size_t len = root_path_len;
       if (len > 0 && root_path[len - 1] == '/') [[likely]] {
         --len;
+      }
+      if (len >= FSH_MAX_PATH - 1) [[unlikely]] {
+        len = FSH_MAX_PATH - 2;
       }
       memcpy(this->path_buf, root_path, len);
       this->path_buf[len] = '/';

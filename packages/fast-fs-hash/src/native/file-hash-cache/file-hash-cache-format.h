@@ -40,7 +40,7 @@
  */
 
 #include "cache-constants.h"
-#include "../Hash128.h"
+#include "Hash128.h"
 #include "../io/PathIndex.h"
 
 namespace fast_fs_hash {

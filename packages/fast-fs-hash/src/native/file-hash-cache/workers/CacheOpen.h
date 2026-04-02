@@ -1,15 +1,3 @@
-/**
- * CacheOpen: acquires an exclusive lock on the cache file, then reads,
- * validates, and stat-matches entries using the locked fd.
- *
- * Always locks. Resolves with Buffer<dataBuf>.
- * The lock handle is embedded in the header at offset 76 (in-memory only).
- * The lock handle is registered with AddonData for crash-safe cleanup.
- *
- * Runs on a pool thread. Lock acquisition is bounded by timeoutMs
- * (non-blocking or short-lived in the common no-contention case).
- */
-
 #ifndef _FAST_FS_HASH_CACHE_OPEN_H
 #define _FAST_FS_HASH_CACHE_OPEN_H
 
@@ -22,6 +10,17 @@
 
 namespace fast_fs_hash {
 
+  /**
+   * Acquires an exclusive lock on the cache file, then reads,
+   * validates, and stat-matches entries using the locked fd.
+   *
+   * Always locks. Resolves with Buffer<dataBuf>.
+   * The lock handle is embedded in the header at offset 76 (in-memory only).
+   * The lock handle is registered with AddonData for crash-safe cleanup.
+   *
+   * Runs on a pool thread. Lock acquisition is bounded by timeoutMs
+   * (non-blocking or short-lived in the common no-contention case).
+   */
   class CacheOpen final : public AddonWorker {
    public:
     CacheOpen(
@@ -53,14 +52,26 @@ namespace fast_fs_hash {
         memcpy(&this->fingerprint_, fingerprint, 16);
       }
       this->cancel_.cancelByte_ = cancelByte;
+      AddonData * d = this->addon;
+      if (d) {
+        d->active_cancels.add(&this->cancel_);
+      }
     }
 
-    ~CacheOpen() override { this->cancel_.fire(); }
+    ~CacheOpen() override {
+      AddonData * d = this->addon;
+      if (d) {
+        d->active_cancels.remove(&this->cancel_);
+      }
+      this->cancel_.fire();
+    }
 
+    /** Queue this worker on the thread pool. */
     void Start() { this->Queue(); }
 
     void Execute() override {
-      if (this->cancel_.is_fired()) [[unlikely]] {
+      AddonData * d = this->addon;
+      if (this->cancel_.is_fired() || d->pool.is_shutdown()) [[unlikely]] {
         this->lockFailed_ = true;
         this->signal();
         return;
@@ -68,7 +79,6 @@ namespace fast_fs_hash {
       const char * error = nullptr;
       this->lockedFile_ = FfshFile::open_locked(this->cachePath_.c_str(), this->timeoutMs_, error, &this->cancel_);
       if (!this->lockedFile_) [[unlikely]] {
-        // Lock failure → resolve with LOCK_FAILED status (not reject).
         this->lockFailed_ = true;
         this->signal();
         return;
@@ -77,13 +87,13 @@ namespace fast_fs_hash {
     }
 
     void OnOK() override {
-      auto env = Napi::Env(this->env);
-      Napi::HandleScope scope(env);
+      Napi::Env napiEnv = Napi::Env(this->env);
+      Napi::HandleScope scope(napiEnv);
 
       if (this->lockFailed_) [[unlikely]] {
-        auto buf = Napi::Buffer<uint8_t>::New(env, CacheHeader::SIZE);
+        auto buf = Napi::Buffer<uint8_t>::New(napiEnv, CacheHeader::SIZE);
         memset(buf.Data(), 0, CacheHeader::SIZE);
-        auto * hdr = headerOf(buf.Data());
+        CacheHeader * hdr = headerOf(buf.Data());
         hdr->status = static_cast<uint32_t>(CacheStatus::LOCK_FAILED);
         hdr->fileHandle = FFSH_FILE_HANDLE_INVALID;
         this->deferred.Resolve(buf);
@@ -93,7 +103,7 @@ namespace fast_fs_hash {
       // Transfer lock ownership to AddonData (JS now owns the fd via the RAII map).
       const int32_t fh = this->addon->registerHeldFile(std::move(this->lockedFile_));
 
-      auto buf = this->makeDataBuf_(env);
+      auto buf = this->makeDataBuf_(napiEnv);
       headerOf(buf.Data())->setFileHandle(fh);
       this->deferred.Resolve(buf);
     }
@@ -131,9 +141,15 @@ namespace fast_fs_hash {
 
     // Work-stealing counter (hot — every thread writes). Own cache line.
     alignas(64) mutable std::atomic<size_t> nextIndex_{0};
-
-    // Match result (cold — written at most once per thread on change)
     mutable std::atomic<MatchResult> matchResult_{MatchResult::OK};
+
+    // Sized to MAX_CACHE_IO_THREADS (expand ceiling), but initially submitted with MAX_OPEN_THREADS.
+    struct Job : ForkJob<Job, MAX_CACHE_IO_THREADS> {
+      CacheOpen * owner;
+      void forkWork() noexcept { this->owner->processStat_(); }
+      void forkDone() noexcept { onStatDone_(this->owner); }
+    };
+    mutable Job job_;
 
     // ── JS-thread-only fields (cold, never touched by pool threads) ─────
 
@@ -144,24 +160,25 @@ namespace fast_fs_hash {
       READ_BUFFER_SIZE + sizeof(PathResolver) <= ThreadPool::THREAD_STACK_SIZE - 64 * 1024,
       "buffers exceed pool thread usable stack");
 
-    /** Build a resolved dataBuf from a Napi::Buffer on the JS thread. */
-    Napi::Buffer<uint8_t> makeDataBuf_(Napi::Env env) {
+    /** Build a Napi::Buffer wrapping the owned dataBuf_. JS thread only. */
+    Napi::Buffer<uint8_t> makeDataBuf_(Napi::Env napiEnv) {
       const size_t len = this->dataBuf_.len;
       uint8_t * ptr = this->dataBuf_.release();
       if (ptr) [[likely]] {
-        return Napi::Buffer<uint8_t>::New(env, ptr, len, [](Napi::Env, uint8_t * p) { free(p); });
+        return Napi::Buffer<uint8_t>::New(napiEnv, ptr, len, [](Napi::Env, uint8_t * p) { free(p); });
       }
       // Fallback: return a zeroed header-only buffer with MISSING status
-      auto buf = Napi::Buffer<uint8_t>::New(env, CacheHeader::SIZE);
+      auto buf = Napi::Buffer<uint8_t>::New(napiEnv, CacheHeader::SIZE);
       memset(buf.Data(), 0, CacheHeader::SIZE);
-      auto * fallbackHdr = headerOf(buf.Data());
+      CacheHeader * fallbackHdr = headerOf(buf.Data());
       fallbackHdr->status = static_cast<uint32_t>(CacheStatus::MISSING);
       fallbackHdr->fileHandle = FFSH_FILE_HANDLE_INVALID;
       return buf;
     }
 
+    /** Stamp final header fields into the in-memory dataBuf. */
     void finalize_(CacheStatus st) noexcept {
-      auto * hdr = headerOf(this->dataBuf_.ptr);
+      CacheHeader * hdr = headerOf(this->dataBuf_.ptr);
       hdr->magic = CacheHeader::MAGIC;
       hdr->version = this->version_;
       hdr->status = static_cast<uint32_t>(st);
@@ -171,6 +188,7 @@ namespace fast_fs_hash {
       }
     }
 
+    /** Build dataBuf if needed, finalize header, and signal completion. */
     FSH_NO_INLINE void finish_(CacheStatus st) noexcept {
       if (!this->dataBuf_) [[unlikely]] {
         // Build full dataBuf with file list so CacheWriter skips remap
@@ -186,6 +204,7 @@ namespace fast_fs_hash {
       this->signal();
     }
 
+    /** Main open logic: read old cache, check staleness, stat-match. */
     void doOpen_() noexcept {
       const CacheHeader * oldHdr = nullptr;
       uint32_t oldFc = 0;
@@ -233,8 +252,13 @@ namespace fast_fs_hash {
       // Same file list — use old body directly for stat-match
       this->dataBuf_ = std::move(oldBuf);
 
-      auto * buf = this->dataBuf_.ptr;
-      auto * hdr = headerOf(buf);
+      if (this->cancel_.is_fired() || this->addon->pool.is_shutdown()) [[unlikely]] {
+        this->finish_(CacheStatus::MISSING);
+        return;
+      }
+
+      uint8_t * buf = this->dataBuf_.ptr;
+      CacheHeader * hdr = headerOf(buf);
       const uint32_t udCount = hdr->udItemCount;
 
       // Stamp HAS_OLD state into high 2 bits of each entry's ino
@@ -253,11 +277,13 @@ namespace fast_fs_hash {
       this->nextIndex_.store(0, std::memory_order_relaxed);
       this->matchResult_.store(MatchResult::OK, std::memory_order_relaxed);
 
-      this->addon->pool.submit(threadCount, statProc_, this, onStatDone_, this);
+      this->job_.owner = this;
+      this->addon->pool.submit(this->job_, threadCount);
     }
 
+    /** Called by the last stat-match thread when all threads complete. */
     static void onStatDone_(CacheOpen * self) {
-      const auto mr = self->matchResult_.load(std::memory_order_relaxed);
+      const MatchResult mr = self->matchResult_.load(std::memory_order_relaxed);
 
       CacheStatus st;
       if (mr >= MatchResult::CHANGED) {
@@ -278,7 +304,6 @@ namespace fast_fs_hash {
      */
     bool readOldCache_(
       OwnedBuf<> & oldBuf, const CacheHeader *& hdr, uint32_t & fc, size_t & bodyLen, bool & stale) noexcept {
-      // Read from the already-locked fd
       const int lockFd = this->lockedFile_.fd;
       if (lockFd < 0) [[unlikely]] {
         return false;
@@ -291,7 +316,6 @@ namespace fast_fs_hash {
       }
       const size_t diskSize = static_cast<size_t>(fileSize);
 
-      // Seek to beginning and read the full file
       if (!this->lockedFile_.seek(0)) [[unlikely]] {
         return false;
       }
@@ -304,9 +328,8 @@ namespace fast_fs_hash {
       if (n < 0 || static_cast<size_t>(n) < diskSize) [[unlikely]] {
         return false;
       }
-      // NOTE: We do NOT close the fd — the lock stays held
 
-      const auto * diskHdr = headerOf(fileBuf.ptr);
+      const CacheHeader * diskHdr = headerOf(fileBuf.ptr);
       if (!diskHdr->validateLimits()) [[unlikely]] {
         return false;
       }
@@ -364,8 +387,7 @@ namespace fast_fs_hash {
       return true;
     }
 
-    static void statProc_(CacheOpen * op) { op->processStat_(); }
-
+    /** Hash a file and compare to old content hash. Cold path — kept out-of-line. */
     FSH_NO_INLINE static bool statMatchHashFile_(
       PathResolver & resolver, CacheEntry & entry, const Hash128 & oldContentHash) {
       alignas(64) unsigned char readBuf[READ_BUFFER_SIZE];
@@ -373,6 +395,7 @@ namespace fast_fs_hash {
       return entry.contentHash == oldContentHash;
     }
 
+    /** Per-thread stat-match work loop. Hoists all shared state to locals. */
     void processStat_() const {
       const size_t fileCount = this->fileCount_;
       const size_t workBatch = this->workBatch_;
@@ -380,18 +403,22 @@ namespace fast_fs_hash {
       const uint32_t * FSH_RESTRICT const pathEnds = this->runPathEnds_;
       const uint8_t * FSH_RESTRICT const packedPaths = this->runPackedPaths_;
       const size_t packedPathsSize = this->runPackedPathsSize_;
+      const FfshFile::LockCancel * cancel = &this->cancel_;
+      ThreadPool & pool = this->addon->pool;
 
-      const char * rootPath = this->rootPath_.c_str();
+      const std::string & rootRef = this->rootPath_;
+      const char * rootPath = rootRef.c_str();
+      const size_t rootPathLen = rootRef.size();
       DirFd dirFd(rootPath, fileCount);
       PathResolver resolver;
-      resolver.init(dirFd, rootPath, this->rootPath_.size());
+      resolver.init(dirFd, rootPath, rootPathLen);
       const size_t maxSegCap = FSH_MAX_PATH > resolver.prefix_len + 1 ? FSH_MAX_PATH - resolver.prefix_len - 1 : 0;
 
       for (;;) {
         if (this->matchResult_.load(std::memory_order_relaxed) >= MatchResult::CHANGED) [[unlikely]] {
           break;
         }
-        if (this->cancel_.is_fired() || this->addon->pool.is_shutdown()) [[unlikely]] {
+        if (cancel->is_fired() || pool.is_shutdown()) [[unlikely]] {
           break;
         }
 
@@ -434,7 +461,6 @@ namespace fast_fs_hash {
           pathStart = pathEnd;
 
           if (idx + 1 < batchEnd) [[likely]] {
-            FSH_PREFETCH(&entries[idx + 1]);
             FSH_PREFETCH_W(&entries[idx + 1]);
             FSH_PREFETCH(packedPaths + pathEnd);
           }
@@ -468,6 +494,8 @@ namespace fast_fs_hash {
 
             if (this->matchResult_.load(std::memory_order_relaxed) < MatchResult::STAT_DIRTY) {
               this->matchResult_.store(MatchResult::STAT_DIRTY, std::memory_order_relaxed);
+              // Stat changed — hash work ahead. Expand pool to handle heavier I/O.
+              pool.expand(this->job_, 1);
             }
 
             if (entry.size != oldSize) {
@@ -497,6 +525,8 @@ namespace fast_fs_hash {
             goto done;
           }
 
+          // Defensive: all entries start as CACHE_S_HAS_OLD (set in doOpen_),
+          // so this branch is unreachable in normal operation.
           this->matchResult_.store(MatchResult::CHANGED, std::memory_order_relaxed);
           goto done;
         }

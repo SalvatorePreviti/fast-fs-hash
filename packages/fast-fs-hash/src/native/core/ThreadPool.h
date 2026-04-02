@@ -1,22 +1,7 @@
-/**
- * ThreadPool: per-addon-instance thread pool.
- *
- * Threads spawn on demand and self-terminate after IDLE_TIMEOUT_MS of inactivity.
- * shutdown() sets the flag, wakes all, joins all.
- * trim() wakes idle threads so they can check and exit if no work is pending.
- *
- * APIs:
- *   enqueue(Task&) — run a single Task on a pool thread.
- *   submit(n, fn, arg, on_done, done_arg) — fork n threads calling fn(arg),
- *     then call on_done(done_arg) when all n complete. Returns a Job handle.
- *   expand(job, n) — add n more threads to a running job (thread-safe).
- *   trim() — wake idle threads; those with no work self-terminate.
- */
-
 #ifndef _FAST_FS_HASH_THREAD_POOL_H
 #define _FAST_FS_HASH_THREAD_POOL_H
 
-#include "AddonTask.h"
+#include "ForkJob.h"
 #include "FshSemaphore.h"
 
 #ifdef _WIN32
@@ -29,6 +14,20 @@
 
 namespace fast_fs_hash {
 
+  /**
+   * Per-addon-instance thread pool.
+   *
+   * Threads spawn on demand and self-terminate after IDLE_TIMEOUT_MS of inactivity.
+   * shutdown() sets the flag, wakes all, joins all — draining remaining tasks first.
+   * trim() wakes idle threads so they can check and exit if no work is pending.
+   *
+   * Task queue is FIFO: tasks are executed in the order they are submitted.
+   * Uses a TTAS spinlock-guarded intrusive linked list (head/tail pointers).
+   * The critical section is ~2 pointer operations so contention is negligible.
+   *
+   * Wakeup signaling uses an idle_count_ to avoid wasted semaphore posts:
+   * only threads that are actually blocked in wait_for_ms() are woken.
+   */
   class ThreadPool : NonCopyable {
    public:
     static constexpr int MAX_WORKERS = 32;
@@ -52,12 +51,10 @@ namespace fast_fs_hash {
 
     using Task = AddonTask;
 
-    /** Opaque handle to a running fork job. Used with expand(). */
-    struct Job;
-
     ThreadPool() = default;
     ~ThreadPool() { this->shutdown(); }
 
+    /** Return the number of online CPUs (cached, called once). */
     static FSH_FORCE_INLINE unsigned hardware_concurrency() noexcept {
       static const unsigned hw = [] {
 #ifdef _WIN32
@@ -72,6 +69,15 @@ namespace fast_fs_hash {
       return hw;
     }
 
+    /**
+     * Compute the number of threads to use for a parallel job.
+     *
+     * @param concurrency  Requested thread count (0 = use hardware_concurrency).
+     * @param work_count   Total work items.
+     * @param max_threads  Upper bound on threads.
+     * @param min_per_thread  Minimum work items per thread to avoid over-splitting.
+     * @return Clamped thread count in [1, MAX_WORKERS].
+     */
     static inline int compute_threads(int concurrency, size_t work_count, int max_threads, size_t min_per_thread) noexcept {
       int hw = static_cast<int>(hardware_concurrency());
       if (hw < 2) [[unlikely]] {
@@ -84,7 +90,7 @@ namespace fast_fs_hash {
       if (tc > MAX_WORKERS) [[unlikely]] {
         tc = MAX_WORKERS;
       }
-      int by_work = static_cast<int>((work_count + min_per_thread - 1) / min_per_thread);
+      const int by_work = static_cast<int>((work_count + min_per_thread - 1) / min_per_thread);
       if (tc > by_work) {
         tc = by_work;
       }
@@ -94,97 +100,100 @@ namespace fast_fs_hash {
       return tc;
     }
 
-    /** Type-safe submit: returns a Job handle for expand(). */
+    /**
+     * Fork count threads via a caller-owned ForkJob.
+     * Pushes count tasks, ensures threads exist, then wakes them.
+     * If count <= 0, calls forkDone() immediately (no threads spawned).
+     */
     template <typename T>
-    Job * submit(int count, void (*fn)(T *), T * arg, void (*on_done)(T *), T * done_arg) noexcept {
-      return this->submit(
-        count,
-        reinterpret_cast<void (*)(void *)>(fn),
-        static_cast<void *>(arg),
-        reinterpret_cast<void (*)(void *)>(on_done),
-        static_cast<void *>(done_arg));
-    }
-
-    Job * submit(int count, void (*fn)(void *), void * arg, void (*on_done)(void *), void * done_arg) noexcept {
+    void submit(T & job, int count) noexcept {
       if (count <= 0) [[unlikely]] {
-        if (on_done) {
-          on_done(done_arg);
-        }
-        return nullptr;
+        job.forkDone();
+        return;
+      }
+
+      job.remaining.store(count, std::memory_order_relaxed);
+      job.nextSlot.store(count, std::memory_order_relaxed);
+
+      // Push all tasks first, then ensure threads + wake.
+      // Order matters: tasks must be visible before ensure_threads_ checks,
+      // so thread_self_exit_ sees them via pop_task_().
+      for (int i = 0; i < count; ++i) {
+        job.tasks[i].job = &job;
+        this->push_task_(&job.tasks[i]);
       }
       this->ensure_threads_(count);
-
-      auto * group = this->alloc_fork_group_();
-      group->remaining.store(count, std::memory_order_relaxed);
-      group->nextSlot.store(count, std::memory_order_relaxed);
-      group->fn = fn;
-      group->arg = arg;
-      group->done_fn = on_done;
-      group->done_arg = done_arg;
-
-      for (int i = 0; i < count; ++i) {
-        group->tasks[i].group = group;
-        this->push_task_(&group->tasks[i]);
-      }
-      this->wake_n_(count);
-      return reinterpret_cast<Job *>(group);
+      this->notify_n_(count);
     }
 
-    /** Add more threads to a running job. Thread-safe — callable from pool threads.
-     *  Clamped to min(MAX_WORKERS, hardware_concurrency()). Returns count added. */
-    int expand(Job * job, int additional) noexcept {
-      if (!job || additional <= 0) {
+    /**
+     * Add more threads to a running ForkJob. Thread-safe — callable from pool threads.
+     * MUST be called from within forkWork() (i.e. by a thread that is part of
+     * the job's remaining count) to guarantee the job stays alive.
+     *
+     * @return Count actually added (limited by MaxTasks and hardware_concurrency).
+     */
+    template <typename T>
+    int expand(T & job, int additional) noexcept {
+      if (additional <= 0) {
         return 0;
       }
-      auto * group = reinterpret_cast<ForkGroup *>(job);
-      const int maxSlots = max_threads_();
+      constexpr int kMaxSlots = T::MAX_TASKS;
+      const int hwMax = max_threads_();
+      const int maxSlots = hwMax < kMaxSlots ? hwMax : kMaxSlots;
 
       int added = 0;
       for (int i = 0; i < additional; ++i) {
-        const int slot = group->nextSlot.fetch_add(1, std::memory_order_relaxed);
+        const int slot = job.nextSlot.fetch_add(1, std::memory_order_relaxed);
         if (slot >= maxSlots) {
-          group->nextSlot.store(maxSlots, std::memory_order_relaxed);
+          job.nextSlot.store(maxSlots, std::memory_order_relaxed);
           break;
         }
-        group->tasks[slot].group = group;
-        group->remaining.fetch_add(1, std::memory_order_relaxed);
-        this->push_task_(&group->tasks[slot]);
+        job.tasks[slot].job = &job;
+        // Increment remaining BEFORE pushing the task. Use release so that
+        // the new task's fetch_sub(acq_rel) in ForkTask::run() sees this.
+        job.remaining.fetch_add(1, std::memory_order_release);
+        this->push_task_(&job.tasks[slot]);
         ++added;
       }
 
       if (added > 0) {
-        this->ensure_threads_(group->nextSlot.load(std::memory_order_relaxed));
-        this->wake_n_(added);
+        this->ensure_threads_(job.nextSlot.load(std::memory_order_relaxed));
+        this->notify_n_(added);
       }
       return added;
     }
 
+    /** Enqueue a single task on a pool thread. */
     void enqueue(Task & task) noexcept {
-      this->ensure_threads_(1);
       this->push_task_(&task);
-      this->wake_.post();
+      this->ensure_threads_(1);
+      this->notify_one_();
     }
 
-    /** Wake idle threads so they can exit if no work is pending. Not a shutdown.
-     *  Increments the trim generation; idle threads that see a new generation exit. */
+    /** Wake idle threads so they can self-terminate if no work is pending. */
     void trim() noexcept {
       if (this->state_.load(std::memory_order_relaxed) == STATE_SHUTDOWN) {
         return;
       }
-      std::lock_guard<std::mutex> lock(this->mu_);
       this->trim_gen_.fetch_add(1, std::memory_order_release);
-      for (int i = 0; i < this->thread_count_; ++i) {
+      const int idle = this->idle_count_.load(std::memory_order_relaxed);
+      for (int i = 0; i < idle; ++i) {
         this->wake_.post();
       }
     }
 
+    /**
+     * Shut down the pool: set the shutdown flag, wake all threads, join all.
+     * Safe to call multiple times (second call is a no-op).
+     * Any tasks still in the queue are drained by worker threads before they exit.
+     */
     void shutdown() noexcept {
       uint32_t expected = STATE_RUNNING;
       if (!this->state_.compare_exchange_strong(expected, STATE_SHUTDOWN, std::memory_order_acq_rel)) {
         return;
       }
 
-      // Snapshot thread count and handles under lock, then join outside lock.
       int count;
 #ifdef _WIN32
       HANDLE handles[MAX_WORKERS];
@@ -193,7 +202,7 @@ namespace fast_fs_hash {
 #endif
       {
         std::lock_guard<std::mutex> lock(this->mu_);
-        count = this->thread_count_;
+        count = this->thread_count_.load(std::memory_order_relaxed);
         for (int i = 0; i < count; ++i) {
           this->wake_.post();
 #ifdef _WIN32
@@ -202,7 +211,7 @@ namespace fast_fs_hash {
           threads[i] = this->threads_[i];
 #endif
         }
-        this->thread_count_ = 0;
+        this->thread_count_.store(0, std::memory_order_relaxed);
       }
 
       for (int i = 0; i < count; ++i) {
@@ -215,48 +224,38 @@ namespace fast_fs_hash {
       }
     }
 
+    /** Returns true if the pool has been shut down. Lock-free relaxed read. */
     FSH_FORCE_INLINE bool is_shutdown() const noexcept {
       return this->state_.load(std::memory_order_relaxed) == STATE_SHUTDOWN;
     }
 
    private:
-    struct ForkGroup;
-
-    struct ForkTask : Task {
-      ForkGroup * group;
-      void run() noexcept override;
-    };
-
-    struct alignas(64) ForkGroup {
-      std::atomic<int> remaining{0};
-      std::atomic<int> nextSlot{0};
-      void (*fn)(void *) = nullptr;
-      void * arg = nullptr;
-      void (*done_fn)(void *) = nullptr;
-      void * done_arg = nullptr;
-      std::atomic<bool> in_use{false};
-      ForkTask tasks[MAX_WORKERS];
-    };
-
-    static constexpr int MAX_FORK_GROUPS = 8;
+    static constexpr int SPIN_BEFORE_WAIT = 32;
 
     static constexpr uint32_t STATE_RUNNING = 0;
     static constexpr uint32_t STATE_SHUTDOWN = 1;
 
-    alignas(64) std::atomic<Task *> queue_head_{nullptr};
+    alignas(64) std::atomic<bool> q_lock_{false};
+    Task * q_head_ = nullptr;
+    Task * q_tail_ = nullptr;
+
     alignas(64) Semaphore wake_;
+
     alignas(64) std::mutex mu_;
     std::atomic<uint32_t> state_{STATE_RUNNING};
     std::atomic<uint32_t> trim_gen_{0};
-    int thread_count_ = 0;
+    std::atomic<int> thread_count_{0};
+
+    alignas(64) std::atomic<int> idle_count_{0};
+
 #ifdef _WIN32
     HANDLE handles_[MAX_WORKERS]{};
     DWORD thread_ids_[MAX_WORKERS]{};
 #else
     pthread_t threads_[MAX_WORKERS]{};
 #endif
-    ForkGroup groups_[MAX_FORK_GROUPS];
 
+    /** Max threads this pool will ever spawn (min(hw_concurrency, MAX_WORKERS), cached). */
     static FSH_FORCE_INLINE int max_threads_() noexcept {
       static const int v = [] {
         int hw = static_cast<int>(hardware_concurrency());
@@ -268,64 +267,95 @@ namespace fast_fs_hash {
       return v;
     }
 
-    void push_task_(Task * task) noexcept {
-      Task * head = this->queue_head_.load(std::memory_order_relaxed);
+    /** Acquire the TTAS spinlock guarding the task queue. */
+    FSH_FORCE_INLINE void q_acquire_() noexcept {
       for (;;) {
-        task->next_ = head;
-        if (this->queue_head_.compare_exchange_weak(head, task, std::memory_order_release, std::memory_order_relaxed))
-          [[likely]] {
+        if (!this->q_lock_.exchange(true, std::memory_order_acquire)) [[likely]] {
           return;
         }
-        cpu_pause();
+        // TTAS: spin on relaxed load (shared cache state) until the lock looks free,
+        // avoiding exclusive bus transactions while another thread holds the lock.
+        do {
+          cpu_pause();
+        } while (this->q_lock_.load(std::memory_order_relaxed));
       }
     }
 
+    /** Release the TTAS spinlock guarding the task queue. */
+    FSH_FORCE_INLINE void q_release_() noexcept {
+      this->q_lock_.store(false, std::memory_order_release);
+    }
+
+    /** Push a task to the tail of the FIFO queue. */
+    void push_task_(Task * task) noexcept {
+      task->next_ = nullptr;
+      this->q_acquire_();
+      if (this->q_tail_) {
+        this->q_tail_->next_ = task;
+      } else {
+        this->q_head_ = task;
+      }
+      this->q_tail_ = task;
+      this->q_release_();
+    }
+
+    /** Pop a task from the head of the FIFO queue. Returns nullptr if empty. */
     Task * pop_task_() noexcept {
-      Task * head = this->queue_head_.load(std::memory_order_acquire);
-      while (head) {
-        if (this->queue_head_.compare_exchange_weak(head, head->next_, std::memory_order_acq_rel)) [[likely]] {
-          return head;
+      this->q_acquire_();
+      Task * task = this->q_head_;
+      if (task) {
+        this->q_head_ = task->next_;
+        if (!this->q_head_) {
+          this->q_tail_ = nullptr;
         }
-        cpu_pause();
       }
-      return nullptr;
+      this->q_release_();
+      return task;
     }
 
-    void wake_n_(int n) noexcept {
-      for (int i = 0; i < n; ++i) {
+    /** Drain and execute all remaining tasks in the queue. */
+    void drain_tasks_() noexcept {
+      Task * task;
+      while ((task = this->pop_task_())) {
+        task->run();
+      }
+    }
+
+    /** Post one semaphore wake if any thread is idle. */
+    void notify_one_() noexcept {
+      if (this->idle_count_.load(std::memory_order_relaxed) > 0) {
         this->wake_.post();
       }
     }
 
-    ForkGroup * alloc_fork_group_() noexcept {
-      for (;;) {
-        for (int i = 0; i < MAX_FORK_GROUPS; ++i) {
-          bool expected = false;
-          if (this->groups_[i].in_use.compare_exchange_strong(expected, true, std::memory_order_acquire)) {
-            return &this->groups_[i];
-          }
-        }
-        cpu_pause();
+    /** Post up to n semaphore wakes, capped by the current idle count. */
+    void notify_n_(int n) noexcept {
+      const int idle = this->idle_count_.load(std::memory_order_relaxed);
+      const int to_wake = n < idle ? n : idle;
+      for (int i = 0; i < to_wake; ++i) {
+        this->wake_.post();
       }
     }
 
-    static void release_fork_group_(ForkGroup * group) noexcept { group->in_use.store(false, std::memory_order_release); }
-
+    /** Ensure at least `needed` threads exist, spawning if necessary. */
     FSH_FORCE_INLINE void ensure_threads_(int needed) noexcept {
-      if (this->thread_count_ >= needed) [[likely]] {
+      if (this->thread_count_.load(std::memory_order_acquire) >= needed) [[likely]] {
         return;
       }
       this->grow_(needed);
     }
 
+    /** Spawn threads up to `needed` (capped by max_threads_). Holds mu_. */
     FSH_NO_INLINE void grow_(int needed) noexcept {
       if (this->state_.load(std::memory_order_acquire) == STATE_SHUTDOWN) {
         return;
       }
 
       std::lock_guard<std::mutex> lock(this->mu_);
-      int target = needed < max_threads_() ? needed : max_threads_();
-      if (this->thread_count_ >= target) {
+      const int current = this->thread_count_.load(std::memory_order_relaxed);
+      const int cap = max_threads_();
+      const int target = needed < cap ? needed : cap;
+      if (current >= target) {
         return;
       }
 
@@ -335,7 +365,8 @@ namespace fast_fs_hash {
       pthread_attr_setstacksize(&attr, THREAD_STACK_SIZE);
 #endif
 
-      while (this->thread_count_ < target) {
+      int count = current;
+      while (count < target) {
 #ifdef _WIN32
         unsigned tid = 0;
         uintptr_t h =
@@ -343,15 +374,16 @@ namespace fast_fs_hash {
         if (!h) [[unlikely]] {
           break;
         }
-        this->handles_[this->thread_count_] = reinterpret_cast<HANDLE>(h);
-        this->thread_ids_[this->thread_count_] = static_cast<DWORD>(tid);
+        this->handles_[count] = reinterpret_cast<HANDLE>(h);
+        this->thread_ids_[count] = static_cast<DWORD>(tid);
 #else
-        if (pthread_create(&this->threads_[this->thread_count_], &attr, thread_entry_, this) != 0) [[unlikely]] {
+        if (pthread_create(&this->threads_[count], &attr, thread_entry_, this) != 0) [[unlikely]] {
           break;
         }
 #endif
-        this->thread_count_++;
+        count++;
       }
+      this->thread_count_.store(count, std::memory_order_release);
 
 #ifndef _WIN32
       pthread_attr_destroy(&attr);
@@ -359,17 +391,27 @@ namespace fast_fs_hash {
     }
 
     /**
-     * Detach this thread from the pool arrays and exit.
-     * Called by an idle thread that wants to self-terminate.
-     * Must NOT be called during shutdown (shutdown joins, not detaches).
+     * Try to unregister and detach this thread from the pool.
+     * Returns true if the thread was detached and MUST exit immediately.
+     * Returns false if work is pending or shutdown — caller should loop back.
      */
-    void thread_self_exit_() noexcept {
+    bool thread_self_exit_() noexcept {
       std::lock_guard<std::mutex> lock(this->mu_);
-      // During shutdown, threads are joined — don't detach.
       if (this->state_.load(std::memory_order_relaxed) == STATE_SHUTDOWN) {
-        return;
+        return false;
       }
-      const int count = this->thread_count_;
+
+      // Check for stranded tasks before unregistering. Must be done inside mu_ —
+      // after detaching, this thread must not touch pool state (shutdown could
+      // destroy the pool once thread_count_ reaches 0).
+      this->q_acquire_();
+      const bool has_work = this->q_head_ != nullptr;
+      this->q_release_();
+      if (has_work) {
+        return false;
+      }
+
+      const int count = this->thread_count_.load(std::memory_order_relaxed);
 #ifdef _WIN32
       const DWORD my_id = GetCurrentThreadId();
       for (int i = 0; i < count; ++i) {
@@ -380,9 +422,9 @@ namespace fast_fs_hash {
             this->handles_[i] = this->handles_[last];
             this->thread_ids_[i] = this->thread_ids_[last];
           }
-          this->thread_count_ = last;
+          this->thread_count_.store(last, std::memory_order_release);
           CloseHandle(h);
-          return;
+          return true;
         }
       }
 #else
@@ -393,14 +435,22 @@ namespace fast_fs_hash {
           if (i != last) {
             this->threads_[i] = this->threads_[last];
           }
-          this->thread_count_ = last;
+          this->thread_count_.store(last, std::memory_order_release);
           pthread_detach(my_tid);
-          return;
+          return true;
         }
       }
 #endif
+      return false;
     }
 
+    /**
+     * Main worker loop — each pool thread runs this until shutdown or idle-timeout.
+     *
+     * Flow: pop task → run → repeat. If no task, spin briefly, then block on
+     * semaphore with idle timeout. On timeout, self-terminate if no work pending.
+     * On shutdown, drain remaining tasks before exiting to avoid stranded promises.
+     */
     static FSH_NO_INLINE void worker_loop_(ThreadPool * pool) noexcept {
       uint32_t seen_trim_gen = pool->trim_gen_.load(std::memory_order_relaxed);
 
@@ -412,40 +462,51 @@ namespace fast_fs_hash {
         }
 
         if (pool->state_.load(std::memory_order_acquire) == STATE_SHUTDOWN) [[unlikely]] {
+          pool->drain_tasks_();
           return;
         }
 
-        if (!pool->wake_.wait_for_ms(idle_timeout_ms())) [[unlikely]] {
-          // Timed out — no work arrived. Self-terminate if not shutting down.
-          if (pool->state_.load(std::memory_order_acquire) == STATE_SHUTDOWN) [[unlikely]] {
-            return;
-          }
-          // One last check: work may have arrived just after timeout.
+        for (int spin = 0; spin < SPIN_BEFORE_WAIT; ++spin) {
+          cpu_pause();
           task = pool->pop_task_();
           if (task) {
-            task->run();
-            continue;
+            break;
           }
-          pool->thread_self_exit_();
-          return;
+        }
+        if (task) {
+          task->run();
+          continue;
         }
 
-        // Woken by post(). Check for shutdown before looping.
+        pool->idle_count_.fetch_add(1, std::memory_order_release);
+        const bool woken = pool->wake_.wait_for_ms(idle_timeout_ms());
+        pool->idle_count_.fetch_sub(1, std::memory_order_release);
+
+        if (!woken) [[unlikely]] {
+          // Timed out — try to self-terminate.
+          // thread_self_exit_ returns true if detached (must exit),
+          // false if work arrived or shutdown (loop back to process).
+          if (pool->thread_self_exit_()) {
+            return;
+          }
+          continue;
+        }
+
         if (pool->state_.load(std::memory_order_acquire) == STATE_SHUTDOWN) [[unlikely]] {
+          // Drain any remaining tasks before exiting — tasks may have been
+          // pushed by expand() just before shutdown, and their forkDone()
+          // callbacks must fire to avoid stranded promises.
+          pool->drain_tasks_();
           return;
         }
 
-        // If trim generation advanced, exit if there's no work queued.
         const uint32_t cur_gen = pool->trim_gen_.load(std::memory_order_acquire);
         if (cur_gen != seen_trim_gen) [[unlikely]] {
           seen_trim_gen = cur_gen;
-          task = pool->pop_task_();
-          if (task) {
-            task->run();
-            continue;
+          if (pool->thread_self_exit_()) {
+            return;
           }
-          pool->thread_self_exit_();
-          return;
+          // Work pending — loop back to process it.
         }
       }
     }
@@ -462,19 +523,6 @@ namespace fast_fs_hash {
     }
 #endif
   };
-
-  inline void ThreadPool::ForkTask::run() noexcept {
-    auto * g = this->group;
-    g->fn(g->arg);
-    if (g->remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) [[unlikely]] {
-      auto done_fn = g->done_fn;
-      auto done_arg = g->done_arg;
-      release_fork_group_(g);
-      if (done_fn) {
-        done_fn(done_arg);
-      }
-    }
-  }
 
 }  // namespace fast_fs_hash
 

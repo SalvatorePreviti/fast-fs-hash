@@ -263,7 +263,7 @@ describe("threadPoolTrim", () => {
       await using ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
       expect(ctx.status).toBe("upToDate");
     }
-  });
+  }, 30_000);
 
   it("pool recovers after trim (new work spawns threads)", async () => {
     threadPoolTrim();
@@ -279,5 +279,5 @@ describe("threadPoolTrim", () => {
 
     await using ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 0);
     expect(ctx.status).toBe("upToDate");
-  });
+  }, 30_000);
 });

@@ -56,6 +56,7 @@ namespace fast_fs_hash {
   inline void AddonData::async_cleanup_hook_(napi_async_cleanup_hook_handle hook, void * data) {
     auto * d = static_cast<AddonData *>(data);
 
+    d->active_cancels.fire_all();
     d->pool.shutdown();
 
     AddonWorker * head = d->head.exchange(nullptr, std::memory_order_acquire);

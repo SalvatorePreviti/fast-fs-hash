@@ -29,9 +29,9 @@ namespace fast_fs_hash {
 
   static constexpr uint32_t CACHE_MAX_FILE_COUNT = 1048576u;  // 1M files
   static constexpr uint32_t CACHE_MAX_PATHS_LEN = 128u << 20;  // 128 MiB
-  static constexpr uint32_t CACHE_MAX_UD_PAYLOADS = 64u << 20;  // 64 MiB
-  static constexpr size_t CACHE_MAX_BODY_SIZE = 256u << 20;  // 256 MiB (total body)
-  static constexpr size_t CACHE_MAX_FILE_SIZE = 256u << 20;  // 256 MiB (on-disk file)
+  static constexpr uint32_t CACHE_MAX_UD_PAYLOADS = 128u << 20;  // 128 MiB
+  static constexpr size_t CACHE_MAX_BODY_SIZE = 512u << 20;  // 512 MiB (total body)
+  static constexpr size_t CACHE_MAX_FILE_SIZE = 512u << 20;  // 512 MiB (on-disk file)
 
   static constexpr size_t MIN_DIR_FD_FILES = 4;
 

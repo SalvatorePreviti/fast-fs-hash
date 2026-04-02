@@ -48,7 +48,9 @@ namespace digest_functions {
       napi_get_value_uint32(env, info[2], &outOffset);
     }
 
-    if (!checkOutputBounds(env, outOffset, out_len, "digestBufferTo")) return Napi::Value(env, nullptr);
+    if (!checkOutputBounds(env, outOffset, out_len, "digestBufferTo")) {
+      return Napi::Value(env, nullptr);
+    }
 
     XXH128_canonicalFromHash(
       reinterpret_cast<XXH128_canonical_t *>(static_cast<uint8_t *>(out_ptr) + outOffset), XXH3_128bits(buf_ptr, buf_len));
@@ -81,7 +83,9 @@ namespace digest_functions {
       Napi::RangeError::New(env, "digestBufferRangeTo: offset + length exceeds buffer size").ThrowAsJavaScriptException();
       return Napi::Value(env, nullptr);
     }
-    if (!checkOutputBounds(env, outOffset, out_len, "digestBufferRangeTo")) return Napi::Value(env, nullptr);
+    if (!checkOutputBounds(env, outOffset, out_len, "digestBufferRangeTo")) {
+      return Napi::Value(env, nullptr);
+    }
     XXH128_canonicalFromHash(
       reinterpret_cast<XXH128_canonical_t *>(static_cast<uint8_t *>(out_ptr) + outOffset),
       XXH3_128bits(static_cast<const uint8_t *>(buf_ptr) + offset, length));
@@ -101,7 +105,9 @@ namespace digest_functions {
       napi_get_value_uint32(env, info[2], &outOffset);
     }
 
-    if (!checkOutputBounds(env, outOffset, out_len, "digestStringTo")) return Napi::Value(env, nullptr);
+    if (!checkOutputBounds(env, outOffset, out_len, "digestStringTo")) {
+      return Napi::Value(env, nullptr);
+    }
 
     XXH128_canonicalFromHash(
       reinterpret_cast<XXH128_canonical_t *>(static_cast<uint8_t *>(out_ptr) + outOffset),
@@ -125,7 +131,9 @@ namespace digest_functions {
       napi_get_value_bool(env, info[3], &throw_on_error);
     }
 
-    if (!checkOutputBounds(env, outOffset, out.ElementLength(), "digestFileTo")) return Napi::Value(env, nullptr);
+    if (!checkOutputBounds(env, outOffset, out.ElementLength(), "digestFileTo")) {
+      return Napi::Value(env, nullptr);
+    }
 
     auto deferred = Napi::Promise::Deferred::New(env);
     auto * worker = new HashFileWorker(env, deferred, info[0].As<Napi::String>().Utf8Value(), throw_on_error);

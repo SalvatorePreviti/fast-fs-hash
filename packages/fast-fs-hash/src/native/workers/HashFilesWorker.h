@@ -1,8 +1,6 @@
 #ifndef _FAST_FS_HASH_HASH_FILES_WORKER_H
 #define _FAST_FS_HASH_HASH_FILES_WORKER_H
 
-#include "includes.h"
-#include "AlignedPtr.h"
 #include "FfshFile.h"
 #include "ThreadPool.h"
 
@@ -10,15 +8,13 @@
 
 namespace fast_fs_hash {
 
-  /**
-   * Output buffer alignment — cache-line aligned for optimal prefetch
-   * and to avoid false sharing between threads writing adjacent slots.
-   */
+  /** Output buffer alignment — cache-line aligned for optimal prefetch
+   *  and to avoid false sharing between threads writing adjacent slots. */
   static constexpr size_t OUTPUT_ALIGNMENT = 64;
 
   /**
    * Large-file streaming hash — cold path, kept out-of-line to minimize
-   * icache pressure in the hot single-read loop.  The XXH3_state_t (576 B)
+   * icache pressure in the hot single-read loop. The XXH3_state_t (576 B)
    * lives only on this frame, not on the hot-path stack.
    */
   FSH_NO_INLINE inline void hashLargeFile(unsigned char * rbuf, size_t initial_bytes, FfshFile & file, uint8_t * dest) {
@@ -40,8 +36,7 @@ namespace fast_fs_hash {
   }
 
   /**
-   * FileOpener: per-thread file open context
-   *
+   * Per-thread file open context.
    * Eliminates #ifdef _WIN32 from the HashFilesWorker inner loop.
    * On POSIX: open directly from UTF-8 path (no conversion needed).
    * On Windows: convert UTF-8 → UTF-16 via WPath scratch, then open wide.
@@ -59,33 +54,58 @@ namespace fast_fs_hash {
 #endif
   };
 
+  /** Max threads for parallel file hashing. Measured optimal at ~10 threads
+   *  on M3/M4 (705 files, 23 MiB) — beyond that, filesystem contention dominates. */
+  static constexpr int MAX_HASH_THREADS = 10;
+
+  /**
+   * Parallel file hasher using the ThreadPool fork-join mechanism.
+   * Each thread hashes a batch of files, writing 128-bit xxHash digests
+   * to a shared output buffer. Work-stealing via atomic nextIndex.
+   */
   struct HashFilesWorker {
-    //  - Cache line 0: read-only config (set once by run(), read by all threads)
+    // Cache line 0: read-only config (set once by run(), read by all threads)
     const char * const * segments;
     size_t fileCount;
     uint8_t * outputData;
-    size_t maxPathLen;  // longest path in segments (bytes, excl. NUL)
     size_t workBatch = 0;
     bool throwOnError = false;
-    const ThreadPool * pool_ = nullptr;  // for is_shutdown() checks
+    const ThreadPool * pool_ = nullptr;
 
-    static void threadProc_(void * raw) {
-      auto * self = static_cast<HashFilesWorker *>(raw);
-      alignas(64) unsigned char rbuf[READ_BUFFER_SIZE];
-      self->processFiles(rbuf);
-    }
+    struct Job : ForkJob<Job, MAX_HASH_THREADS> {
+      HashFilesWorker * owner;
+      void (*onDone)(void *);
+      void * onDoneArg;
+
+      void forkWork() noexcept {
+        alignas(64) unsigned char rbuf[READ_BUFFER_SIZE];
+        this->owner->processFiles(rbuf);
+      }
+      void forkDone() noexcept {
+        if (this->onDone) {
+          this->onDone(this->onDoneArg);
+        }
+      }
+    };
 
     alignas(64) mutable std::atomic<size_t> nextIndex{0};
     mutable std::atomic<bool> hasError{false};
 
+    Job job_;
+
+    /** Launch parallel hashing on the given pool. Calls on_done when complete. */
     void run(ThreadPool & pool, int concurrency, void (*on_done)(void *), void * done_arg) {
       this->pool_ = &pool;
-      int tc = ThreadPool::compute_threads(concurrency, this->fileCount, ThreadPool::MAX_WORKERS, 4);
+      this->job_.owner = this;
+      this->job_.onDone = on_done;
+      this->job_.onDoneArg = done_arg;
 
-      size_t batch = std::clamp(this->fileCount / static_cast<size_t>(tc * 4), size_t{1}, size_t{32});
+      int tc = ThreadPool::compute_threads(concurrency, this->fileCount, MAX_HASH_THREADS, 4);
+
+      const size_t batch = std::clamp(this->fileCount / static_cast<size_t>(tc * 4), size_t{1}, size_t{32});
 
       {
-        int maxUseful = static_cast<int>((this->fileCount + batch - 1) / batch);
+        const int maxUseful = static_cast<int>((this->fileCount + batch - 1) / batch);
         if (tc > maxUseful) {
           tc = maxUseful;
         }
@@ -97,7 +117,7 @@ namespace fast_fs_hash {
       this->workBatch = batch;
       this->nextIndex.store(0, std::memory_order_relaxed);
 
-      pool.submit(tc, threadProc_, this, on_done, done_arg);
+      pool.submit(this->job_, tc);
     }
 
     /** Per-thread work loop. `rbuf_raw` is stack-allocated by the pool thread. */
@@ -108,17 +128,21 @@ namespace fast_fs_hash {
       uint8_t * FSH_RESTRICT const out = assume_aligned<OUTPUT_ALIGNMENT>(this->outputData);
       const char * const * FSH_RESTRICT const segs = this->segments;
       const bool toe = this->throwOnError;
+      const ThreadPool * pool = this->pool_;
 
       FileOpener opener;
 
       for (;;) {
-        if (this->pool_ && this->pool_->is_shutdown()) [[unlikely]] {
+        if (pool->is_shutdown()) [[unlikely]] {
           break;
         }
         const size_t base = this->nextIndex.fetch_add(wb, std::memory_order_relaxed);
-        if (base >= fc) [[unlikely]]
+        if (base >= fc) [[unlikely]] {
           break;
+        }
         const size_t batchEnd = base + wb < fc ? base + wb : fc;
+
+        FSH_PREFETCH_W(out + base * 16);
 
         for (size_t idx = base; idx < batchEnd; ++idx) {
           const char * const path = segs[idx];
@@ -128,7 +152,6 @@ namespace fast_fs_hash {
             FSH_PREFETCH(segs[idx + 1]);
             FSH_PREFETCH_W(dest + 16);
           }
-          FSH_PREFETCH_W(dest);
 
           if (path[0] == '\0') [[unlikely]] {
             memset(dest, 0, 16);
@@ -138,14 +161,18 @@ namespace fast_fs_hash {
           FfshFile file = opener.open(path);
           if (!file) [[unlikely]] {
             memset(dest, 0, 16);
-            if (toe) this->hasError.store(true, std::memory_order_relaxed);
+            if (toe) {
+              this->hasError.store(true, std::memory_order_relaxed);
+            }
             continue;
           }
 
           const int64_t n = file.read_at_most(rbuf, READ_BUFFER_SIZE);
           if (n < 0) [[unlikely]] {
             memset(dest, 0, 16);
-            if (toe) this->hasError.store(true, std::memory_order_relaxed);
+            if (toe) {
+              this->hasError.store(true, std::memory_order_relaxed);
+            }
             continue;
           }
 

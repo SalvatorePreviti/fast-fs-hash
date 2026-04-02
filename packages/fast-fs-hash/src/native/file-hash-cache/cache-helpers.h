@@ -11,13 +11,12 @@
 
 namespace fast_fs_hash {
 
-  /** Max threads for CacheOpen (mostly stat, occasional read+hash on change).
-   *  Fewer threads optimal — stat() is kernel-bound, more threads = VFS contention. */
+  /** Initial threads for CacheOpen stat-match (stat-only is kernel-bound, 4 is optimal). */
   static constexpr int MAX_OPEN_THREADS = 4;
 
-  /** Max threads for CacheWriter (stat + read + hash on all unresolved entries).
-   *  More threads than open — heavier I/O benefits from deeper queue depth. */
-  static constexpr int MAX_WRITE_THREADS = 8;
+  /** Max threads for cache I/O (stat + read + hash). Used by CacheWriter/CacheWriteNew,
+   *  and as the expand ceiling for CacheOpen when it detects files needing hash. */
+  static constexpr int MAX_CACHE_IO_THREADS = 8;
 
   /** Compute batch size for work-stealing and clamp threadCount to useful range. */
   inline size_t computeBatchSize(int & threadCount, size_t fileCount) {
@@ -41,7 +40,7 @@ namespace fast_fs_hash {
    */
   inline bool compressAndWriteCache(
     CacheHeader * hdr, const uint8_t * body, size_t bodyLen, FfshFile & file) noexcept {
-    if (bodyLen > CACHE_MAX_BODY_SIZE || bodyLen > static_cast<size_t>(LZ4_MAX_INPUT_SIZE)) [[unlikely]] {
+    if (bodyLen > CACHE_MAX_BODY_SIZE) [[unlikely]] {
       file.close();
       return false;
     }

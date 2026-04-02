@@ -33,15 +33,17 @@ namespace fast_fs_hash {
      */
     explicit WPath(const char * utf8_path, wchar_t * scratch = nullptr, int scratch_cap = 0) noexcept {
       int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8_path, -1, nullptr, 0);
-      if (wlen <= 0) [[unlikely]]
+      if (wlen <= 0) [[unlikely]] {
         return;
+      }
       if (scratch && scratch_cap >= wlen) {
         MultiByteToWideChar(CP_UTF8, 0, utf8_path, -1, scratch, wlen);
         this->data = scratch;
       } else {
         this->heap_ = static_cast<wchar_t *>(malloc(static_cast<size_t>(wlen) * sizeof(wchar_t)));
-        if (!this->heap_) [[unlikely]]
+        if (!this->heap_) [[unlikely]] {
           return;
+        }
         MultiByteToWideChar(CP_UTF8, 0, utf8_path, -1, this->heap_, wlen);
         this->data = this->heap_;
       }
@@ -133,9 +135,14 @@ namespace fast_fs_hash {
      * On Win32, fire() sets a flag checked by the polling loop (CancelIoEx handles
      * the actual interruption). On POSIX, fire() closes the fd to interrupt fcntl.
      */
+    struct LockCancelList;
+
     struct LockCancel : NonCopyable {
       std::atomic<bool> fired_{false};
       const volatile uint8_t * cancelByte_ = nullptr;
+      LockCancel * prev_ = nullptr;
+      LockCancel * next_ = nullptr;
+      LockCancelList * list_ = nullptr;
 
       void set(int) noexcept {}
       void clear() noexcept {}
@@ -144,6 +151,41 @@ namespace fast_fs_hash {
       }
 
       void fire() noexcept { this->fired_.store(true, std::memory_order_release); }
+    };
+
+    struct LockCancelList {
+      LockCancel * head_ = nullptr;
+
+      void add(LockCancel * c) noexcept {
+        c->list_ = this;
+        c->prev_ = nullptr;
+        c->next_ = this->head_;
+        if (this->head_) {
+          this->head_->prev_ = c;
+        }
+        this->head_ = c;
+      }
+
+      void remove(LockCancel * c) noexcept {
+        if (c->list_ != this) {
+          return;
+        }
+        if (c->prev_) {
+          c->prev_->next_ = c->next_;
+        } else {
+          this->head_ = c->next_;
+        }
+        if (c->next_) {
+          c->next_->prev_ = c->prev_;
+        }
+        c->list_ = nullptr;
+      }
+
+      void fire_all() noexcept {
+        for (LockCancel * c = this->head_; c; c = c->next_) {
+          c->fire();
+        }
+      }
     };
 
     /**
@@ -395,8 +437,9 @@ namespace fast_fs_hash {
      */
     FSH_FORCE_INLINE int64_t read(void * buf, size_t len) noexcept {
       HANDLE h = this->get_handle();
-      if (h == INVALID_HANDLE_VALUE) [[unlikely]]
+      if (h == INVALID_HANDLE_VALUE) [[unlikely]] {
         return -1;
+      }
       DWORD to_read = len > 0x7FFFFFFFu ? 0x7FFFFFFFu : static_cast<DWORD>(len);
       DWORD bytes_read = 0;
       if (!ReadFile(h, buf, to_read, &bytes_read, nullptr)) [[unlikely]] {
@@ -425,26 +468,32 @@ namespace fast_fs_hash {
     /** Return the file size in bytes, or -1 on error. */
     inline int64_t fsize() const noexcept {
       HANDLE h = this->get_handle();
-      if (h == INVALID_HANDLE_VALUE) [[unlikely]]
+      if (h == INVALID_HANDLE_VALUE) [[unlikely]] {
         return -1;
+      }
       LARGE_INTEGER sz;
-      if (!GetFileSizeEx(h, &sz)) return -1;
+      if (!GetFileSizeEx(h, &sz)) {
+        return -1;
+      }
       return sz.QuadPart;
     }
 
     /** Write all bytes. Returns true on success. */
     inline bool write_all(const uint8_t * data, size_t len) noexcept {
       HANDLE h = this->get_handle();
-      if (h == INVALID_HANDLE_VALUE) [[unlikely]]
+      if (h == INVALID_HANDLE_VALUE) [[unlikely]] {
         return false;
+      }
       size_t total = 0;
       while (total < len) {
         const DWORD chunk = static_cast<DWORD>((len - total > 0x7FFFFFFFu) ? 0x7FFFFFFFu : len - total);
         DWORD written = 0;
-        if (!WriteFile(h, data + total, chunk, &written, nullptr)) [[unlikely]]
+        if (!WriteFile(h, data + total, chunk, &written, nullptr)) [[unlikely]] {
           return false;
-        if (written == 0) [[unlikely]]
+        }
+        if (written == 0) [[unlikely]] {
           return false;
+        }
         total += written;
       }
       return true;
@@ -453,20 +502,23 @@ namespace fast_fs_hash {
     /** Truncate the file to the given length. Returns true on success. */
     inline bool truncate(size_t len) noexcept {
       HANDLE h = this->get_handle();
-      if (h == INVALID_HANDLE_VALUE) [[unlikely]]
+      if (h == INVALID_HANDLE_VALUE) [[unlikely]] {
         return false;
+      }
       LARGE_INTEGER li;
       li.QuadPart = static_cast<LONGLONG>(len);
-      if (!SetFilePointerEx(h, li, nullptr, FILE_BEGIN)) [[unlikely]]
+      if (!SetFilePointerEx(h, li, nullptr, FILE_BEGIN)) [[unlikely]] {
         return false;
+      }
       return SetEndOfFile(h) != FALSE;
     }
 
     /** Pre-allocate space. Best-effort, failure is ignored. */
     inline void preallocate(size_t len) noexcept {
       HANDLE h = this->get_handle();
-      if (h == INVALID_HANDLE_VALUE) [[unlikely]]
+      if (h == INVALID_HANDLE_VALUE) [[unlikely]] {
         return;
+      }
       FILE_ALLOCATION_INFO alloc;
       alloc.AllocationSize.QuadPart = static_cast<LONGLONG>(len);
       ::SetFileInformationByHandle(h, FileAllocationInfo, &alloc, sizeof(alloc));
@@ -475,8 +527,9 @@ namespace fast_fs_hash {
     /** Seek to a position from the beginning of the file. Returns true on success. */
     inline bool seek(size_t offset) noexcept {
       HANDLE h = this->get_handle();
-      if (h == INVALID_HANDLE_VALUE) [[unlikely]]
+      if (h == INVALID_HANDLE_VALUE) [[unlikely]] {
         return false;
+      }
       LARGE_INTEGER li;
       li.QuadPart = static_cast<LONGLONG>(offset);
       return SetFilePointerEx(h, li, nullptr, FILE_BEGIN) != FALSE;
@@ -539,19 +592,26 @@ namespace fast_fs_hash {
    private:
     /** Get the Win32 HANDLE from the CRT fd via _get_osfhandle. */
     FSH_FORCE_INLINE HANDLE get_handle() const noexcept {
-      if (this->fd < 0) [[unlikely]]
+      if (this->fd < 0) [[unlikely]] {
         return INVALID_HANDLE_VALUE;
+      }
       return reinterpret_cast<HANDLE>(_get_osfhandle(this->fd));
     }
 
     static inline int utf8_to_wide(const char * utf8, wchar_t * buf, int cap, wchar_t ** heap_out) noexcept {
       *heap_out = nullptr;
       int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, buf, cap);
-      if (wlen > 0) return wlen;
+      if (wlen > 0) {
+        return wlen;
+      }
       wlen = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, nullptr, 0);
-      if (wlen <= 0) return 0;
+      if (wlen <= 0) {
+        return 0;
+      }
       auto * h = static_cast<wchar_t *>(malloc(static_cast<size_t>(wlen) * sizeof(wchar_t)));
-      if (!h) return 0;
+      if (!h) {
+        return 0;
+      }
       MultiByteToWideChar(CP_UTF8, 0, utf8, -1, h, wlen);
       *heap_out = h;
       return wlen;
@@ -561,15 +621,18 @@ namespace fast_fs_hash {
       wchar_t wbuf[512];
       wchar_t * heap = nullptr;
       const int wlen = utf8_to_wide(path, wbuf, 512, &heap);
-      if (wlen <= 0) return -1;
+      if (wlen <= 0) {
+        return -1;
+      }
       const int f = open_rd_w(heap ? heap : wbuf);
       free(heap);
       return f;
     }
 
     static inline int open_rd_w(const wchar_t * wpath) noexcept {
-      if (!wpath) [[unlikely]]
+      if (!wpath) [[unlikely]] {
         return -1;
+      }
       HANDLE h = CreateFileW(
         wpath,
         GENERIC_READ,
@@ -578,7 +641,9 @@ namespace fast_fs_hash {
         OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
         nullptr);
-      if (h == INVALID_HANDLE_VALUE) return -1;
+      if (h == INVALID_HANDLE_VALUE) {
+        return -1;
+      }
       const int f = _open_osfhandle(reinterpret_cast<intptr_t>(h), _O_RDONLY | _O_BINARY);
       if (f < 0) {
         CloseHandle(h);
@@ -652,8 +717,9 @@ namespace fast_fs_hash {
         FILE_ATTRIBUTE_NORMAL,
         nullptr);
 
-      if (h == INVALID_HANDLE_VALUE) [[unlikely]]
+      if (h == INVALID_HANDLE_VALUE) [[unlikely]] {
         return false;
+      }
 
       if (!GetFileInformationByHandle(h, &info)) [[unlikely]] {
         CloseHandle(h);
@@ -699,6 +765,9 @@ namespace fast_fs_hash {
       size_t len = root_path_len;
       if (len > 0 && (root_path[len - 1] == '/' || root_path[len - 1] == '\\')) [[likely]] {
         --len;
+      }
+      if (len >= FSH_MAX_PATH - 1) [[unlikely]] {
+        len = FSH_MAX_PATH - 2;
       }
       memcpy(this->path_buf, root_path, len);
       this->path_buf[len] = '\\';

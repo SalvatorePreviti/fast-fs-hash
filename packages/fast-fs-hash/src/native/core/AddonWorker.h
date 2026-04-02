@@ -1,16 +1,3 @@
-/**
- * AddonWorker: async work with completion signaled back to the JS thread.
- *
- * Subclasses implement:
- *   Execute() — runs on a worker thread, must call signal() when complete.
- *   OnOK() — runs on the JS thread after successful completion.
- *
- * IMPORTANT: After signal(), `this` may be deleted by the JS thread
- * at any time. Do not access any member after calling it.
- *
- * Use Queue() to run on the compute ThreadPool.
- */
-
 #ifndef _FAST_FS_HASH_ADDON_WORKER_H
 #define _FAST_FS_HASH_ADDON_WORKER_H
 
@@ -18,14 +5,26 @@
 
 namespace fast_fs_hash {
 
+  /**
+   * Async work with completion signaled back to the JS thread.
+   *
+   * Subclasses implement:
+   *   Execute() — runs on a worker thread, must call signal() when complete.
+   *   OnOK() — runs on the JS thread after successful completion.
+   *
+   * IMPORTANT: After signal(), `this` may be deleted by the JS thread
+   * at any time. Do not access any member after calling it.
+   *
+   * Use Queue() to run on the compute ThreadPool.
+   */
   class AddonWorker : public AddonTask {
    public:
     AddonWorker(Napi::Env pEnv, Napi::Promise::Deferred pDeferred) noexcept
       : deferred(pDeferred), addon(AddonData::get(pEnv)), env(pEnv) {}
 
-    /** Queue on the compute thread pool. */
+    /** Queue on the compute thread pool. Ref's the event loop handle. */
     void Queue() {
-      auto * d = this->addon;
+      AddonData * d = this->addon;
       if (!d) [[unlikely]] {
         delete this;
         return;
@@ -48,7 +47,7 @@ namespace fast_fs_hash {
 
     /** Signal successful completion. `this` may be deleted after this call. */
     void signal() {
-      auto * d = this->addon;
+      AddonData * d = this->addon;
       if (!d) [[unlikely]] {
         delete this;
         return;

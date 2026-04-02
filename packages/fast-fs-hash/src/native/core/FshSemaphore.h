@@ -1,11 +1,3 @@
-/**
- * Lightweight platform semaphore + CPU spin hint.
- *
- * macOS: dispatch_semaphore (user-space fast path).
- * Linux: POSIX sem_t.
- * Windows: Win32 Semaphore.
- */
-
 #ifndef _FAST_FS_HASH_SEMAPHORE_H
 #define _FAST_FS_HASH_SEMAPHORE_H
 
@@ -21,6 +13,7 @@
 
 namespace fast_fs_hash {
 
+  /** CPU spin hint — yields the pipeline without blocking. */
   FSH_FORCE_INLINE void cpu_pause() noexcept {
 #if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
 #  ifdef _MSC_VER
@@ -37,6 +30,13 @@ namespace fast_fs_hash {
 #endif
   }
 
+  /**
+   * Lightweight platform counting semaphore + timed wait.
+   *
+   * macOS: dispatch_semaphore (user-space fast path).
+   * Linux: POSIX sem_t.
+   * Windows: Win32 Semaphore.
+   */
   class Semaphore : NonCopyable {
    public:
     inline Semaphore() noexcept {
@@ -51,14 +51,19 @@ namespace fast_fs_hash {
 
     inline ~Semaphore() noexcept {
 #ifdef __APPLE__
-      if (this->sem_) { dispatch_release(this->sem_); }
+      if (this->sem_) {
+        dispatch_release(this->sem_);
+      }
 #elif defined(_WIN32)
-      if (this->sem_) { CloseHandle(this->sem_); }
+      if (this->sem_) {
+        CloseHandle(this->sem_);
+      }
 #else
       sem_destroy(&this->sem_);
 #endif
     }
 
+    /** Post (signal) the semaphore, waking one waiting thread. */
     FSH_FORCE_INLINE void post() noexcept {
 #ifdef __APPLE__
       dispatch_semaphore_signal(this->sem_);
@@ -69,6 +74,7 @@ namespace fast_fs_hash {
 #endif
     }
 
+    /** Wait up to ms milliseconds. Returns true if signaled, false on timeout. */
     inline bool wait_for_ms(int ms) noexcept {
 #ifdef __APPLE__
       return dispatch_semaphore_wait(
@@ -85,8 +91,12 @@ namespace fast_fs_hash {
         ts.tv_nsec -= 1000000000L;
       }
       for (;;) {
-        if (sem_timedwait(&this->sem_, &ts) == 0) [[likely]] { return true; }
-        if (errno != EINTR) [[likely]] { return false; }
+        if (sem_timedwait(&this->sem_, &ts) == 0) [[likely]] {
+          return true;
+        }
+        if (errno != EINTR) [[likely]] {
+          return false;
+        }
       }
 #endif
     }
