@@ -359,6 +359,22 @@ jobs:
       - name: Inject optionalDependencies for publish
         run: node scripts/prepublish.js
 
+      - name: Dry-run publish (verify all packages)
+        shell: bash
+        run: |
+          echo "── Dry-run: verifying all packages can be published ──"
+          for dir in npm/*/; do
+            pkg_name=$(node -p "require('./${dir}/package.json').name")
+            pkg_version=$(node -p "require('./${dir}/package.json').version")
+            echo "  📦 ${pkg_name}@${pkg_version} ..."
+            npm publish "$dir" --dry-run --access public 2>&1 | tail -5
+          done
+          pkg_name=$(node -p "require('./packages/fast-fs-hash/package.json').name")
+          pkg_version=$(node -p "require('./packages/fast-fs-hash/package.json').version")
+          echo "  📦 ${pkg_name}@${pkg_version} ..."
+          npm publish packages/fast-fs-hash --dry-run --access public 2>&1 | tail -5
+          echo "── Dry-run passed ──"
+
       - name: Publish all packages
         shell: bash
         run: |

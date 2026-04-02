@@ -73,15 +73,22 @@ for (const target of platforms) {
   const kb = (size / 1024).toFixed(1);
   logOk(`${target}/fast_fs_hash.node (${kb} KB)`);
 
-  // Copy x64 ISA variants if present
+  // Copy x64 ISA variants — required if listed in package.json "files"
+  const declaredFiles = pkg.files || [];
   for (const suffix of ["_avx2", "_avx512"]) {
-    const variantSrc = path.join(artifactDir, `fast_fs_hash${suffix}.node`);
+    const filename = `fast_fs_hash${suffix}.node`;
+    const variantSrc = path.join(artifactDir, filename);
+    const variantDest = path.join(NPM_DIR, target, filename);
+    const declared = declaredFiles.includes(filename);
+
     if (existsSync(variantSrc)) {
-      const variantDest = path.join(NPM_DIR, target, `fast_fs_hash${suffix}.node`);
       cpSync(variantSrc, variantDest);
       const vs = statSync(variantDest);
       const vkb = (vs.size / 1024).toFixed(1);
-      logOk(`${target}/fast_fs_hash${suffix}.node (${vkb} KB)`);
+      logOk(`${target}/${filename} (${vkb} KB)`);
+    } else if (declared) {
+      missing.push(`${target}/${filename}`);
+      logError(`${target}: ${filename} declared in package.json but artifact not found`);
     }
   }
 
