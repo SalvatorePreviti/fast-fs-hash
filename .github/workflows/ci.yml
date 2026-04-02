@@ -235,11 +235,20 @@ jobs:
             npm run bench
           '
 
-  #  - FreeBSD (build + test inside a FreeBSD VM)
+  #  - FreeBSD (build + test inside FreeBSD VMs)
   build-freebsd:
-    name: Build & Test freebsd-x64
+    name: Build ${{ matrix.can-test && '& Test ' || '' }}freebsd-${{ matrix.arch }}
     needs: [lint-and-test]
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            architecture: x86_64
+            can-test: true
+          - arch: arm64
+            architecture: arm64
     steps:
       - uses: actions/checkout@v4
         with:
@@ -250,22 +259,21 @@ jobs:
         with:
           operating_system: freebsd
           version: "14.3"
+          architecture: ${{ matrix.architecture }}
           memory: 8G
           cpu_count: 3
           shell: bash
           run: |
             sudo pkg install -y cmake node22 npm-node22 git
             npm ci
-            npm run build:all
+            ${{ matrix.can-test && 'npm run build:all' || 'npm run build:native' }}
             ls -lh packages/fast-fs-hash/build/Release/fast_fs_hash.node
-            export FAST_FS_HASH_NO_NATIVE=fatal
-            npm test -- --reporter=verbose
-            npm run bench
+            ${{ matrix.can-test && 'export FAST_FS_HASH_NO_NATIVE=fatal && npm test -- --reporter=verbose && npm run bench' || 'echo "Cross-build only — skipping tests"' }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: binding-freebsd-x64
+          name: binding-freebsd-${{ matrix.arch }}
           path: packages/fast-fs-hash/build/Release/fast_fs_hash*.node
           if-no-files-found: error
 
