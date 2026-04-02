@@ -1,14 +1,16 @@
 /**
  * ThreadPool: per-addon-instance thread pool.
  *
- * Threads spawn on demand and stay alive until shutdown().
+ * Threads spawn on demand and self-terminate after IDLE_TIMEOUT_MS of inactivity.
  * shutdown() sets the flag, wakes all, joins all.
+ * trim() wakes idle threads so they can check and exit if no work is pending.
  *
  * APIs:
  *   enqueue(Task&) — run a single Task on a pool thread.
  *   submit(n, fn, arg, on_done, done_arg) — fork n threads calling fn(arg),
  *     then call on_done(done_arg) when all n complete. Returns a Job handle.
  *   expand(job, n) — add n more threads to a running job (thread-safe).
+ *   trim() — wake idle threads; those with no work self-terminate.
  */
 
 #ifndef _FAST_FS_HASH_THREAD_POOL_H
@@ -31,7 +33,22 @@ namespace fast_fs_hash {
    public:
     static constexpr int MAX_WORKERS = 32;
     static constexpr size_t THREAD_STACK_SIZE = 256 * 1024;
-    static constexpr int IDLE_TIMEOUT_MS = 15000;
+    static constexpr int DEFAULT_IDLE_TIMEOUT_MS = 15000;
+
+    /** Thread idle timeout in ms. Read once from FAST_FS_HASH_POOL_IDLE_TIMEOUT_MS env var. */
+    static inline int idle_timeout_ms() noexcept {
+      static const int v = [] {
+        const char * env = std::getenv("FAST_FS_HASH_POOL_IDLE_TIMEOUT_MS");
+        if (env && env[0] != '\0') {
+          const long val = std::strtol(env, nullptr, 10);
+          if (val > 0 && val <= 3600000) {
+            return static_cast<int>(val);
+          }
+        }
+        return DEFAULT_IDLE_TIMEOUT_MS;
+      }();
+      return v;
+    }
 
     using Task = AddonTask;
 
@@ -148,29 +165,59 @@ namespace fast_fs_hash {
       this->wake_.post();
     }
 
-    void shutdown() noexcept {
-      if (this->shutdown_.load(std::memory_order_relaxed)) {
+    /** Wake idle threads so they can exit if no work is pending. Not a shutdown.
+     *  Increments the trim generation; idle threads that see a new generation exit. */
+    void trim() noexcept {
+      if (this->state_.load(std::memory_order_relaxed) == STATE_SHUTDOWN) {
         return;
       }
-      this->shutdown_.store(true, std::memory_order_release);
-
       std::lock_guard<std::mutex> lock(this->mu_);
+      this->trim_gen_.fetch_add(1, std::memory_order_release);
       for (int i = 0; i < this->thread_count_; ++i) {
         this->wake_.post();
       }
-
-      for (int i = 0; i < this->thread_count_; ++i) {
-#ifdef _WIN32
-        WaitForSingleObject(this->handles_[i], INFINITE);
-        CloseHandle(this->handles_[i]);
-#else
-        pthread_join(this->threads_[i], nullptr);
-#endif
-      }
-      this->thread_count_ = 0;
     }
 
-    FSH_FORCE_INLINE bool is_shutdown() const noexcept { return this->shutdown_.load(std::memory_order_relaxed); }
+    void shutdown() noexcept {
+      uint32_t expected = STATE_RUNNING;
+      if (!this->state_.compare_exchange_strong(expected, STATE_SHUTDOWN, std::memory_order_acq_rel)) {
+        return;
+      }
+
+      // Snapshot thread count and handles under lock, then join outside lock.
+      int count;
+#ifdef _WIN32
+      HANDLE handles[MAX_WORKERS];
+#else
+      pthread_t threads[MAX_WORKERS];
+#endif
+      {
+        std::lock_guard<std::mutex> lock(this->mu_);
+        count = this->thread_count_;
+        for (int i = 0; i < count; ++i) {
+          this->wake_.post();
+#ifdef _WIN32
+          handles[i] = this->handles_[i];
+#else
+          threads[i] = this->threads_[i];
+#endif
+        }
+        this->thread_count_ = 0;
+      }
+
+      for (int i = 0; i < count; ++i) {
+#ifdef _WIN32
+        WaitForSingleObject(handles[i], INFINITE);
+        CloseHandle(handles[i]);
+#else
+        pthread_join(threads[i], nullptr);
+#endif
+      }
+    }
+
+    FSH_FORCE_INLINE bool is_shutdown() const noexcept {
+      return this->state_.load(std::memory_order_relaxed) == STATE_SHUTDOWN;
+    }
 
    private:
     struct ForkGroup;
@@ -193,13 +240,18 @@ namespace fast_fs_hash {
 
     static constexpr int MAX_FORK_GROUPS = 8;
 
+    static constexpr uint32_t STATE_RUNNING = 0;
+    static constexpr uint32_t STATE_SHUTDOWN = 1;
+
     alignas(64) std::atomic<Task *> queue_head_{nullptr};
     alignas(64) Semaphore wake_;
     alignas(64) std::mutex mu_;
-    std::atomic<bool> shutdown_{false};
+    std::atomic<uint32_t> state_{STATE_RUNNING};
+    std::atomic<uint32_t> trim_gen_{0};
     int thread_count_ = 0;
 #ifdef _WIN32
     HANDLE handles_[MAX_WORKERS]{};
+    DWORD thread_ids_[MAX_WORKERS]{};
 #else
     pthread_t threads_[MAX_WORKERS]{};
 #endif
@@ -267,7 +319,7 @@ namespace fast_fs_hash {
     }
 
     FSH_NO_INLINE void grow_(int needed) noexcept {
-      if (this->shutdown_.load(std::memory_order_acquire)) {
+      if (this->state_.load(std::memory_order_acquire) == STATE_SHUTDOWN) {
         return;
       }
 
@@ -285,11 +337,14 @@ namespace fast_fs_hash {
 
       while (this->thread_count_ < target) {
 #ifdef _WIN32
-        uintptr_t h = _beginthreadex(nullptr, static_cast<unsigned>(THREAD_STACK_SIZE), thread_entry_, this, 0, nullptr);
+        unsigned tid = 0;
+        uintptr_t h =
+          _beginthreadex(nullptr, static_cast<unsigned>(THREAD_STACK_SIZE), thread_entry_, this, 0, &tid);
         if (!h) [[unlikely]] {
           break;
         }
         this->handles_[this->thread_count_] = reinterpret_cast<HANDLE>(h);
+        this->thread_ids_[this->thread_count_] = static_cast<DWORD>(tid);
 #else
         if (pthread_create(&this->threads_[this->thread_count_], &attr, thread_entry_, this) != 0) [[unlikely]] {
           break;
@@ -303,7 +358,52 @@ namespace fast_fs_hash {
 #endif
     }
 
+    /**
+     * Detach this thread from the pool arrays and exit.
+     * Called by an idle thread that wants to self-terminate.
+     * Must NOT be called during shutdown (shutdown joins, not detaches).
+     */
+    void thread_self_exit_() noexcept {
+      std::lock_guard<std::mutex> lock(this->mu_);
+      // During shutdown, threads are joined — don't detach.
+      if (this->state_.load(std::memory_order_relaxed) == STATE_SHUTDOWN) {
+        return;
+      }
+      const int count = this->thread_count_;
+#ifdef _WIN32
+      const DWORD my_id = GetCurrentThreadId();
+      for (int i = 0; i < count; ++i) {
+        if (this->thread_ids_[i] == my_id) {
+          HANDLE h = this->handles_[i];
+          const int last = count - 1;
+          if (i != last) {
+            this->handles_[i] = this->handles_[last];
+            this->thread_ids_[i] = this->thread_ids_[last];
+          }
+          this->thread_count_ = last;
+          CloseHandle(h);
+          return;
+        }
+      }
+#else
+      const pthread_t my_tid = pthread_self();
+      for (int i = 0; i < count; ++i) {
+        if (pthread_equal(this->threads_[i], my_tid)) {
+          const int last = count - 1;
+          if (i != last) {
+            this->threads_[i] = this->threads_[last];
+          }
+          this->thread_count_ = last;
+          pthread_detach(my_tid);
+          return;
+        }
+      }
+#endif
+    }
+
     static FSH_NO_INLINE void worker_loop_(ThreadPool * pool) noexcept {
+      uint32_t seen_trim_gen = pool->trim_gen_.load(std::memory_order_relaxed);
+
       for (;;) {
         Task * task = pool->pop_task_();
         if (task) [[likely]] {
@@ -311,18 +411,40 @@ namespace fast_fs_hash {
           continue;
         }
 
-        if (pool->shutdown_.load(std::memory_order_acquire)) [[unlikely]] {
+        if (pool->state_.load(std::memory_order_acquire) == STATE_SHUTDOWN) [[unlikely]] {
           return;
         }
 
-        if (!pool->wake_.wait_for_ms(IDLE_TIMEOUT_MS)) [[unlikely]] {
-          if (pool->shutdown_.load(std::memory_order_acquire)) [[unlikely]] {
+        if (!pool->wake_.wait_for_ms(idle_timeout_ms())) [[unlikely]] {
+          // Timed out — no work arrived. Self-terminate if not shutting down.
+          if (pool->state_.load(std::memory_order_acquire) == STATE_SHUTDOWN) [[unlikely]] {
             return;
           }
-          continue;
+          // One last check: work may have arrived just after timeout.
+          task = pool->pop_task_();
+          if (task) {
+            task->run();
+            continue;
+          }
+          pool->thread_self_exit_();
+          return;
         }
 
-        if (pool->shutdown_.load(std::memory_order_acquire)) [[unlikely]] {
+        // Woken by post(). Check for shutdown before looping.
+        if (pool->state_.load(std::memory_order_acquire) == STATE_SHUTDOWN) [[unlikely]] {
+          return;
+        }
+
+        // If trim generation advanced, exit if there's no work queued.
+        const uint32_t cur_gen = pool->trim_gen_.load(std::memory_order_acquire);
+        if (cur_gen != seen_trim_gen) [[unlikely]] {
+          seen_trim_gen = cur_gen;
+          task = pool->pop_task_();
+          if (task) {
+            task->run();
+            continue;
+          }
+          pool->thread_self_exit_();
           return;
         }
       }

@@ -5,6 +5,14 @@
 #include "file-cache-binding.h"
 #include "AddonData_impl.h"
 
+static Napi::Value poolTrim(const Napi::CallbackInfo & info) {
+  auto * addon = fast_fs_hash::AddonData::get(info.Env());
+  if (addon) [[likely]] {
+    addon->pool.trim();
+  }
+  return info.Env().Undefined();
+}
+
 static Napi::Value getCpuFeatures(const Napi::CallbackInfo & info) {
   auto env = info.Env();
   auto obj = Napi::Object::New(env);
@@ -66,6 +74,10 @@ static Napi::Object Init(Napi::Env env, Napi::Object exports) {
   // Cache close / query (handle is an int32 fd in dataBuf header)
   exports.Set("cacheClose", Napi::Function::New(env, fast_fs_hash::bindCacheClose));
   exports.Set("cacheIsLocked", Napi::Function::New(env, fast_fs_hash::bindCacheIsLocked));
+  exports.Set("cacheWaitUnlocked", Napi::Function::New(env, fast_fs_hash::bindCacheWaitUnlocked));
+
+  // Pool management
+  exports.Set("poolTrim", Napi::Function::New(env, poolTrim));
 
   // LZ4 block compression
   exports.Set("lz4CompressBlock", Napi::Function::New(env, lz4_functions::lz4CompressBlock));

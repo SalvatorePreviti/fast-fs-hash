@@ -65,14 +65,9 @@ namespace fast_fs_hash {
       head = next;
     }
 
-    // Release any file handles still held by this env (e.g., worker thread terminated)
-    {
-      std::lock_guard<std::mutex> guard(d->heldFileHandlesMutex);
-      for (FfshFileHandle h : d->heldFileHandles) {
-        FfshFile::release_file_handle(h);
-      }
-      d->heldFileHandles.clear();
-    }
+    // Close any locked files still held by this env (e.g., abandoned FileHashCache instances).
+    // FfshFile destructors release locks and close fds.
+    d->heldFiles.clear();
 
     d->cleanup_hook_ = hook;
     uv_close(reinterpret_cast<uv_handle_t *>(d->async), on_async_close_);

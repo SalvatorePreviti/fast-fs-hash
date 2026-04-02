@@ -67,6 +67,29 @@ stat metadata (inode, mtime, ctime, size) and content hashes (xxHash3-128).
 On the next run it re-stats every tracked file and compares — files whose stat matches are
 skipped entirely (no re-read), giving near-instant validation for large file sets.
 
+### Why use FileHashCache?
+
+Build systems, code generators, and CI pipelines often produce output that depends on many
+input files. Recomputing that output on every run is expensive — even when nothing changed.
+
+`FileHashCache` solves this by persisting a fingerprint of all input files between runs.
+On the next invocation, it checks whether any input changed in **sub-millisecond time**
+(stat-only, no re-reading). If nothing changed, you skip the expensive step entirely.
+
+**Common use cases:**
+
+- **Incremental builds**: track source files → skip compilation when inputs are unchanged
+- **Generated output caching**: store a compiled bundle, generated types, or processed assets
+  alongside the cache — rebuild only when dependencies change
+- **CI artifact caching**: validate whether a cached artifact is still fresh before uploading
+  or downloading a new one
+- **Multi-step pipelines**: each stage writes its own cache file, checked independently
+
+The cache file also supports **user data** — opaque binary payloads stored alongside the
+file hashes. This lets you embed build output manifests, dependency graphs, or configuration
+snapshots directly in the cache, so a single `open()` tells you both "did anything change?"
+and "what was the previous result?" — no separate metadata files needed.
+
 ### Why not just hash everything?
 
 Hashing is fast, but reading thousands of files from disk is not. `FileHashCache` avoids
@@ -82,11 +105,11 @@ changed stat are re-hashed. This makes cache validation **O(n × stat)** instead
 
 | Scenario           | Mean                | Hz         | Files/s           | Throughput |
 | ------------------ | ------------------- | ---------- | ----------------- | ---------- |
-| no change          | 0.7 ms (666.5 µs)   | 1 500 op/s | 1 057 761 files/s | —          |
-| 1 file changed     | 1.0 ms (1 015.9 µs) | 984 op/s   | 693 996 files/s   | —          |
-| many files changed | 2.5 ms (2 531.1 µs) | 395 op/s   | 278 536 files/s   | 9.8 GB/s   |
-| no existing cache  | 7.7 ms (7 674.6 µs) | 130 op/s   | 91 861 files/s    | 3.2 GB/s   |
-| writeNew           | 7.6 ms (7 637.5 µs) | 131 op/s   | 92 307 files/s    | 3.2 GB/s   |
+| no change          | 0.6 ms (630.9 µs)   | 1 585 op/s | 1 117 498 files/s | —          |
+| 1 file changed     | 1.0 ms (1 037.9 µs) | 964 op/s   | 679 283 files/s   | —          |
+| many files changed | 2.6 ms (2 629.9 µs) | 380 op/s   | 268 067 files/s   | 9.4 GB/s   |
+| no existing cache  | 7.5 ms (7 537.1 µs) | 133 op/s   | 93 537 files/s    | 3.3 GB/s   |
+| writeNew           | 7.7 ms (7 714.1 µs) | 130 op/s   | 91 391 files/s    | 3.2 GB/s   |
 
 <!-- FHC_BENCHMARKS:END -->
 
@@ -104,7 +127,7 @@ Every `open()` acquires an exclusive OS-level lock on the cache file. The lock i
 until `close()` is called (or the `using`/`await using` block exits).
 
 ```ts
-await using ctx = await FileHashCache.open(cachePath, rootPath?, files?, version?, fingerprint?, timeoutMs?);
+await using ctx = await FileHashCache.open(cachePath, rootPath?, files?, version?, fingerprint?, lockTimeoutMs?);
 // ctx.status: 'upToDate' | 'changed' | 'stale' | 'missing' | 'statsDirty'
 
 await ctx.write(options?);
@@ -126,12 +149,16 @@ from the old cache, preserving hashes for unchanged files.
 - **Worker-thread-safe**: automatically released when a worker thread is terminated
 - **Zero overhead on the happy path**: lock + open + stat-match in a single native async call
 
+**Note:** The file lock is released on the native pool thread after `write()` completes.
+When the `write()` promise resolves, the JS-side instance is disposed, but other processes
+calling `isLocked()` may briefly still observe the lock before the OS fully releases it.
+
 **Platform implementations:**
 
 - **POSIX (Linux, macOS, FreeBSD)**: `fcntl F_SETLK` / `F_SETLKW` byte-range lock on the cache file
 - **Windows**: `LockFileEx` exclusive lock on the cache file
 
-**Timeout control** (`timeoutMs` parameter):
+**Timeout control** (`lockTimeoutMs` parameter):
 
 - `-1` (default): block until the lock is available
 - `0`: fail immediately if locked
@@ -146,9 +173,26 @@ try {
   cache.close();
 }
 
-// Check if locked without acquiring
+// Check if another process holds the lock (non-blocking)
 FileHashCache.isLocked(path); // → boolean
+
+// Wait until another process releases the lock
+await FileHashCache.waitUnlocked(path, 5000); // → true if unlocked, false on timeout
+await FileHashCache.waitUnlocked(path, -1); // block until unlocked
+await FileHashCache.waitUnlocked(path, 0); // non-blocking check
+
+// Release idle pool threads to free memory (they respawn on demand)
+FileHashCache.poolTrim();
 ```
+
+**Static methods:**
+
+| Method                                           | Description                                                                                                                                                                                           |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `isLocked(cachePath)`                            | Non-blocking check: returns `true` if another process holds the lock. Uses `fcntl F_GETLK` (POSIX) or `LockFileEx` (Windows). Only detects cross-process locks.                                       |
+| `waitUnlocked(cachePath, lockTimeoutMs?)`        | Wait until the lock is released. `-1` = block forever, `0` = non-blocking, `>0` = timeout ms. For infinite waits, blocks in the kernel with zero CPU. Returns `true` if unlocked, `false` on timeout. |
+| `writeNew(cachePath, rootPath, files, options?)` | Write a brand-new cache without reading the old one. Useful when you know a full rebuild is needed.                                                                                                   |
+| `poolTrim()`                                     | Wake idle native pool threads so they self-terminate and free memory. Threads respawn automatically when new work arrives.                                                                            |
 
 ### Example: Simple build cache
 
@@ -213,22 +257,22 @@ hood, but they are fully usable on their own.
 
 | Scenario             | Mean              | Hz          | Throughput | Relative        |
 | -------------------- | ----------------- | ----------- | ---------- | --------------- |
-| native               | 0.04 ms (41.8 µs) | 23 932 op/s | 4.7 GB/s   | **6.6× faster** |
-| Node.js crypto (md5) | 0.3 ms (275.0 µs) | 3 637 op/s  | 718 MB/s   | baseline        |
+| native               | 0.04 ms (41.8 µs) | 23 945 op/s | 4.7 GB/s   | **6.5× faster** |
+| Node.js crypto (md5) | 0.3 ms (273.5 µs) | 3 656 op/s  | 721 MB/s   | baseline        |
 
 **medium file (~49.9 KB):**
 
 | Scenario             | Mean              | Hz          | Throughput | Relative        |
 | -------------------- | ----------------- | ----------- | ---------- | --------------- |
-| native               | 0.03 ms (26.7 µs) | 37 435 op/s | 1.9 GB/s   | **4.1× faster** |
-| Node.js crypto (md5) | 0.1 ms (109.3 µs) | 9 149 op/s  | 457 MB/s   | baseline        |
+| native               | 0.03 ms (27.1 µs) | 36 847 op/s | 1.8 GB/s   | **4.1× faster** |
+| Node.js crypto (md5) | 0.1 ms (110.5 µs) | 9 049 op/s  | 452 MB/s   | baseline        |
 
 **small file (~1.0 KB):**
 
 | Scenario             | Mean              | Hz          | Relative        |
 | -------------------- | ----------------- | ----------- | --------------- |
-| native               | 0.03 ms (26.1 µs) | 38 313 op/s | **2.2× faster** |
-| Node.js crypto (md5) | 0.06 ms (57.6 µs) | 17 363 op/s | baseline        |
+| native               | 0.03 ms (27.6 µs) | 36 251 op/s | **2.1× faster** |
+| Node.js crypto (md5) | 0.06 ms (57.6 µs) | 17 348 op/s | baseline        |
 
 <!-- HASHFILE_BENCHMARKS:END -->
 
@@ -238,8 +282,8 @@ hood, but they are fully usable on their own.
 
 | Scenario             | Mean                  | Hz       | Throughput | Relative        |
 | -------------------- | --------------------- | -------- | ---------- | --------------- |
-| native               | 7.0 ms (7 016.5 µs)   | 143 op/s | 3.5 GB/s   | **5.0× faster** |
-| Node.js crypto (md5) | 35.2 ms (35 179.3 µs) | 28 op/s  | 702 MB/s   | baseline        |
+| native               | 7.0 ms (6 982.9 µs)   | 143 op/s | 3.5 GB/s   | **5.1× faster** |
+| Node.js crypto (md5) | 35.8 ms (35 768.3 µs) | 28 op/s  | 691 MB/s   | baseline        |
 
 <!-- BENCHMARKS:END -->
 
@@ -251,15 +295,15 @@ hood, but they are fully usable on their own.
 
 | Scenario           | Mean              | Hz           | Throughput | Relative         |
 | ------------------ | ----------------- | ------------ | ---------- | ---------------- |
-| native XXH3-128    | 0.001 ms (1.3 µs) | 743 570 op/s | 48.7 GB/s  | **49.5× faster** |
-| Node.js crypto md5 | 0.07 ms (66.5 µs) | 15 035 op/s  | 985 MB/s   | baseline         |
+| native XXH3-128    | 0.001 ms (1.4 µs) | 730 628 op/s | 47.9 GB/s  | **48.6× faster** |
+| Node.js crypto md5 | 0.07 ms (66.5 µs) | 15 031 op/s  | 985 MB/s   | baseline         |
 
 **1 MB buffer:**
 
 | Scenario           | Mean                | Hz          | Throughput | Relative         |
 | ------------------ | ------------------- | ----------- | ---------- | ---------------- |
-| native XXH3-128    | 0.02 ms (21.0 µs)   | 47 598 op/s | 49.9 GB/s  | **50.3× faster** |
-| Node.js crypto md5 | 1.1 ms (1 055.8 µs) | 947 op/s    | 993 MB/s   | baseline         |
+| native XXH3-128    | 0.02 ms (21.5 µs)   | 46 580 op/s | 48.8 GB/s  | **49.3× faster** |
+| Node.js crypto md5 | 1.1 ms (1 059.4 µs) | 944 op/s    | 990 MB/s   | baseline         |
 
 <!-- HASH_BUFFER_BENCHMARKS:END -->
 
@@ -333,29 +377,29 @@ compressed data and pass it to the decompression function.
 
 | Scenario                | Ratio | Mean              | Hz           | Throughput | Relative        |
 | ----------------------- | ----- | ----------------- | ------------ | ---------- | --------------- |
-| native LZ4              | 0.7%  | 0.003 ms (3.3 µs) | 303 677 op/s | 19.9 GB/s  | **7.3× faster** |
-| Node.js deflate level=1 | 1.0%  | 0.02 ms (23.9 µs) | 41 769 op/s  | 2.7 GB/s   | baseline        |
+| native LZ4              | 0.7%  | 0.003 ms (3.4 µs) | 296 194 op/s | 19.4 GB/s  | **7.2× faster** |
+| Node.js deflate level=1 | 1.0%  | 0.02 ms (24.4 µs) | 40 987 op/s  | 2.7 GB/s   | baseline        |
 
 **decompress 64 KB:**
 
 | Scenario        | Mean              | Hz           | Throughput | Relative        |
 | --------------- | ----------------- | ------------ | ---------- | --------------- |
-| native LZ4      | 0.003 ms (2.7 µs) | 373 163 op/s | 24.5 GB/s  | **3.4× faster** |
-| Node.js deflate | 0.009 ms (9.1 µs) | 109 783 op/s | 7.2 GB/s   | baseline        |
+| native LZ4      | 0.003 ms (3.0 µs) | 338 458 op/s | 22.2 GB/s  | **3.7× faster** |
+| Node.js deflate | 0.01 ms (11.1 µs) | 90 267 op/s  | 5.9 GB/s   | baseline        |
 
 **compress 1 MB:**
 
 | Scenario                | Ratio | Mean              | Hz          | Throughput | Relative        |
 | ----------------------- | ----- | ----------------- | ----------- | ---------- | --------------- |
-| native LZ4              | 0.4%  | 0.03 ms (33.1 µs) | 30 206 op/s | 31.7 GB/s  | **9.7× faster** |
-| Node.js deflate level=1 | 0.7%  | 0.3 ms (322.1 µs) | 3 105 op/s  | 3.3 GB/s   | baseline        |
+| native LZ4              | 0.4%  | 0.03 ms (33.6 µs) | 29 746 op/s | 31.2 GB/s  | **9.8× faster** |
+| Node.js deflate level=1 | 0.7%  | 0.3 ms (327.8 µs) | 3 051 op/s  | 3.2 GB/s   | baseline        |
 
 **decompress 1 MB:**
 
 | Scenario        | Mean              | Hz          | Throughput | Relative        |
 | --------------- | ----------------- | ----------- | ---------- | --------------- |
-| native LZ4      | 0.03 ms (32.2 µs) | 31 101 op/s | 32.6 GB/s  | **3.4× faster** |
-| Node.js deflate | 0.1 ms (110.9 µs) | 9 021 op/s  | 9.5 GB/s   | baseline        |
+| native LZ4      | 0.03 ms (32.6 µs) | 30 705 op/s | 32.2 GB/s  | **2.9× faster** |
+| Node.js deflate | 0.10 ms (95.5 µs) | 10 476 op/s | 11.0 GB/s  | baseline        |
 
 <!-- LZ4_BENCHMARKS:END -->
 
@@ -397,6 +441,15 @@ console.log(decompressed.toString()); // "Hello, LZ4!"
 | `findCommonRootPath(files, baseRoot?, allowedRoot?)` | Longest common parent directory of file paths          |
 | `normalizeFilePaths(rootPath, files)`                | Resolve, sort, deduplicate paths relative to root      |
 | `toRelativePath(rootPath, filePath)`                 | Single path → clean unix-style relative path (or null) |
+
+---
+
+## Environment Variables
+
+| Variable                            | Default     | Description                                                                                                                                                     |
+| ----------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FAST_FS_HASH_ISA`                  | auto-detect | Override SIMD variant: `avx512`, `avx2`, or `baseline` (x64 only)                                                                                               |
+| `FAST_FS_HASH_POOL_IDLE_TIMEOUT_MS` | `15000`     | Idle timeout for native pool threads (1–3600000 ms). Threads self-terminate after this duration with no work. They respawn automatically when new work arrives. |
 
 ---
 

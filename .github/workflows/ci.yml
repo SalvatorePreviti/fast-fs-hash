@@ -13,9 +13,15 @@ name: CI
 
 on:
   push:
-    branches: [main, publish]
+    branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Run publish pipeline (build, dry-run, publish)"
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -285,7 +291,7 @@ jobs:
   #
   publish-dry-run:
     name: Verify publish (dry-run)
-    if: github.ref == 'refs/heads/publish'
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
     needs: [lint-and-test, build-native, build-freebsd, test-musl]
     runs-on: ubuntu-latest
     steps:

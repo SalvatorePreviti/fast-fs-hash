@@ -18,8 +18,6 @@
 #include "../ParsedUserData.h"
 #include "AddonWorker.h"
 
-#include <lz4.h>
-
 namespace fast_fs_hash {
 
   class CacheWriter final : public AddonWorker {
@@ -37,19 +35,25 @@ namespace fast_fs_hash {
       std::string cachePath,
       std::string rootPath,
       ParsedUserData && ud,
-      int32_t fileHandle) :
+      FfshFile && lockedFile,
+      const volatile uint8_t * cancelByte = nullptr,
+      Napi::ObjectReference && cancelRef = {}) :
       AddonWorker(env, deferred),
       cachePath_(std::move(cachePath)),
       rootPath_(std::move(rootPath)),
       dataRef_(std::move(dataRef)),
       pathsRef_(std::move(pathsRef)),
+      cancelRef_(std::move(cancelRef)),
       dataBuf_(dataBuf),
       dataLen_(dataLen),
       encodedPaths_(encodedPaths),
       encodedLen_(encodedLen),
       fileCount_(fileCount),
       ud_(std::move(ud)),
-      fileHandle_(fileHandle) {}
+      lockedFile_(std::move(lockedFile)),
+      cancelByte_(cancelByte) {}
+
+    ~CacheWriter() override { this->cancel(); }
 
     void Execute() override {
       uint8_t * buf = this->dataBuf_;
@@ -65,7 +69,7 @@ namespace fast_fs_hash {
 
         if (!sameFiles) {
           if (!this->buildRemappedBuf_(prevHdr, oldFc, newFc)) {
-            return;
+            return;  // buildRemappedBuf_ already called signalAndClose_
           }
           buf = this->newBuf_.ptr;
           len = this->newBuf_.len;
@@ -88,6 +92,7 @@ namespace fast_fs_hash {
     // GC refs (prevent JS buffer collection while worker is in-flight)
     Napi::ObjectReference dataRef_;
     Napi::ObjectReference pathsRef_;
+    Napi::ObjectReference cancelRef_;
 
     // Inputs from JS
     uint8_t * dataBuf_;
@@ -96,7 +101,32 @@ namespace fast_fs_hash {
     size_t encodedLen_;
     uint32_t fileCount_;
     ParsedUserData ud_;
-    int32_t fileHandle_;  // Extracted from dataBuf by JS before queuing (JS writes -1 to dataBuf)
+    FfshFile lockedFile_;  // RAII locked fd. Destructor closes if not already closed.
+    const volatile uint8_t * cancelByte_;
+
+   public:
+    /** Cancel the hash phase (from any thread). The file write is NOT cancelled. */
+    void cancel() noexcept { this->cancelled_.store(true, std::memory_order_release); }
+
+   private:
+    std::atomic<bool> cancelled_{false};
+
+    FSH_FORCE_INLINE bool isCancelled_() const noexcept {
+      return this->cancelled_.load(std::memory_order_relaxed) || (this->cancelByte_ && *this->cancelByte_ != 0);
+    }
+
+    /** Signal completion and close fd on the current (pool) thread.
+     *  Moves lockedFile_ to a stack local so the JS-thread destructor is a no-op,
+     *  then signals, then the local destructs — closing the fd after signal. */
+    void signalAndClose_() noexcept {
+      FfshFile f(std::move(this->lockedFile_));
+      this->signal();
+    }
+
+    void signalAndClose_(const char * error) noexcept {
+      FfshFile f(std::move(this->lockedFile_));
+      this->signal(error);
+    }
 
     // Remap output (owned, freed on destruction)
     OwnedBuf<> newBuf_;
@@ -125,7 +155,7 @@ namespace fast_fs_hash {
       this->newBuf_ = buildCacheDataBuf(this->encodedPaths_, this->encodedLen_, newFc, udCount, udPLen);
 
       if (!this->newBuf_) {
-        this->signal("cacheWrite: failed to build dataBuf");
+        this->signalAndClose_("cacheWrite: failed to build dataBuf");
         return false;
       }
 
@@ -136,7 +166,7 @@ namespace fast_fs_hash {
       newHdr->userValue1 = prevHdr->userValue1;
       newHdr->userValue2 = prevHdr->userValue2;
       newHdr->userValue3 = prevHdr->userValue3;
-      newHdr->setFileHandle(FFSH_FILE_HANDLE_INVALID);  // Handle is owned by fileHandle_ field
+      newHdr->setFileHandle(FFSH_FILE_HANDLE_INVALID);  // Handle is owned by lockedFile_ field
       newHdr->status = static_cast<uint32_t>(CacheStatus::CHANGED);
 
       // Merge-join: copy matched entries from old, stamp CACHE_S_HAS_OLD
@@ -160,7 +190,7 @@ namespace fast_fs_hash {
 
     void completeAndWrite_(uint8_t * dbuf, size_t dlen) noexcept {
       if (dlen < CacheHeader::SIZE) [[unlikely]] {
-        this->signal();
+        this->signalAndClose_();
         return;
       }
 
@@ -168,7 +198,7 @@ namespace fast_fs_hash {
       const uint32_t fc = hdr->fileCount;
 
       if (!hdr->validateLimits()) [[unlikely]] {
-        this->signal();
+        this->signalAndClose_();
         return;
       }
 
@@ -189,7 +219,7 @@ namespace fast_fs_hash {
 
       if (workNeeded == 0) {
         this->writeFile_(dbuf, hdr, fc);
-        this->signal();
+        this->signalAndClose_();
         return;
       }
 
@@ -209,132 +239,14 @@ namespace fast_fs_hash {
     static void onHashDone_(CacheWriter * self) {
       auto * buf = self->dataBuf_;
       self->writeFile_(buf, headerOf(buf), self->writerFc_);
-      self->signal();
+      self->signalAndClose_();
     }
 
     void writeFile_(uint8_t * buf, CacheHeader * hdr, uint32_t fc) noexcept {
-      const size_t udCount = this->ud_.count();
-      const auto * udItems = this->ud_.data();
-      const bool hasUd = udCount > 0 && udCount <= CACHE_MAX_FILE_COUNT && udItems;
-
-      // Compute ud sizes
-      size_t dirSize = 0;
-      size_t udPayloadsLen = 0;
-      if (hasUd) {
-        dirSize = udCount * 4;
-        uint32_t cumulative = 0;
-        for (size_t i = 0; i < udCount; ++i) {
-          cumulative += static_cast<uint32_t>(udItems[i].len);
-        }
-        udPayloadsLen = cumulative;
-      }
-
-      // Snapshot old udItemCount before overwriting (needed for pathEnds/paths offset)
+      // Snapshot old udItemCount before assembleAndWriteCache overwrites it
+      // (needed for correct pathEnds/paths offset in the in-memory layout).
       const uint32_t oldUdCount = hdr->udItemCount;
-      hdr->udItemCount = static_cast<uint32_t>(udCount);
-      hdr->udPayloadsLen = static_cast<uint32_t>(udPayloadsLen);
-
-      const uint32_t * inMemPe = pathEndsOf(buf, fc, oldUdCount);
-      const uint8_t * inMemPaths = pathsOf(buf, fc, oldUdCount);
-      const uint32_t inMemPathsLen = hdr->pathsLen;
-      const size_t entriesLen = static_cast<size_t>(fc) * CacheEntry::STRIDE;
-      const size_t peSize = static_cast<size_t>(fc) * 4;
-
-      const size_t bodyTotal = entriesLen + dirSize + peSize + inMemPathsLen + udPayloadsLen;
-      OwnedBuf<> body = OwnedBuf<>::alloc(bodyTotal);
-      if (!body) [[unlikely]] {
-        return;
-      }
-
-      // Copy entries and strip ino state bits (must be 0 on disk)
-      uint8_t * dst = body.ptr;
-      memcpy(dst, entriesOf(buf), entriesLen);
-      auto * diskEntries = reinterpret_cast<CacheEntry *>(dst);
-      for (uint32_t i = 0; i < fc; ++i) {
-        diskEntries[i].ino &= INO_VALUE_MASK;
-      }
-      dst += entriesLen;
-
-      // Build ud directory inline
-      if (hasUd) {
-        uint32_t cumulative = 0;
-        for (size_t i = 0; i < udCount; ++i) {
-          cumulative += static_cast<uint32_t>(udItems[i].len);
-          memcpy(dst + i * 4, &cumulative, 4);
-        }
-        dst += dirSize;
-      }
-
-      memcpy(dst, inMemPe, peSize);
-      dst += peSize;
-      memcpy(dst, inMemPaths, inMemPathsLen);
-      dst += inMemPathsLen;
-
-      for (size_t i = 0; i < udCount; ++i) {
-        const size_t itemLen = udItems[i].len;
-        if (itemLen > 0) {
-          memcpy(dst, udItems[i].ptr, itemLen);
-          dst += itemLen;
-        }
-      }
-
-      // LZ4 compress and write directly to the locked fd
-      this->compressAndWrite_(hdr, body.ptr, bodyTotal);
-    }
-
-    void compressAndWrite_(CacheHeader * hdr, const uint8_t * body, size_t bodyLen) noexcept {
-      // File handle was extracted from dataBuf by JS and passed as a constructor param.
-      // JS wrote -1 into dataBuf before queuing, so close() is a no-op during the await.
-      const FfshFileHandle lh = static_cast<FfshFileHandle>(this->fileHandle_);
-
-      if (bodyLen > CACHE_MAX_BODY_SIZE || bodyLen > static_cast<size_t>(LZ4_MAX_INPUT_SIZE)) [[unlikely]] {
-        this->addon->closeHeldFileHandle(lh);
-        return;
-      }
-
-      // Prepare the in-memory header fields that must be clean on disk
-      hdr->magic = CacheHeader::MAGIC;
-      hdr->status = 0;
-
-      const int srcSize = static_cast<int>(bodyLen);
-      const int maxCompressed = LZ4_compressBound(srcSize);
-      const size_t totalFileSize = CacheHeader::SIZE + static_cast<size_t>(maxCompressed);
-      OwnedBuf<> outBuf = OwnedBuf<>::alloc(totalFileSize);
-      if (!outBuf) [[unlikely]] {
-        this->addon->closeHeldFileHandle(lh);
-        return;
-      }
-
-      // Copy header to disk buffer, then reset the in-memory-only fields in the copy
-      memcpy(outBuf.ptr, hdr, CacheHeader::SIZE);
-      headerOf(outBuf.ptr)->fileHandle = FFSH_FILE_HANDLE_INVALID;
-
-      const int compressedSize = LZ4_compress_fast(
-        reinterpret_cast<const char *>(body),
-        reinterpret_cast<char *>(outBuf.ptr + CacheHeader::SIZE),
-        srcSize,
-        maxCompressed,
-        2);
-
-      if (compressedSize <= 0) [[unlikely]] {
-        this->addon->closeHeldFileHandle(lh);
-        return;
-      }
-
-      const size_t actualFileSize = CacheHeader::SIZE + static_cast<size_t>(compressedSize);
-
-      // Write directly to the locked fd: seek to 0, write, truncate
-      FfshFile out = FfshFile::from_file_handle(lh);
-      if (!out) [[unlikely]] {
-        return;  // lh was -1, nothing to close
-      }
-
-      out.preallocate(actualFileSize);
-      this->writeSuccess_ = out.seek(0) && out.write_all(outBuf.ptr, actualFileSize) && out.truncate(actualFileSize);
-
-      // Release FfshFile ownership, then close via AddonData (unregister + close under mutex).
-      out.release();
-      this->addon->closeHeldFileHandle(lh);
+      this->writeSuccess_ = assembleAndWriteCache(buf, hdr, fc, oldUdCount, this->ud_, this->lockedFile_);
     }
 
     static void remapEntries_(
@@ -410,7 +322,7 @@ namespace fast_fs_hash {
       const size_t maxSegCap = FSH_MAX_PATH > resolver.prefix_len + 1 ? FSH_MAX_PATH - resolver.prefix_len - 1 : 0;
 
       for (;;) {
-        if (this->addon->pool.is_shutdown()) [[unlikely]] {
+        if (this->isCancelled_() || this->addon->pool.is_shutdown()) [[unlikely]] {
           break;
         }
         const size_t baseIdx = this->nextIndex_.fetch_add(workBatch, std::memory_order_relaxed);

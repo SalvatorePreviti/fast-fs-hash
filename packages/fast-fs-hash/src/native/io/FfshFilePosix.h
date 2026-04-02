@@ -81,7 +81,7 @@ namespace fast_fs_hash {
     /** Returns true if the file was opened successfully. */
     FSH_FORCE_INLINE explicit operator bool() const noexcept { return this->fd >= 0; }
 
-    /** Close the fd. Safe to call multiple times. */
+    /** Close the fd (releases any fcntl lock). Safe to call multiple times. */
     inline void close() noexcept {
       if (this->fd >= 0) {
         close_fd(this->fd);
@@ -89,7 +89,7 @@ namespace fast_fs_hash {
       }
     }
 
-    /** Release ownership of the fd without closing. */
+    /** Release ownership of the fd without closing. Caller is responsible for closing. */
     inline int release() noexcept {
       const int f = this->fd;
       this->fd = -1;
@@ -97,14 +97,50 @@ namespace fast_fs_hash {
     }
 
     /**
+     * Lock cancellation token — allows another thread to interrupt a blocking
+     * fcntl F_SETLKW by closing the fd, causing EBADF.
+     *
+     * Usage: set(fd) before blocking fcntl, clear() after it returns.
+     * Another thread calls fire() to close the fd and interrupt the wait.
+     * Thread-safe — fire() is callable from any thread (e.g. shutdown).
+     */
+    struct LockCancel : NonCopyable {
+      std::atomic<int> fd_{-1};
+      std::atomic<bool> fired_{false};
+      const volatile uint8_t * cancelByte_ = nullptr;
+
+      void set(int lockFd) noexcept { this->fd_.store(lockFd, std::memory_order_release); }
+
+      void clear() noexcept { this->fd_.store(-1, std::memory_order_release); }
+
+      bool is_fired() const noexcept {
+        return this->fired_.load(std::memory_order_acquire) || (this->cancelByte_ && *this->cancelByte_ != 0);
+      }
+
+      /** Close the fd to interrupt a blocked fcntl. Safe to call multiple times. */
+      void fire() noexcept {
+        this->fired_.store(true, std::memory_order_release);
+        const int f = this->fd_.exchange(-1, std::memory_order_acq_rel);
+        if (f >= 0) {
+          ::close(f);
+        }
+      }
+    };
+
+    /**
      * Open-or-create a cache file and acquire an exclusive fcntl lock.
      *
      * @param path      Cache file path.
      * @param timeoutMs -1 = block forever, 0 = non-blocking try, >0 = timeout in ms.
      * @param outError  Set to an error string on failure.
+     * @param cancel    Optional LockCancel — fire() closes the fd to interrupt blocking fcntl.
      * @return FfshFile with the locked fd, or invalid on failure.
      */
-    static FSH_NO_INLINE FfshFile open_locked(const char * path, int timeoutMs, const char *& outError) noexcept {
+    static FSH_NO_INLINE FfshFile open_locked(
+      const char * path,
+      int timeoutMs,
+      const char *& outError,
+      LockCancel * cancel = nullptr) noexcept {
       outError = nullptr;
       FfshFile f;
 
@@ -130,52 +166,54 @@ namespace fast_fs_hash {
           return f;
         }
       } else if (timeoutMs < 0) {
-        if (fcntl_lock_(f.fd, F_SETLKW) != 0) [[unlikely]] {
-          f.close();
-          outError = "CacheLock: fcntl F_SETLKW failed";
-          return f;
+        if (!cancel) {
+          // Simple infinite wait — no cancellation needed.
+          if (fcntl_lock_(f.fd, F_SETLKW) != 0) [[unlikely]] {
+            f.close();
+            outError = "CacheLock: failed to acquire exclusive lock";
+            return f;
+          }
+        } else if (cancel->cancelByte_) {
+          // Infinite wait with cancelByte: poll with cancel check (cancelByte can't
+          // close the fd, so we can't use F_SETLKW — poll with INT_MAX timeout instead).
+          if (poll_lock_(f.fd, F_WRLCK, INT_MAX, cancel) != 0) [[unlikely]] {
+            f.close();
+            outError = cancel->is_fired() ? "CacheLock: lock acquisition cancelled"
+                                          : "CacheLock: failed to acquire exclusive lock";
+            return f;
+          }
+        } else {
+          // Infinite wait with LockCancel (no cancelByte): register fd with LockCancel
+          // so fire() can close it from another thread, causing EBADF.
+          if (fcntl_lock_cancellable_(f.fd, F_WRLCK, cancel) != 0) [[unlikely]] {
+            if (cancel->is_fired()) {
+              f.fd = -1;  // fire() already closed — disown to prevent double-close
+              outError = "CacheLock: lock acquisition cancelled";
+            } else {
+              f.close();
+              outError = "CacheLock: failed to acquire exclusive lock";
+            }
+            return f;
+          }
         }
       } else {
-        struct timespec start;
-        clock_gettime(CLOCK_MONOTONIC, &start);
-        int sleepUs = 500;
-
-        for (;;) {
-          if (fcntl_lock_(f.fd, F_SETLK) == 0) [[likely]] {
-            break;
+        // Finite timeout: poll with exponential backoff (+ optional cancel check).
+        if (poll_lock_(f.fd, F_WRLCK, timeoutMs, cancel) != 0) [[unlikely]] {
+          f.close();
+          if (cancel && cancel->is_fired()) {
+            outError = "CacheLock: lock acquisition cancelled";
+          } else {
+            outError = "CacheLock: timed out waiting for exclusive lock";
           }
-          if (errno != EAGAIN && errno != EACCES) [[unlikely]] {
-            f.close();
-            outError = "CacheLock: fcntl failed";
-            return f;
-          }
-
-          struct timespec now;
-          clock_gettime(CLOCK_MONOTONIC, &now);
-          const int64_t elapsedMs = (now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) / 1000000;
-          if (elapsedMs >= static_cast<int64_t>(timeoutMs)) [[unlikely]] {
-            f.close();
-            outError = "CacheLock: timeout waiting for cache lock";
-            return f;
-          }
-
-          const struct timespec ts = {0, static_cast<long>(sleepUs) * 1000L};
-          ::nanosleep(&ts, nullptr);
-          if (sleepUs < 50000) {
-            sleepUs += sleepUs / 2;
-          }
+          return f;
         }
       }
 
       return f;
     }
 
-    /** Convert this FfshFile to a FfshFileHandle (the fd itself). Releases ownership. */
-    FSH_FORCE_INLINE FfshFileHandle to_file_handle() noexcept {
-      const FfshFileHandle h = static_cast<FfshFileHandle>(this->fd);
-      this->fd = -1;
-      return h;
-    }
+    /** Convert this FfshFile to a FfshFileHandle (the raw fd). Releases ownership. */
+    FSH_FORCE_INLINE FfshFileHandle to_file_handle() noexcept { return static_cast<FfshFileHandle>(this->release()); }
 
     /** Create an FfshFile from a FfshFileHandle. Takes ownership. */
     static FSH_FORCE_INLINE FfshFile from_file_handle(FfshFileHandle handle) noexcept {
@@ -184,21 +222,6 @@ namespace fast_fs_hash {
         f.fd = static_cast<int>(handle);
       }
       return f;
-    }
-
-    /** Release a FfshFileHandle (unlock + close). */
-    static inline void release_file_handle(FfshFileHandle handle) noexcept {
-      if (handle == FFSH_FILE_HANDLE_INVALID) [[unlikely]] {
-        return;
-      }
-      const int fd = static_cast<int>(handle);
-      struct flock fl{};
-      fl.l_type = F_UNLCK;
-      fl.l_whence = SEEK_SET;
-      fl.l_start = 0;
-      fl.l_len = 1;
-      ::fcntl(fd, F_SETLK, &fl);
-      ::close(fd);
     }
 
     /** Non-blocking check: returns true if the file is currently locked by another holder. */
@@ -221,6 +244,55 @@ namespace fast_fs_hash {
         return false;
       }
       return fl.l_type != F_UNLCK;
+    }
+
+    /**
+     * Wait until the file is no longer exclusively locked, or timeout/cancellation.
+     *
+     * Uses F_SETLKW (shared read lock) — the kernel blocks with zero CPU until
+     * the exclusive holder releases. Cancellable via LockCancel::fire() which
+     * closes the fd, causing fcntl to return EBADF.
+     *
+     * @param cachePath  File path.
+     * @param timeoutMs  -1 = block forever, 0 = non-blocking, >0 = timeout in ms.
+     * @param cancel     Optional LockCancel — fire() closes the fd to interrupt.
+     * @return true if the file is (now) unlocked, false on timeout/cancel/error.
+     */
+    static FSH_NO_INLINE bool wait_unlocked(
+      const char * cachePath, int timeoutMs, LockCancel * cancel = nullptr) noexcept {
+      if (!cachePath || cachePath[0] == '\0') [[unlikely]] {
+        return true;
+      }
+      const int fd = ::open(cachePath, O_RDONLY | O_CLOEXEC, 0);
+      if (fd < 0) [[unlikely]] {
+        return true;  // Can't open → not locked (or doesn't exist)
+      }
+
+      bool acquired = false;
+      bool fd_stolen = false;  // true if fire() already closed our fd
+      if (timeoutMs == 0) {
+        acquired = fcntl_lock_rd_(fd, F_SETLK) == 0;
+      } else if (timeoutMs < 0) {
+        if (!cancel) {
+          acquired = fcntl_lock_rd_(fd, F_SETLKW) == 0;
+        } else if (cancel->cancelByte_) {
+          // cancelByte present — poll instead of blocking F_SETLKW.
+          acquired = poll_lock_(fd, F_RDLCK, INT_MAX, cancel) == 0;
+        } else {
+          // fire() can close the fd from another thread → track fd_stolen.
+          acquired = fcntl_lock_cancellable_(fd, F_RDLCK, cancel) == 0;
+          fd_stolen = cancel->is_fired();
+        }
+      } else {
+        acquired = poll_lock_(fd, F_RDLCK, timeoutMs, cancel) == 0;
+      }
+
+      // close() releases the fcntl lock — no explicit F_UNLCK needed.
+      // Skip if fire() already closed the fd (only possible via fcntl_lock_cancellable_).
+      if (!fd_stolen) {
+        ::close(fd);
+      }
+      return acquired;
     }
 
     /**
@@ -344,10 +416,10 @@ namespace fast_fs_hash {
 #  endif
     }
 
-    /** Apply or try an exclusive fcntl lock on byte 0 of fd. */
-    static FSH_FORCE_INLINE int fcntl_lock_(int fd, int cmd) noexcept {
+    /** Apply or try a fcntl lock on byte 0 of fd. Retries on EINTR. */
+    static FSH_FORCE_INLINE int fcntl_lock_type_(int fd, int cmd, short lock_type) noexcept {
       struct flock fl{};
-      fl.l_type = F_WRLCK;
+      fl.l_type = lock_type;
       fl.l_whence = SEEK_SET;
       fl.l_start = 0;
       fl.l_len = 1;
@@ -360,6 +432,84 @@ namespace fast_fs_hash {
           continue;
         }
         return -1;
+      }
+    }
+
+    static FSH_FORCE_INLINE int fcntl_lock_(int fd, int cmd) noexcept { return fcntl_lock_type_(fd, cmd, F_WRLCK); }
+    static FSH_FORCE_INLINE int fcntl_lock_rd_(int fd, int cmd) noexcept { return fcntl_lock_type_(fd, cmd, F_RDLCK); }
+
+    /**
+     * Blocking lock (F_SETLKW) with cancellation via fd-close.
+     * Registers the fd with LockCancel so fire() can close it from another thread.
+     * Retries on EINTR (spurious signals) unless fire() was called.
+     * Returns 0 on success, -1 on cancel or error.
+     */
+    static FSH_NO_INLINE int fcntl_lock_cancellable_(int fd, short lock_type, LockCancel * cancel) noexcept {
+      cancel->set(fd);
+      struct flock fl{};
+      fl.l_type = lock_type;
+      fl.l_whence = SEEK_SET;
+      fl.l_start = 0;
+      fl.l_len = 1;
+      for (;;) {
+        const int rc = ::fcntl(fd, F_SETLKW, &fl);
+        if (rc == 0) [[likely]] {
+          cancel->clear();
+          return 0;
+        }
+        // EBADF = fire() closed our fd (cancellation). EINTR = spurious signal.
+        if (errno == EINTR && !cancel->is_fired()) [[unlikely]] {
+          continue;
+        }
+        cancel->clear();
+        return -1;
+      }
+    }
+
+    /**
+     * Polling lock acquisition with timeout and optional cancellation.
+     * Non-blocking F_SETLK with exponential backoff (1ms → 50ms).
+     * Returns 0 on success, -1 on timeout/cancel/error.
+     */
+    static FSH_NO_INLINE void poll_sleep_(int & sleepMs) noexcept {
+      struct timespec ts{};
+      ts.tv_nsec = sleepMs * 1000000L;
+      ::nanosleep(&ts, nullptr);
+      if (sleepMs < 50) {
+        sleepMs = sleepMs * 2;
+        if (sleepMs > 50) {
+          sleepMs = 50;
+        }
+      }
+    }
+
+    static FSH_NO_INLINE int poll_lock_(
+      int fd, short lock_type, int timeoutMs, LockCancel * cancel = nullptr) noexcept {
+      struct flock fl{};
+      fl.l_type = lock_type;
+      fl.l_whence = SEEK_SET;
+      fl.l_start = 0;
+      fl.l_len = 1;
+      struct timespec start;
+      clock_gettime(CLOCK_MONOTONIC, &start);
+      int sleepMs = 1;
+      for (;;) {
+        if (::fcntl(fd, F_SETLK, &fl) == 0) {
+          return 0;
+        }
+        if (errno != EAGAIN && errno != EACCES) [[unlikely]] {
+          return -1;
+        }
+        if (cancel && cancel->is_fired()) [[unlikely]] {
+          return -1;
+        }
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        const int64_t elapsedMs = (now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) / 1000000;
+        if (elapsedMs >= static_cast<int64_t>(timeoutMs)) [[unlikely]] {
+          return -1;
+        }
+        poll_sleep_(sleepMs);
       }
     }
 

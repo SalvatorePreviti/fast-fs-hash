@@ -12,8 +12,7 @@
 #include "ThreadPool.h"
 #include "../io/FfshFile.h"
 #include <uv.h>
-#include <mutex>
-#include <unordered_set>
+#include <unordered_map>
 
 namespace fast_fs_hash {
 
@@ -26,28 +25,36 @@ namespace fast_fs_hash {
     std::atomic<int> pending{0};
     napi_async_cleanup_hook_handle cleanup_hook_ = nullptr;
 
-    /** Held file handles for this env — released on cleanup. Protected by heldFileHandlesMutex. */
-    std::mutex heldFileHandlesMutex;
-    std::unordered_set<FfshFileHandle> heldFileHandles;
+    /** RAII file handles held by JS for this env — closed on cleanup or erase.
+     *  All operations are JS-thread-only (register in OnOK, take/close in binding/close). */
+    std::unordered_map<int32_t, FfshFile> heldFiles;
 
-    /** Register a held file handle for cleanup on env teardown. */
-    void registerHeldFileHandle(FfshFileHandle h) noexcept {
-      std::lock_guard<std::mutex> guard(this->heldFileHandlesMutex);
-      this->heldFileHandles.insert(h);
+    /** Register a locked file, transferring ownership to this map. JS thread only.
+     *  Returns the raw fd value (for embedding in the JS-side header). */
+    int32_t registerHeldFile(FfshFile && f) noexcept {
+      const int32_t key = static_cast<int32_t>(f.fd);
+      if (key < 0) [[unlikely]] return FFSH_FILE_HANDLE_INVALID;
+      this->heldFiles.emplace(key, std::move(f));
+      return key;
     }
 
-    /** Unregister and close a held file handle. Thread-safe.
-     *  Erase under mutex (fast), close outside (avoids blocking other registrations). */
-    void closeHeldFileHandle(FfshFileHandle h) noexcept {
-      if (h == FFSH_FILE_HANDLE_INVALID) [[unlikely]] return;
-      bool found;
-      {
-        std::lock_guard<std::mutex> guard(this->heldFileHandlesMutex);
-        found = this->heldFileHandles.erase(h) > 0;
+    /** Take ownership of a held file back from JS (e.g. before passing to CacheWriter).
+     *  Returns the FfshFile (caller owns it). JS thread only. */
+    FfshFile takeHeldFile(int32_t key) noexcept {
+      FfshFile result;
+      if (key == FFSH_FILE_HANDLE_INVALID) [[unlikely]] return result;
+      auto it = this->heldFiles.find(key);
+      if (it != this->heldFiles.end()) {
+        result = std::move(it->second);
+        this->heldFiles.erase(it);
       }
-      if (found) {
-        FfshFile::release_file_handle(h);
-      }
+      return result;
+    }
+
+    /** Close and unregister a held file. JS thread only. */
+    void closeHeldFile(int32_t key) noexcept {
+      if (key == FFSH_FILE_HANDLE_INVALID) [[unlikely]] return;
+      this->heldFiles.erase(key);  // FfshFile destructor closes the fd
     }
 
     static FSH_FORCE_INLINE AddonData * get(napi_env env) noexcept {

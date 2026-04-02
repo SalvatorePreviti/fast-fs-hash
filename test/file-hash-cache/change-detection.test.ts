@@ -59,10 +59,14 @@ describe("FileHashCache change detection [native]", () => {
       const files = [fixtureFile("a.txt")];
 
       await withCache([cp, FIXTURE_DIR, files, 1], async (ctx1) => {
+        expect(ctx1.needsWrite).toBe(true);
         await ctx1.write();
       });
 
-      const status = await withCache([cp, FIXTURE_DIR, files, 2], (ctx2) => ctx2.status);
+      const status = await withCache([cp, FIXTURE_DIR, files, 2], (ctx2) => {
+        expect(ctx2.needsWrite).toBe(true);
+        return ctx2.status;
+      });
       expect(status).toBe("stale");
     });
 
@@ -75,7 +79,10 @@ describe("FileHashCache change detection [native]", () => {
         await ctx1.write();
       });
 
-      const status = await withCache([cp, FIXTURE_DIR, files, 1, fp], (ctx2) => ctx2.status);
+      const status = await withCache([cp, FIXTURE_DIR, files, 1, fp], (ctx2) => {
+        expect(ctx2.needsWrite).toBe(false);
+        return ctx2.status;
+      });
       expect(status).toBe("upToDate");
     });
 
@@ -89,7 +96,10 @@ describe("FileHashCache change detection [native]", () => {
         await ctx1.write();
       });
 
-      const status = await withCache([cp, FIXTURE_DIR, files, 1, fp2], (ctx2) => ctx2.status);
+      const status = await withCache([cp, FIXTURE_DIR, files, 1, fp2], (ctx2) => {
+        expect(ctx2.needsWrite).toBe(true);
+        return ctx2.status;
+      });
       expect(status).toBe("stale");
     });
   });
@@ -110,7 +120,10 @@ describe("FileHashCache change detection [native]", () => {
       await sleep(50);
       writeFileSync(mutable, "modified content");
 
-      const status = await withCache([cp, FIXTURE_DIR, files, 1], (ctx2) => ctx2.status);
+      const status = await withCache([cp, FIXTURE_DIR, files, 1], (ctx2) => {
+        expect(ctx2.needsWrite).toBe(true);
+        return ctx2.status;
+      });
       expect(status).toBe("changed");
     });
 
@@ -313,7 +326,10 @@ describe("FileHashCache change detection [native]", () => {
       const cp = cachePath("corrupt");
       writeFileSync(cp, Buffer.alloc(64, 0xff));
 
-      const status = await withCache([cp, FIXTURE_DIR, [fixtureFile("a.txt")], 1], (ctx) => ctx.status);
+      const status = await withCache([cp, FIXTURE_DIR, [fixtureFile("a.txt")], 1], (ctx) => {
+        expect(ctx.needsWrite).toBe(true);
+        return ctx.status;
+      });
       expect(status).not.toBe("upToDate");
     });
 
@@ -357,6 +373,78 @@ describe("FileHashCache change detection [native]", () => {
           await ctx.write();
         });
       }
+    });
+  });
+
+  //  - needsWrite getter
+
+  describe("needsWrite getter", () => {
+    it("returns false for upToDate", async () => {
+      const cp = cachePath("nw-utd");
+      const files = [fixtureFile("a.txt")];
+      await withCache([cp, FIXTURE_DIR, files, 1], async (ctx) => {
+        await ctx.write();
+      });
+      await withCache([cp, FIXTURE_DIR, files, 1], (ctx) => {
+        expect(ctx.status).toBe("upToDate");
+        expect(ctx.needsWrite).toBe(false);
+      });
+    });
+
+    it("returns true for missing (no cache file)", async () => {
+      const cp = cachePath("nw-miss");
+      const files = [fixtureFile("a.txt")];
+      await withCache([cp, FIXTURE_DIR, files, 1], (ctx) => {
+        expect(ctx.status).toBe("missing");
+        expect(ctx.needsWrite).toBe(true);
+      });
+    });
+
+    it("returns true for changed", async () => {
+      const cp = cachePath("nw-chg");
+      const mutable = fixtureFile("nw-chg.txt");
+      writeFileSync(mutable, "before");
+      const files = [mutable];
+      await withCache([cp, FIXTURE_DIR, files, 1], async (ctx) => {
+        await ctx.write();
+      });
+      await sleep(50);
+      writeFileSync(mutable, "after-changed");
+      await withCache([cp, FIXTURE_DIR, files, 1], (ctx) => {
+        expect(ctx.status).toBe("changed");
+        expect(ctx.needsWrite).toBe(true);
+      });
+    });
+
+    it("returns true for stale", async () => {
+      const cp = cachePath("nw-stale");
+      const files = [fixtureFile("a.txt")];
+      await withCache([cp, FIXTURE_DIR, files, 1], async (ctx) => {
+        await ctx.write();
+      });
+      await withCache([cp, FIXTURE_DIR, files, 99], (ctx) => {
+        expect(ctx.status).toBe("stale");
+        expect(ctx.needsWrite).toBe(true);
+      });
+    });
+
+    it("returns false after close()", async () => {
+      const cp = cachePath("nw-closed");
+      const files = [fixtureFile("a.txt")];
+      const ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
+      expect(ctx.needsWrite).toBe(true); // missing
+      ctx.close();
+      expect(ctx.needsWrite).toBe(false);
+    });
+
+    it("returns false after write()", async () => {
+      const cp = cachePath("nw-written");
+      const files = [fixtureFile("a.txt")];
+      const ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
+      expect(ctx.needsWrite).toBe(true);
+      await ctx.write();
+      expect(ctx.needsWrite).toBe(false);
+      expect(ctx.disposed).toBe(true);
     });
   });
 

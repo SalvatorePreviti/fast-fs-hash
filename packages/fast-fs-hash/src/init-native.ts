@@ -59,7 +59,8 @@ export interface BindingExportNative {
     rootPath: string,
     version: number,
     fingerprint: Uint8Array | null,
-    timeoutMs: number
+    lockTimeoutMs: number,
+    cancelBuf?: Uint8Array | null
   ): Promise<Buffer>;
   cacheWrite(
     dataBuf: Uint8Array,
@@ -67,7 +68,8 @@ export interface BindingExportNative {
     fileCount: number,
     cachePath: string,
     rootPath: string,
-    userData: readonly Uint8Array[] | null | undefined
+    userData: readonly Uint8Array[] | null | undefined,
+    cancelBuf?: Uint8Array | null
   ): Promise<number>;
   cacheWriteNew(
     encodedPaths: Uint8Array,
@@ -81,10 +83,13 @@ export interface BindingExportNative {
     userValue2: number,
     userValue3: number,
     userData: readonly Uint8Array[] | null | undefined,
-    timeoutMs: number
+    lockTimeoutMs: number,
+    cancelBuf?: Uint8Array | null
   ): Promise<number>;
   cacheClose(handle: number): void;
   cacheIsLocked(cachePath: string): boolean;
+  cacheWaitUnlocked(cachePath: string, lockTimeoutMs?: number, cancelBuf?: Uint8Array | null): Promise<boolean>;
+  poolTrim(): void;
   lz4CompressBlock(input: Uint8Array, offset?: number, length?: number): Buffer;
   lz4CompressBlockTo(
     input: Uint8Array,

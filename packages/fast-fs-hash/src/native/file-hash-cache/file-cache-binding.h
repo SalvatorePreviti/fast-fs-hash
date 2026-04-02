@@ -4,19 +4,20 @@
 #include "CacheOpen.h"
 #include "CacheWriter.h"
 #include "CacheWriteNew.h"
+#include "CacheWaitUnlocked.h"
 #include "../napi-helpers.h"
 
 namespace fast_fs_hash {
 
   /**
-   * cacheOpen(encodedPaths, fileCount, cachePath, rootPath, version, fingerprint, timeoutMs)
+   * cacheOpen(encodedPaths, fileCount, cachePath, rootPath, version, fingerprint, lockTimeoutMs)
    *   → Promise<Buffer<dataBuf>>
    *
    * Acquires an exclusive lock on the cache file, then reads, validates
    * version/fingerprint/file list, and stat-matches entries.
    * Resolves with a single Buffer whose header (offset 76) holds the FfshFileHandle
    * in-memory (-1 before any disk write).
-   * Runs on a pool thread. Lock acquisition is bounded by timeoutMs.
+   * Runs on a pool thread. Lock acquisition is bounded by lockTimeoutMs.
    */
   inline Napi::Value bindCacheOpen(const Napi::CallbackInfo & info) {
     auto env = info.Env();
@@ -58,6 +59,16 @@ namespace fast_fs_hash {
       napi_get_value_int32(env, info[6], &timeoutMs);
     }
 
+    const volatile uint8_t * cancelByte = nullptr;
+    Napi::ObjectReference cancelRef;
+    if (info.Length() > 7 && info[7].IsTypedArray()) {
+      auto cbBuf = info[7].As<Napi::Uint8Array>();
+      if (cbBuf.ByteLength() >= 1) {
+        cancelByte = cbBuf.Data();
+        cancelRef = Napi::ObjectReference::New(cbBuf, 1);
+      }
+    }
+
     auto paths_ref = Napi::ObjectReference::New(pathsBuf, 1);
 
     auto * worker = new CacheOpen(
@@ -71,7 +82,9 @@ namespace fast_fs_hash {
       std::move(rootPath),
       version,
       fingerprint,
-      timeoutMs);
+      timeoutMs,
+      cancelByte,
+      std::move(cancelRef));
     worker->Start();
     return deferred.Promise();
   }
@@ -120,10 +133,26 @@ namespace fast_fs_hash {
       return env.Undefined();
     }
 
+    const volatile uint8_t * cancelByte = nullptr;
+    Napi::ObjectReference cancelRef;
+    if (info.Length() > 6 && info[6].IsTypedArray()) {
+      auto cbBuf = info[6].As<Napi::Uint8Array>();
+      if (cbBuf.ByteLength() >= 1) {
+        cancelByte = cbBuf.Data();
+        cancelRef = Napi::ObjectReference::New(cbBuf, 1);
+      }
+    }
+
     // Extract file handle from dataBuf header and invalidate it — close() becomes a no-op.
+    // Take the FfshFile from AddonData: JS no longer owns this fd, CacheWriter does.
     auto * hdr = reinterpret_cast<CacheHeader *>(dataPtr);
     const int32_t fileHandle = hdr->getFileHandle();
     hdr->setFileHandle(FFSH_FILE_HANDLE_INVALID);
+    FfshFile lockedFile;
+    auto * addon = AddonData::get(env);
+    if (addon) [[likely]] {
+      lockedFile = addon->takeHeldFile(fileHandle);
+    }
 
     auto * worker = new CacheWriter(
       env,
@@ -138,14 +167,16 @@ namespace fast_fs_hash {
       std::move(cachePath),
       std::move(rootPath),
       std::move(ud),
-      fileHandle);
+      std::move(lockedFile),
+      cancelByte,
+      std::move(cancelRef));
     worker->Queue();
     return deferred.Promise();
   }
 
   /**
    * cacheWriteNew(encodedPaths, fileCount, cachePath, rootPath, version, fingerprint,
-   *               userValue0, userValue1, userValue2, userValue3, userData, timeoutMs)
+   *               userValue0, userValue1, userValue2, userValue3, userData, lockTimeoutMs)
    *   → Promise<number>
    *
    * Static write: acquires an exclusive lock, hashes all files, LZ4-compresses,
@@ -198,6 +229,16 @@ namespace fast_fs_hash {
       napi_get_value_int32(env, info[11], &timeoutMs);
     }
 
+    const volatile uint8_t * cancelByte = nullptr;
+    Napi::ObjectReference cancelRef;
+    if (info.Length() > 12 && info[12].IsTypedArray()) {
+      auto cbBuf = info[12].As<Napi::Uint8Array>();
+      if (cbBuf.ByteLength() >= 1) {
+        cancelByte = cbBuf.Data();
+        cancelRef = Napi::ObjectReference::New(cbBuf, 1);
+      }
+    }
+
     auto * worker = new CacheWriteNew(
       env,
       deferred,
@@ -211,7 +252,9 @@ namespace fast_fs_hash {
       fingerprint,
       uv0, uv1, uv2, uv3,
       std::move(ud),
-      timeoutMs);
+      timeoutMs,
+      cancelByte,
+      std::move(cancelRef));
     worker->Start();
     return deferred.Promise();
   }
@@ -230,7 +273,7 @@ namespace fast_fs_hash {
     }
     auto * addon = AddonData::get(env);
     if (addon) [[likely]] {
-      addon->closeHeldFileHandle(handle);
+      addon->closeHeldFile(handle);
     }
     return env.Undefined();
   }
@@ -246,6 +289,37 @@ namespace fast_fs_hash {
     size_t copied = 0;
     napi_get_value_string_utf8(env, info[0], cachePath, sizeof(cachePath), &copied);
     return Napi::Boolean::New(env, FfshFile::is_locked(cachePath));
+  }
+
+  inline Napi::Value bindCacheWaitUnlocked(const Napi::CallbackInfo & info) {
+    auto env = info.Env();
+    auto deferred = Napi::Promise::Deferred::New(env);
+
+    if (info.Length() < 1 || !info[0].IsString()) [[unlikely]] {
+      Napi::TypeError::New(env, "cacheWaitUnlocked: expected (cachePath: string)").ThrowAsJavaScriptException();
+      return env.Undefined();
+    }
+
+    std::string cachePath = info[0].As<Napi::String>().Utf8Value();
+
+    int timeoutMs = -1;
+    if (info.Length() >= 2 && !info[1].IsNull() && !info[1].IsUndefined()) {
+      napi_get_value_int32(env, info[1], &timeoutMs);
+    }
+
+    const volatile uint8_t * cancelByte = nullptr;
+    Napi::ObjectReference cancelRef;
+    if (info.Length() > 2 && info[2].IsTypedArray()) {
+      auto cbBuf = info[2].As<Napi::Uint8Array>();
+      if (cbBuf.ByteLength() >= 1) {
+        cancelByte = cbBuf.Data();
+        cancelRef = Napi::ObjectReference::New(cbBuf, 1);
+      }
+    }
+
+    auto * worker = new CacheWaitUnlocked(env, deferred, std::move(cachePath), timeoutMs, cancelByte, std::move(cancelRef));
+    worker->Queue();
+    return deferred.Promise();
   }
 
 }  // namespace fast_fs_hash

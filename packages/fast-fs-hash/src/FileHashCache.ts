@@ -31,13 +31,14 @@ import { encodeNormalizedPaths, normalizeFilePaths, pathResolve } from "./utils"
 /**
  * Cache status.
  *
- * - `'upToDate'`   — nothing changed.
- * - `'statsDirty'` — stat metadata updated but content unchanged (cache needs rewrite).
- * - `'changed'`    — content changed (size or hash mismatch in at least one file).
- * - `'stale'`      — version/fingerprint mismatch (entries not trusted).
- * - `'missing'`    — no cache file or unreadable/corrupt.
+ * - `'upToDate'`    — nothing changed.
+ * - `'statsDirty'`  — stat metadata updated but content unchanged (cache needs rewrite).
+ * - `'changed'`     — content changed (size or hash mismatch in at least one file).
+ * - `'stale'`       — version/fingerprint mismatch (entries not trusted).
+ * - `'missing'`     — no cache file or unreadable/corrupt.
+ * - `'lockFailed'`  — could not acquire the lock (timeout, non-blocking, or cancelled).
  */
-export type CacheStatus = "upToDate" | "statsDirty" | "changed" | "stale" | "missing";
+export type CacheStatus = "upToDate" | "statsDirty" | "changed" | "stale" | "missing" | "lockFailed";
 
 /** Options for {@link FileHashCache.write}. */
 export interface FileHashCacheWriteOptions {
@@ -60,6 +61,9 @@ export interface FileHashCacheWriteOptions {
   /** Opaque binary payloads stored alongside the cache. Pass `null` to clear.
    *  Omit (`undefined`) to preserve old user data from the existing cache. */
   userData?: readonly Uint8Array[] | null;
+  /** AbortSignal to cancel the hash phase. The file write itself is never cancelled.
+   *  Ignored when the instance holds a lock (only used by the {@link FileHashCache.writeNew} fallback). */
+  signal?: AbortSignal | null;
 }
 
 /** Options for the static {@link FileHashCache.writeNew}. */
@@ -80,14 +84,43 @@ export interface FileHashCacheWriteNewOptions {
   userData?: readonly Uint8Array[] | null;
   /** Lock acquisition timeout in ms. `-1` (default) = block forever,
    *  `0` = non-blocking try, `>0` = timeout. */
-  timeoutMs?: number;
+  lockTimeoutMs?: number;
+  /** AbortSignal to cancel the lock wait and/or hash phase.
+   *  The file write itself is never cancelled — once hashing completes, the write
+   *  always runs to completion to avoid corrupting the cache file. */
+  signal?: AbortSignal | null;
 }
 
-const STATUS_MAP: readonly CacheStatus[] = ["upToDate", "changed", "stale", "missing", "statsDirty"];
+const STATUS_MAP: readonly CacheStatus[] = ["upToDate", "changed", "stale", "missing", "statsDirty", "lockFailed"];
 
-const { cacheOpen, cacheWrite, cacheWriteNew, cacheIsLocked, cacheClose } = binding;
+const { cacheOpen, cacheWrite, cacheWriteNew, cacheIsLocked, cacheWaitUnlocked, cacheClose, poolTrim } = binding;
 
 const _emptyBuf = Buffer.alloc(0);
+const _cancelledBuf = new Uint8Array([1]);
+
+type CancelBuf = Uint8Array & { _sig?: AbortSignal; _cb?: () => void };
+
+function cancelBufFromSignal(signal: AbortSignal): CancelBuf {
+  if (signal.aborted) {
+    return _cancelledBuf;
+  }
+  const buf: CancelBuf = new Uint8Array(1);
+  const cb = () => {
+    buf[0] = 1;
+  };
+  signal.addEventListener("abort", cb, { once: true });
+  buf._sig = signal;
+  buf._cb = cb;
+  return buf;
+}
+
+function cleanupCancelBuf(buf: CancelBuf | null | undefined): void {
+  if (buf?._sig) {
+    buf._sig.removeEventListener("abort", buf._cb as EventListener);
+    buf._sig = undefined;
+    buf._cb = undefined;
+  }
+}
 
 function statusFromInt(n: number): CacheStatus {
   return STATUS_MAP[n] ?? "missing";
@@ -194,6 +227,8 @@ export class FileHashCache {
 
   readonly #dataBuf: Buffer;
   readonly #encodedPaths: Buffer;
+  readonly #lockTimeoutMs: number;
+  readonly #cancelBuf: Uint8Array | null;
   #files: readonly string[] | null;
   #closed: boolean;
 
@@ -205,10 +240,14 @@ export class FileHashCache {
     fingerprint: Uint8Array | null,
     dataBuf: Buffer,
     encodedPaths: Buffer,
-    openFiles: readonly string[] | null
+    openFiles: readonly string[] | null,
+    lockTimeoutMs: number,
+    cancelBuf: Uint8Array | null
   ) {
     this.#encodedPaths = encodedPaths;
     this.#files = openFiles ?? null;
+    this.#lockTimeoutMs = lockTimeoutMs;
+    this.#cancelBuf = cancelBuf;
     this.cachePath = cachePath;
     this.version = version;
     this.rootPath = rootPath;
@@ -240,6 +279,13 @@ export class FileHashCache {
   /** True once {@link close} has been called. Subsequent calls are no-ops. */
   public get disposed(): boolean {
     return this.#closed;
+  }
+
+  /** True if the cache holds a lock and the status indicates a write is needed.
+   *  False for `'upToDate'`, `'lockFailed'`, or if already disposed. */
+  public get needsWrite(): boolean {
+    const s = this.status;
+    return !this.#closed && s !== "upToDate" && s !== "lockFailed";
   }
 
   /** File paths (relative to rootPath, sorted). */
@@ -287,8 +333,12 @@ export class FileHashCache {
    *   on-disk cache causes `status = 'stale'`. Default: `0`.
    * @param fingerprint 16-byte `Uint8Array` for fast cache rejection. A mismatch causes
    *   `status = 'stale'`. Omit or pass `null` for no fingerprint check.
-   * @param timeoutMs Lock acquisition timeout in ms. `-1` (default) = block forever,
-   *   `0` = non-blocking try, `>0` = timeout.
+   * @param lockTimeoutMs Lock acquisition timeout in ms. `-1` (default) = block forever,
+   *   `0` = non-blocking try, `>0` = timeout. When the lock cannot be acquired,
+   *   the returned instance has `status === 'lockFailed'` instead of throwing.
+   *   You can still call {@link write} on it — it will transparently fall back to
+   *   {@link writeNew} with a fresh lock attempt.
+   * @param signal Optional AbortSignal to cancel the lock wait and/or stat phase.
    */
   public static async open(
     cachePath: string,
@@ -296,7 +346,8 @@ export class FileHashCache {
     files?: Iterable<string> | null,
     version?: number,
     fingerprint?: Uint8Array | null,
-    timeoutMs?: number
+    lockTimeoutMs?: number,
+    signal?: AbortSignal | null
   ): Promise<FileHashCache> {
     const root = resolveRoot(rootPath ?? null, files ?? null);
     const resolvedCachePath = pathResolve(root, cachePath);
@@ -306,9 +357,11 @@ export class FileHashCache {
     const encoded = normalizedFiles ? encodeNormalizedPaths(normalizedFiles) : _emptyBuf;
     const fileCount = normalizedFiles ? normalizedFiles.length : 0;
 
-    const dataBuf = await cacheOpen(encoded, fileCount, resolvedCachePath, root, ver, fp, timeoutMs ?? -1);
+    const timeout = lockTimeoutMs ?? -1;
+    const cancelBuf = signal ? cancelBufFromSignal(signal) : null;
+    const dataBuf = await cacheOpen(encoded, fileCount, resolvedCachePath, root, ver, fp, timeout, cancelBuf);
 
-    return new FileHashCache(resolvedCachePath, ver, root, fp, dataBuf, encoded, normalizedFiles);
+    return new FileHashCache(resolvedCachePath, ver, root, fp, dataBuf, encoded, normalizedFiles, timeout, cancelBuf);
   }
 
   /**
@@ -322,6 +375,7 @@ export class FileHashCache {
       return;
     }
     this.#closed = true;
+    cleanupCancelBuf(this.#cancelBuf);
     const buf = this.#dataBuf;
     const h = buf.readInt32LE(H_FILE_HANDLE);
     buf.writeInt32LE(-1, H_FILE_HANDLE);
@@ -342,11 +396,54 @@ export class FileHashCache {
   }
 
   /**
-   * Check whether any process currently holds an exclusive lock on `cachePath`.
+   * Check whether another process currently holds an exclusive lock on `cachePath`.
    * Non-blocking — does not acquire the lock.
+   *
+   * **POSIX note:** uses `fcntl F_GETLK`, which only detects locks held by *other*
+   * processes. Locks held by the calling process are invisible (standard POSIX behavior).
+   *
    * @param cachePath Path to the cache file to check.
    */
-  public static isLocked: (cachePath: string) => boolean = cacheIsLocked;
+  public static isLocked(cachePath: string): boolean {
+    return cacheIsLocked(pathResolve(cachePath));
+  }
+
+  /**
+   * Wait until the cache file is no longer exclusively locked by another process.
+   *
+   * For infinite wait (`lockTimeoutMs = -1`), blocks a pool thread in the kernel
+   * using `fcntl F_SETLKW` (zero CPU). For finite timeouts, uses a platform-specific
+   * timer to interrupt the blocking lock call.
+   *
+   * **POSIX note:** only detects locks held by *other* processes (same as {@link isLocked}).
+   *
+   * @param cachePath Path to the cache file to wait on.
+   * @param lockTimeoutMs Maximum time to wait in milliseconds.
+   *   `-1` (default) = block until unlocked, `0` = non-blocking check, `>0` = timeout.
+   * @param signal Optional AbortSignal to cancel the wait.
+   * @returns `true` if unlocked, `false` on timeout or cancellation.
+   */
+  public static async waitUnlocked(
+    cachePath: string,
+    lockTimeoutMs?: number,
+    signal?: AbortSignal | null
+  ): Promise<boolean> {
+    if (!signal) {
+      return cacheWaitUnlocked(pathResolve(cachePath), lockTimeoutMs, null);
+    }
+    const cancelBuf = cancelBufFromSignal(signal);
+    try {
+      return await cacheWaitUnlocked(pathResolve(cachePath), lockTimeoutMs, cancelBuf);
+    } finally {
+      cleanupCancelBuf(cancelBuf);
+    }
+  }
+
+  /**
+   * Wake idle pool threads so they can self-terminate and free memory.
+   * Threads with pending work will continue running. This is not a shutdown.
+   */
+  public static poolTrim: () => void = poolTrim;
 
   /**
    * Write a brand-new cache file without reading the old one.
@@ -371,22 +468,29 @@ export class FileHashCache {
   ): Promise<boolean> {
     const root = resolveRoot(rootPath, files);
     const normalizedFiles = normalizeFilePaths(root, files);
-    return (
-      (await cacheWriteNew(
-        encodeNormalizedPaths(normalizedFiles),
-        normalizedFiles.length,
-        pathResolve(root, cachePath),
-        root,
-        (options?.version ?? 0) >>> 0,
-        options?.fingerprint ?? null,
-        options?.userValue0 ?? 0,
-        options?.userValue1 ?? 0,
-        options?.userValue2 ?? 0,
-        options?.userValue3 ?? 0,
-        options?.userData ?? null,
-        options?.timeoutMs ?? -1
-      )) === 0
-    );
+    const sig = options?.signal;
+    const cancelBuf = sig ? cancelBufFromSignal(sig) : null;
+    try {
+      return (
+        (await cacheWriteNew(
+          encodeNormalizedPaths(normalizedFiles),
+          normalizedFiles.length,
+          pathResolve(root, cachePath),
+          root,
+          (options?.version ?? 0) >>> 0,
+          options?.fingerprint ?? null,
+          options?.userValue0 ?? 0,
+          options?.userValue1 ?? 0,
+          options?.userValue2 ?? 0,
+          options?.userValue3 ?? 0,
+          options?.userData ?? null,
+          options?.lockTimeoutMs ?? -1,
+          cancelBuf
+        )) === 0
+      );
+    } finally {
+      cleanupCancelBuf(cancelBuf);
+    }
   }
 
   /**
@@ -399,6 +503,15 @@ export class FileHashCache {
    * If `options.files` is provided, builds a new file list and remaps entries
    * from the current dataBuf (preserving hashes for unchanged files).
    *
+   * If the instance has `status === 'lockFailed'` (lock was not acquired during
+   * {@link open}), this method closes the instance and transparently falls back
+   * to {@link writeNew}, which acquires a fresh lock and writes a new cache file.
+   *
+   * **Note:** The file lock is released asynchronously on the native pool thread
+   * after the write completes. When this promise resolves, the JS-side instance
+   * is disposed, but other processes calling {@link isLocked} may still briefly
+   * observe the lock before the OS fully releases it.
+   *
    * @param options Optional write options: new file list, user values, fingerprint, userData.
    * @throws If this instance has already been closed or written.
    * @returns `true` if the write succeeded, `false` on failure.
@@ -406,6 +519,23 @@ export class FileHashCache {
   public async write(options?: FileHashCacheWriteOptions): Promise<boolean> {
     if (this.#closed) {
       throw new Error("FileHashCache: already closed");
+    }
+
+    if (this.status === "lockFailed") {
+      this.close();
+      const files = options?.files ?? this.files;
+      const root = options?.rootPath ?? this.rootPath;
+      return FileHashCache.writeNew(this.cachePath, typeof root === "string" ? root : null, files, {
+        version: this.version,
+        fingerprint: options?.fingerprint !== undefined ? options.fingerprint : this.fingerprint,
+        userValue0: options?.userValue0 ?? this.userValue0,
+        userValue1: options?.userValue1 ?? this.userValue1,
+        userValue2: options?.userValue2 ?? this.userValue2,
+        userValue3: options?.userValue3 ?? this.userValue3,
+        userData: options?.userData !== undefined ? options.userData : this.userData,
+        lockTimeoutMs: this.#lockTimeoutMs,
+        signal: options?.signal,
+      });
     }
 
     const dataBuf = this.#dataBuf;
@@ -442,6 +572,10 @@ export class FileHashCache {
 
     const ud = options?.userData !== undefined ? options.userData : this.userData;
 
+    const writeSig = options?.signal;
+    const writeCancelBuf = writeSig ? cancelBufFromSignal(writeSig) : null;
+    const cancelBuf = writeCancelBuf ?? this.#cancelBuf;
+
     const resultFiles = options?.files;
     const root = this.rootPath;
     let result: number;
@@ -450,12 +584,13 @@ export class FileHashCache {
         const newRoot = resolveRoot(null, resultFiles, options?.rootPath ?? root);
         const newNormalized = normalizeFilePaths(newRoot, resultFiles);
         const newEncoded = encodeNormalizedPaths(newNormalized);
-        result = await cacheWrite(dataBuf, newEncoded, newNormalized.length, this.cachePath, newRoot, ud);
+        result = await cacheWrite(dataBuf, newEncoded, newNormalized.length, this.cachePath, newRoot, ud, cancelBuf);
       } else {
         const encoded = this.#encodedPaths;
-        result = await cacheWrite(dataBuf, encoded, this.fileCount, this.cachePath, root, ud);
+        result = await cacheWrite(dataBuf, encoded, this.fileCount, this.cachePath, root, ud, cancelBuf);
       }
     } finally {
+      cleanupCancelBuf(writeCancelBuf);
       this.close();
     }
     return result === 0;

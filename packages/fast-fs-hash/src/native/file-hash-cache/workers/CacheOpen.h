@@ -35,11 +35,14 @@ namespace fast_fs_hash {
       std::string rootPath,
       uint32_t version,
       const uint8_t * fingerprint,
-      int timeoutMs) :
+      int timeoutMs,
+      const volatile uint8_t * cancelByte = nullptr,
+      Napi::ObjectReference && cancelRef = {}) :
       AddonWorker(env, deferred),
       cachePath_(std::move(cachePath)),
       rootPath_(std::move(rootPath)),
       pathsRef_(std::move(pathsRef)),
+      cancelRef_(std::move(cancelRef)),
       encodedPaths_(encodedPaths),
       encodedLen_(encodedLen),
       fileCount_(fileCount),
@@ -49,15 +52,25 @@ namespace fast_fs_hash {
       if (fingerprint) {
         memcpy(&this->fingerprint_, fingerprint, 16);
       }
+      this->cancel_.cancelByte_ = cancelByte;
     }
+
+    ~CacheOpen() override { this->cancel_.fire(); }
 
     void Start() { this->Queue(); }
 
     void Execute() override {
+      if (this->cancel_.is_fired()) [[unlikely]] {
+        this->lockFailed_ = true;
+        this->signal();
+        return;
+      }
       const char * error = nullptr;
-      this->lockedFile_ = FfshFile::open_locked(this->cachePath_.c_str(), this->timeoutMs_, error);
+      this->lockedFile_ = FfshFile::open_locked(this->cachePath_.c_str(), this->timeoutMs_, error, &this->cancel_);
       if (!this->lockedFile_) [[unlikely]] {
-        this->signal(error ? error : "CacheLock: failed to acquire lock");
+        // Lock failure → resolve with LOCK_FAILED status (not reject).
+        this->lockFailed_ = true;
+        this->signal();
         return;
       }
       this->doOpen_();
@@ -67,8 +80,18 @@ namespace fast_fs_hash {
       auto env = Napi::Env(this->env);
       Napi::HandleScope scope(env);
 
-      FfshFileHandle fh = this->lockedFile_.to_file_handle();
-      this->addon->registerHeldFileHandle(fh);
+      if (this->lockFailed_) [[unlikely]] {
+        auto buf = Napi::Buffer<uint8_t>::New(env, CacheHeader::SIZE);
+        memset(buf.Data(), 0, CacheHeader::SIZE);
+        auto * hdr = headerOf(buf.Data());
+        hdr->status = static_cast<uint32_t>(CacheStatus::LOCK_FAILED);
+        hdr->fileHandle = FFSH_FILE_HANDLE_INVALID;
+        this->deferred.Resolve(buf);
+        return;
+      }
+
+      // Transfer lock ownership to AddonData (JS now owns the fd via the RAII map).
+      const int32_t fh = this->addon->registerHeldFile(std::move(this->lockedFile_));
 
       auto buf = this->makeDataBuf_(env);
       headerOf(buf.Data())->setFileHandle(fh);
@@ -82,6 +105,7 @@ namespace fast_fs_hash {
 
     // JS refs (prevent GC, never accessed on pool threads)
     Napi::ObjectReference pathsRef_;
+    Napi::ObjectReference cancelRef_;
 
     // Inputs (read once in doOpen_, then done)
     const uint8_t * encodedPaths_;
@@ -91,6 +115,9 @@ namespace fast_fs_hash {
     bool hasFingerprint_;
     Hash128 fingerprint_{};
     int timeoutMs_;
+
+    FfshFile::LockCancel cancel_;
+    bool lockFailed_ = false;
 
     // Locked file handle
     FfshFile lockedFile_;
@@ -258,10 +285,6 @@ namespace fast_fs_hash {
       const int64_t fileSize = this->lockedFile_.fsize();
       if (fileSize < static_cast<int64_t>(CacheHeader::SIZE) || fileSize > static_cast<int64_t>(CACHE_MAX_FILE_SIZE))
         [[unlikely]] {
-        // File too small or too large — treat as missing (but keep the lock)
-        if (fileSize >= 0 && fileSize < static_cast<int64_t>(CacheHeader::SIZE)) {
-          return false;
-        }
         return false;
       }
       const size_t diskSize = static_cast<size_t>(fileSize);
@@ -366,7 +389,7 @@ namespace fast_fs_hash {
         if (this->matchResult_.load(std::memory_order_relaxed) >= MatchResult::CHANGED) [[unlikely]] {
           break;
         }
-        if (this->addon->pool.is_shutdown()) [[unlikely]] {
+        if (this->cancel_.is_fired() || this->addon->pool.is_shutdown()) [[unlikely]] {
           break;
         }
 
@@ -455,11 +478,10 @@ namespace fast_fs_hash {
               const Hash128 oldContentHash = entry.contentHash;
               if (entry.size == 0) {
                 entry.contentHash.from_xxh128(XXH3_128bits(nullptr, 0));
+                entry.ino |= CACHE_S_DONE;
                 if (entry.contentHash == oldContentHash) {
-                  entry.ino |= CACHE_S_DONE;
                   continue;
                 }
-                entry.ino |= CACHE_S_DONE;
                 this->matchResult_.store(MatchResult::CHANGED, std::memory_order_relaxed);
                 goto done;
               }

@@ -149,6 +149,7 @@ namespace fast_fs_hash {
     STALE = 2,
     MISSING = 3,
     STATS_DIRTY = 4,
+    LOCK_FAILED = 5,
   };
 
   static_assert(CacheHeader::SIZE % 16 == 0, "header must be 16-byte aligned for CacheEntry u64/Hash128 fields");
