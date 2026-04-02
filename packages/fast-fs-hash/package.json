@@ -1,6 +1,6 @@
 {
   "name": "fast-fs-hash",
-  "version": "0.0.0",
+  "version": "0.0.0-rc1",
   "description": "Blazing fast filesystem hashing library for Node.js",
   "type": "module",
   "main": "./dist/index.cjs",
