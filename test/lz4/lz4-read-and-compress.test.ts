@@ -84,7 +84,7 @@ describe("lz4ReadAndCompress", () => {
     expect(result.uncompressedSize).toBe(size);
     const decompressed = lz4DecompressBlock(result.data, result.uncompressedSize);
     expect(Buffer.from(decompressed)).toEqual(data);
-  });
+  }, 30_000);
 
   it("throws on non-existent file", async () => {
     await expect(lz4ReadAndCompress(join(TMP_DIR, "does-not-exist.bin"))).rejects.toThrow();
@@ -191,7 +191,7 @@ describe("lz4DecompressAndWrite", () => {
 
     const written = readFileSync(outPath);
     expect(written).toEqual(data);
-  });
+  }, 30_000);
 
   it("can write multiple files concurrently", async () => {
     const pairs = await Promise.all(

@@ -56,12 +56,12 @@ jobs:
             docker-image: node:22-alpine
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           sparse-checkout: test/smoke-test
 
       # Direct (non-Docker) platforms
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         if: ${{ !matrix.use-docker }}
         with:
           node-version: "22"
@@ -95,7 +95,7 @@ jobs:
     name: freebsd-x64
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           sparse-checkout: test/smoke-test
 

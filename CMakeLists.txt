@@ -100,7 +100,16 @@ function(fsh_add_addon SUFFIX ARCH_FLAGS)
         ${CMAKE_JS_SRC}
     )
 
-    target_compile_definitions(${TARGET_NAME} PRIVATE NAPI_DISABLE_CPP_EXCEPTIONS)
+    target_compile_definitions(${TARGET_NAME} PRIVATE
+        NAPI_DISABLE_CPP_EXCEPTIONS
+        # Hide LZ4 symbols — override LZ4's default visibility("default") so
+        # the linker can dead-strip unused functions (we only use compress_default,
+        # compress_fast, decompress_safe, compressBound).
+        LZ4LIB_VISIBILITY=
+        # Disable LZ4 stream allocation functions (createStream, freeStream, etc.)
+        # — we never use them and they pull in malloc/free wrappers.
+        LZ4_STATIC_LINKING_ONLY_DISABLE_MEMORY_ALLOCATION
+    )
     target_link_libraries(${TARGET_NAME} PRIVATE ${CMAKE_JS_LIB})
 
     set_target_properties(${TARGET_NAME} PROPERTIES
