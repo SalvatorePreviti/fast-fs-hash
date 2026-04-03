@@ -15,6 +15,16 @@ namespace fast_fs_hash {
   using FfshFileHandle = int32_t;
   static constexpr FfshFileHandle FFSH_FILE_HANDLE_INVALID = -1;
 
+  /** Byte-range lock sentinel offset (0x7FFFFFFF'00000000, ~9.2 EB).
+   *
+   *  Windows byte-range locks are per-handle: if handle A locks byte 0,
+   *  handle B to the same file gets ERROR_LOCK_VIOLATION when touching byte 0.
+   *  With the two-handle design (lockHandle_ for lock, fd for I/O), the lock
+   *  must NOT overlap actual file data. Placing it at 0x7FFFFFFF'00000000
+   *  ensures no real cache file content will ever reach the locked region. */
+  static constexpr DWORD LOCK_OFFSET_LOW = 0;
+  static constexpr DWORD LOCK_OFFSET_HIGH = 0x7FFFFFFFu;
+
   /**
    * WPath — Windows-only RAII UTF-8 → UTF-16 path converter.
    *
@@ -273,6 +283,30 @@ namespace fast_fs_hash {
       return f;
     }
 
+    /** Open-or-create a file for read/write with mkdir-p. No locking. */
+    static FSH_NO_INLINE FfshFile open_rw(const char * path) noexcept {
+      FfshFile f;
+      if (!path || path[0] == '\0') [[unlikely]] {
+        return f;
+      }
+      wchar_t wpath[FSH_MAX_PATH];
+      const int wlen = path_to_wide_(path, wpath);
+      if (wlen == 0) [[unlikely]] {
+        return f;
+      }
+      HANDLE h = open_with_mkdir_(wpath, wlen, open_rw_handle_);
+      if (h == INVALID_HANDLE_VALUE) [[unlikely]] {
+        return f;
+      }
+      const int crt_fd = _open_osfhandle(reinterpret_cast<intptr_t>(h), _O_RDWR | _O_BINARY);
+      if (crt_fd < 0) [[unlikely]] {
+        CloseHandle(h);
+        return f;
+      }
+      f.fd = crt_fd;
+      return f;
+    }
+
     /** Non-blocking check: returns true if the file is currently locked by another holder. */
     static inline bool is_locked(const char * cachePath) noexcept {
       if (!cachePath || cachePath[0] == '\0') [[unlikely]] {
@@ -295,9 +329,13 @@ namespace fast_fs_hash {
         return false;
       }
       OVERLAPPED ov{};
+      ov.Offset = LOCK_OFFSET_LOW;
+      ov.OffsetHigh = LOCK_OFFSET_HIGH;
       const bool gotLock = LockFileEx(hFile, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov) != FALSE;
       if (gotLock) {
         OVERLAPPED ov2{};
+        ov2.Offset = LOCK_OFFSET_LOW;
+        ov2.OffsetHigh = LOCK_OFFSET_HIGH;
         UnlockFileEx(hFile, 0, 1, 0, &ov2);
       }
       CloseHandle(hFile);
@@ -342,6 +380,8 @@ namespace fast_fs_hash {
 
       if (acquired) {
         OVERLAPPED ov{};
+        ov.Offset = LOCK_OFFSET_LOW;
+        ov.OffsetHigh = LOCK_OFFSET_HIGH;
         UnlockFileEx(hFile, 0, 1, 0, &ov);
       }
       CloseHandle(hFile);
@@ -664,6 +704,8 @@ namespace fast_fs_hash {
 
       if (timeoutMs == 0) {
         OVERLAPPED ov{};
+        ov.Offset = LOCK_OFFSET_LOW;
+        ov.OffsetHigh = LOCK_OFFSET_HIGH;
         return LockFileEx(hFile, lockFlags | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov) != FALSE;
       }
 
@@ -673,6 +715,8 @@ namespace fast_fs_hash {
       }
 
       OVERLAPPED ov{};
+      ov.Offset = LOCK_OFFSET_LOW;
+      ov.OffsetHigh = LOCK_OFFSET_HIGH;
       ov.hEvent = hEvent;
       bool locked = false;
 

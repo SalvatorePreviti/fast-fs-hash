@@ -191,7 +191,7 @@ namespace fast_fs_hash {
         return f;
       }
 
-      f.fd = open_rw_mkdir(path);
+      f.fd = open_rw_mkdir_fd_(path);
       if (f.fd < 0) [[unlikely]] {
         return f;
       }
@@ -223,6 +223,16 @@ namespace fast_fs_hash {
         }
       }
 
+      return f;
+    }
+
+    /** Open-or-create a file for read/write with mkdir-p. No locking. */
+    static FSH_NO_INLINE FfshFile open_rw(const char * path) noexcept {
+      FfshFile f;
+      if (!path || path[0] == '\0') [[unlikely]] {
+        return f;
+      }
+      f.fd = open_rw_mkdir_fd_(path);
       return f;
     }
 
@@ -521,7 +531,7 @@ namespace fast_fs_hash {
 #  endif
     }
 
-    static inline int open_rw(const char * path) noexcept { return ::open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0666); }
+    static inline int open_rw_fd_(const char * path) noexcept { return ::open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0666); }
 
     static inline int mkdir_p(const char * path, size_t len) noexcept {
       char buf[FSH_MAX_PATH];
@@ -542,8 +552,8 @@ namespace fast_fs_hash {
       return (::mkdir(buf, 0777) == 0 || errno == EEXIST) ? 0 : -1;
     }
 
-    static inline int open_rw_mkdir(const char * path) noexcept {
-      int f = open_rw(path);
+    static inline int open_rw_mkdir_fd_(const char * path) noexcept {
+      int f = open_rw_fd_(path);
       if (f >= 0 || errno != ENOENT) [[likely]] {
         return f;
       }
@@ -552,7 +562,7 @@ namespace fast_fs_hash {
       while (sep > 0 && path[sep - 1] != '/')
         --sep;
       if (sep > 1 && mkdir_p(path, sep - 1) == 0) {
-        f = open_rw(path);
+        f = open_rw_fd_(path);
       }
       return f;
     }
