@@ -1,13 +1,15 @@
 # fast-fs-hash — Native addon build configuration
 #
-# Uses cmake-js for Node.js addon compilation. xxHash is included as a
-# git submodule at deps/xxHash (pinned to v0.8.3) and built via its
-# official cmake_unofficial/CMakeLists.txt as a static library.
+# Uses cmake-js for Node.js addon compilation.
 #
-# xxHash SIMD strategy:
-#   x86_64 — 3 binaries: baseline (SSE2), AVX2, AVX-512. Loader picks best at runtime.
-#            All use XXH_INLINE_ALL for full inlining — no dispatch overhead.
-#   ARM64  — single binary with NEON (always available on AArch64).
+# xxHash (v0.8.3, header-only): included via XXH_INLINE_ALL — all functions
+# are static inline, no compiled library needed. On x86_64, separate binaries
+# are built per ISA level (SSE2/AVX2/AVX-512) with the appropriate -march flag,
+# so the compiler auto-vectorizes using the target's SIMD instructions.
+# ARM64 uses NEON (always available on AArch64), single binary.
+#
+# LZ4 (v1.10.0, single-file embed): lz4.c is compiled directly into each
+# addon target. No separate static library.
 #
 # Build:
 #   npm run build:native
@@ -25,38 +27,22 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # Native C++ source directory
 set(NATIVE_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/packages/fast-fs-hash/src/native)
 
-# - xxHash (git submodule, built via its official CMake)
+# - xxHash (v0.8.3, header-only via XXH_INLINE_ALL)
 #
-# xxHash is at deps/xxHash (v0.8.3). We use add_subdirectory to build it
-# as a static library via cmake_unofficial/CMakeLists.txt. In bundled mode
-# (auto-detected), it produces a static `xxhash` target with correct
-# include directories — no install step.
-#
-# IMPORTANT: We deliberately do NOT set xxHash's DISPATCH variable.
-# xxHash's cmake_unofficial uses CMAKE_HOST_SYSTEM_INFORMATION to detect
-# the platform — this returns the HOST arch, not the TARGET arch, which
-# is wrong when cross-compiling (e.g. building ARM64 on an x86_64 host).
-# Similarly, CMAKE_SYSTEM_PROCESSOR reports the HOST arch on Windows with
-# Visual Studio generators.  We derive the true target architecture from
-# CMAKE_GENERATOR_PLATFORM (set by -A on MSVC) when available, falling
-# back to CMAKE_SYSTEM_PROCESSOR for Makefile/Ninja generators. We then
-# add xxh_x86dispatch.c to the xxhash target ourselves, gated on this
-# resolved FSH_TARGET_ARCH variable.
+# XXH_INLINE_ALL in includes.h makes all xxHash functions static inline —
+# no compiled library needed, just the include path.
 
-set(XXHASH_BUILD_XXHSUM OFF CACHE BOOL "" FORCE)  # don't build the CLI tool
-add_subdirectory(deps/xxHash/cmake_unofficial xxhash_build)
+include_directories("${CMAKE_CURRENT_SOURCE_DIR}/deps/xxHash")
 
 # - LZ4 (v1.10.0, single-file embed from deps/lz4)
 #
-# Minimal embed: lz4.c + lz4.h only (block compression/decompression).
-# No SIMD intrinsics — LZ4 relies on compiler auto-vectorization of tight
-# memcpy-based wildcopy loops. LZ4_FAST_DEC_LOOP is auto-enabled on
-# x86_64 and aarch64 for an unrolled fast decompression path.
+# Compiled directly into each addon target. No SIMD intrinsics — LZ4
+# relies on compiler auto-vectorization of tight memcpy-based wildcopy
+# loops. LZ4_FAST_DEC_LOOP is auto-enabled on x86_64 and aarch64.
 # BSD 2-Clause licensed.
 
-add_library(lz4 STATIC "${CMAKE_CURRENT_SOURCE_DIR}/deps/lz4/lz4.c")
-target_include_directories(lz4 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/deps/lz4")
-set_target_properties(lz4 PROPERTIES POSITION_INDEPENDENT_CODE ON)
+set(LZ4_SRC "${CMAKE_CURRENT_SOURCE_DIR}/deps/lz4/lz4.c")
+include_directories("${CMAKE_CURRENT_SOURCE_DIR}/deps/lz4")
 
 # Determine actual TARGET architecture
 #
@@ -72,9 +58,6 @@ else()
     set(FSH_TARGET_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
 endif()
 message(STATUS "Target architecture: ${FSH_TARGET_ARCH}")
-
-# x86_64: no dispatch — we build separate binaries per ISA level.
-# xxh_x86dispatch.c is NOT used. Each variant uses XXH_INLINE_ALL.
 
 # - Node.js / N-API headers
 
@@ -96,7 +79,7 @@ execute_process(
 string(REPLACE "\"" "" NODE_ADDON_API_DIR ${NODE_ADDON_API_DIR})
 include_directories(${NODE_ADDON_API_DIR})
 
-# Native C++ headers (xxHash headers come from the xxhash target)
+# Native C++ headers
 include_directories(${NATIVE_SRC_DIR})
 include_directories(${NATIVE_SRC_DIR}/core)
 include_directories(${NATIVE_SRC_DIR}/io)
@@ -113,11 +96,12 @@ function(fsh_add_addon SUFFIX ARCH_FLAGS)
 
     add_library(${TARGET_NAME} SHARED
         ${NATIVE_SRC_DIR}/binding.cpp
+        ${LZ4_SRC}
         ${CMAKE_JS_SRC}
     )
 
     target_compile_definitions(${TARGET_NAME} PRIVATE NAPI_DISABLE_CPP_EXCEPTIONS)
-    target_link_libraries(${TARGET_NAME} PRIVATE xxhash lz4 ${CMAKE_JS_LIB})
+    target_link_libraries(${TARGET_NAME} PRIVATE ${CMAKE_JS_LIB})
 
     set_target_properties(${TARGET_NAME} PROPERTIES
         PREFIX ""
@@ -149,8 +133,7 @@ endif()
 
 # High-performance build configuration
 #
-# Optimization flags applied to all addon targets + static libraries.
-# Uses a function so x64 multi-variant builds all get the same base flags.
+# Optimization flags applied to all addon targets.
 
 include(CheckCXXCompilerFlag)
 include(CheckCCompilerFlag)
@@ -165,8 +148,6 @@ endif()
 
 if(MSVC)
     set(FSH_C_FLAGS /O2 /Oi /Ot /Oy /GL /GS- /DNDEBUG /Gy /Gw)
-    target_compile_options(xxhash PRIVATE ${FSH_C_FLAGS})
-    target_compile_options(lz4 PRIVATE ${FSH_C_FLAGS})
     foreach(T IN LISTS FSH_ALL_ADDON_TARGETS)
         target_compile_options(${T} PRIVATE
             ${FSH_C_FLAGS}
@@ -187,9 +168,6 @@ else()
         -fno-common
     )
 
-    target_compile_options(xxhash PRIVATE ${FSH_C_FLAGS})
-    target_compile_options(lz4 PRIVATE ${FSH_C_FLAGS})
-
     foreach(T IN LISTS FSH_ALL_ADDON_TARGETS)
         target_compile_options(${T} PRIVATE ${FSH_C_FLAGS})
         target_compile_options(${T} PRIVATE
@@ -199,9 +177,8 @@ else()
         )
     endforeach()
 
-    # LTO (applied to all targets including static libs).
-    # Prefer thin LTO on Apple (Clang), regular LTO elsewhere (musl linker
-    # may not support LLVM thin-LTO bitcode relocations).
+    # LTO — prefer thin LTO on Apple (Clang), regular LTO elsewhere (musl
+    # linker may not support LLVM thin-LTO bitcode relocations).
     if(APPLE)
         check_cxx_compiler_flag("-flto=thin" HAS_THIN_LTO)
         if(HAS_THIN_LTO)
@@ -215,8 +192,6 @@ else()
         endif()
     endif()
     if(FSH_LTO_FLAG)
-        target_compile_options(xxhash PRIVATE ${FSH_LTO_FLAG})
-        target_compile_options(lz4 PRIVATE ${FSH_LTO_FLAG})
         foreach(T IN LISTS FSH_ALL_ADDON_TARGETS)
             target_compile_options(${T} PRIVATE ${FSH_LTO_FLAG})
             target_link_options(${T} PRIVATE ${FSH_LTO_FLAG})
@@ -227,16 +202,12 @@ else()
     if(NOT APPLE)
         check_cxx_compiler_flag("-fno-semantic-interposition" HAS_NO_SEMANTIC_INTERPOSITION)
         if(HAS_NO_SEMANTIC_INTERPOSITION)
-            target_compile_options(xxhash PRIVATE -fno-semantic-interposition)
-            target_compile_options(lz4 PRIVATE -fno-semantic-interposition)
             foreach(T IN LISTS FSH_ALL_ADDON_TARGETS)
                 target_compile_options(${T} PRIVATE -fno-semantic-interposition)
             endforeach()
         endif()
         check_cxx_compiler_flag("-fno-plt" HAS_NO_PLT)
         if(HAS_NO_PLT)
-            target_compile_options(xxhash PRIVATE -fno-plt)
-            target_compile_options(lz4 PRIVATE -fno-plt)
             foreach(T IN LISTS FSH_ALL_ADDON_TARGETS)
                 target_compile_options(${T} PRIVATE -fno-plt)
             endforeach()
@@ -257,4 +228,3 @@ endif()
 # Neither xxHash nor LZ4 uses ARM crypto extensions (AES/SHA), so +crypto
 # would only let the compiler auto-vectorize with AES instructions, which
 # provides no benefit here and causes SIGILL under QEMU user-mode emulation.
-

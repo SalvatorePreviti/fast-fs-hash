@@ -95,21 +95,21 @@ jobs:
             use-qemu: true
             docker-platform: linux/arm64
             docker-image: node:22-bookworm
-            docker-setup: apt-get update && apt-get install -y cmake make g++ python3 git
+            docker-setup: apt-get update && apt-get install -y --no-install-recommends cmake make g++
 
           #  - Linux musl (build in Docker, test in separate job)
           - target: linux-x64-musl
             os: ubuntu-24.04
             use-docker: true
             docker-image: node:22-alpine
-            docker-setup: apk add --no-cache cmake make g++ python3 linux-headers git
+            docker-setup: apk add --no-cache cmake make g++
           - target: linux-arm64-musl
             os: ubuntu-24.04
             use-docker: true
             use-qemu: true
             docker-platform: linux/arm64
             docker-image: node:22-alpine
-            docker-setup: apk add --no-cache cmake make g++ python3 linux-headers git
+            docker-setup: apk add --no-cache cmake make g++
 
     steps:
       - uses: actions/checkout@v4
@@ -224,7 +224,6 @@ jobs:
             -e CI=true \
             -e FAST_FS_HASH_NO_NATIVE=fatal \
             -v "$PWD:/workspace" -w /workspace node:22-alpine sh -c '
-            apk add --no-cache git &&
             npm ci &&
             npm run build:ts &&
 
