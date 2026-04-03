@@ -170,47 +170,41 @@ namespace fast_fs_hash {
     /**
      * Open-or-create a cache file and acquire an exclusive fcntl lock.
      *
+     * Returns an invalid FfshFile on failure (lock contention, timeout, cancel, I/O error).
+     * Callers check `if (!file)` — lock failure is a normal status, not an exception.
+     *
      * @param path      Cache file path.
      * @param timeoutMs -1 = block forever, 0 = non-blocking try, >0 = timeout in ms.
-     * @param outError  Set to an error string on failure.
      * @param cancel    Optional LockCancel — fire() closes the fd to interrupt blocking fcntl.
      * @return FfshFile with the locked fd, or invalid on failure.
      */
     static FSH_NO_INLINE FfshFile open_locked(
       const char * path,
       int timeoutMs,
-      const char *& outError,
       LockCancel * cancel = nullptr) noexcept {
-      outError = nullptr;
       FfshFile f;
 
       if (!path || path[0] == '\0') [[unlikely]] {
-        outError = "CacheLock: empty cache path";
         return f;
       }
       if (strlen(path) >= FSH_MAX_PATH) [[unlikely]] {
-        outError = "CacheLock: cache path too long";
         return f;
       }
 
       f.fd = open_rw_mkdir(path);
       if (f.fd < 0) [[unlikely]] {
-        outError = "CacheLock: failed to open cache file for locking";
         return f;
       }
 
       if (timeoutMs == 0) {
         if (fcntl_lock_(f.fd, F_SETLK) != 0) [[unlikely]] {
           f.close();
-          outError = "CacheLock: lock not available";
           return f;
         }
       } else if (timeoutMs < 0) {
         if (!cancel) {
-          // Simple infinite wait — no cancellation needed.
           if (fcntl_lock_(f.fd, F_SETLKW) != 0) [[unlikely]] {
             f.close();
-            outError = "CacheLock: failed to acquire exclusive lock";
             return f;
           }
         } else {
@@ -219,36 +213,16 @@ namespace fast_fs_hash {
           // with a cancel token — pool.shutdown() must be able to join all threads.
           if (poll_lock_(f.fd, F_WRLCK, INT_MAX, cancel) != 0) [[unlikely]] {
             f.close();
-            outError = cancel->is_fired() ? "CacheLock: lock acquisition cancelled"
-                                          : "CacheLock: failed to acquire exclusive lock";
             return f;
           }
         }
       } else {
-        // Finite timeout: poll with exponential backoff (+ optional cancel check).
         if (poll_lock_(f.fd, F_WRLCK, timeoutMs, cancel) != 0) [[unlikely]] {
           f.close();
-          if (cancel && cancel->is_fired()) {
-            outError = "CacheLock: lock acquisition cancelled";
-          } else {
-            outError = "CacheLock: timed out waiting for exclusive lock";
-          }
           return f;
         }
       }
 
-      return f;
-    }
-
-    /** Convert this FfshFile to a FfshFileHandle (the raw fd). Releases ownership. */
-    FSH_FORCE_INLINE FfshFileHandle to_file_handle() noexcept { return static_cast<FfshFileHandle>(this->release()); }
-
-    /** Create an FfshFile from a FfshFileHandle. Takes ownership. */
-    static FSH_FORCE_INLINE FfshFile from_file_handle(FfshFileHandle handle) noexcept {
-      FfshFile f;
-      if (handle != FFSH_FILE_HANDLE_INVALID) [[likely]] {
-        f.fd = static_cast<int>(handle);
-      }
       return f;
     }
 

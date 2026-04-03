@@ -60,21 +60,19 @@ namespace fast_fs_hash {
   /**
    * RAII file handle — Windows implementation.
    *
-   * Uses Win32 handles internally, wrapped in CRT fds for uniform int fd API.
+   * Two-handle design for cache lock files:
+   *   - lockHandle_: opened with FILE_FLAG_OVERLAPPED for async LockFileEx
+   *     (supports WaitForSingleObject timeout + CancelIoEx cancellation).
+   *   - fd (CRT fd): opened without FILE_FLAG_OVERLAPPED for synchronous
+   *     ReadFile/WriteFile via the standard I/O methods.
+   *   The lock handle only holds the byte-range lock; all I/O goes through fd.
+   *   Closing lockHandle_ releases the lock.
    *
    * Read-only constructors (hashing hot path):
    *   CreateFileW + FILE_FLAG_SEQUENTIAL_SCAN, wrapped to CRT fd.
-   *   Accepts pre-converted UTF-16 paths (via WPath) or raw UTF-8.
+   *   No lock handle needed.
    *
-   * Read/write factories (cache files):
-   *   open_locked().
-   *
-   * Locking:
-   *   open_locked() opens/creates the file and acquires an exclusive
-   *   LockFileEx byte-range lock. The lock is released when close() is called
-   *   or the handle is closed. Supports blocking, non-blocking, and timeout.
-   *
-   * On destruction: closes fd.
+   * On destruction: closes fd, then closes lockHandle_ (releasing the lock).
    */
   class FfshFile : NonCopyable {
    public:
@@ -97,17 +95,28 @@ namespace fast_fs_hash {
       if (this->fd >= 0) {
         close_fd(this->fd);
       }
+      if (this->lockHandle_ != INVALID_HANDLE_VALUE) {
+        CloseHandle(this->lockHandle_);
+      }
     }
 
-    FfshFile(FfshFile && other) noexcept : fd(other.fd) { other.fd = -1; }
+    FfshFile(FfshFile && other) noexcept : fd(other.fd), lockHandle_(other.lockHandle_) {
+      other.fd = -1;
+      other.lockHandle_ = INVALID_HANDLE_VALUE;
+    }
 
     FfshFile & operator=(FfshFile && other) noexcept {
       if (this != &other) {
         if (this->fd >= 0) {
           close_fd(this->fd);
         }
+        if (this->lockHandle_ != INVALID_HANDLE_VALUE) {
+          CloseHandle(this->lockHandle_);
+        }
         this->fd = other.fd;
+        this->lockHandle_ = other.lockHandle_;
         other.fd = -1;
+        other.lockHandle_ = INVALID_HANDLE_VALUE;
       }
       return *this;
     }
@@ -115,15 +124,20 @@ namespace fast_fs_hash {
     /** Returns true if the file was opened successfully. */
     FSH_FORCE_INLINE explicit operator bool() const noexcept { return this->fd >= 0; }
 
-    /** Close the fd (releases any LockFileEx lock). Safe to call multiple times. */
+    /** Close the fd and lock handle. Safe to call multiple times. */
     inline void close() noexcept {
       if (this->fd >= 0) {
         close_fd(this->fd);
         this->fd = -1;
       }
+      if (this->lockHandle_ != INVALID_HANDLE_VALUE) {
+        CloseHandle(this->lockHandle_);
+        this->lockHandle_ = INVALID_HANDLE_VALUE;
+      }
     }
 
-    /** Release ownership of the fd without closing. Caller is responsible for closing. */
+    /** Release ownership of the fd without closing. Caller is responsible for closing.
+     *  NOTE: lockHandle_ is NOT released — it stays with this object. */
     inline int release() noexcept {
       const int f = this->fd;
       this->fd = -1;
@@ -132,25 +146,35 @@ namespace fast_fs_hash {
 
     /**
      * Lock cancellation token — cross-platform interface.
-     * On Win32, fire() sets a flag checked by the polling loop (CancelIoEx handles
-     * the actual interruption). On POSIX, fire() closes the fd to interrupt fcntl.
+     * On Win32, fire() sets a flag; the lock wait loop uses CancelIoEx to
+     * interrupt a pending overlapped LockFileEx. On POSIX, fire() closes
+     * the fd to interrupt fcntl.
      */
     struct LockCancelList;
 
     struct LockCancel : NonCopyable {
+      std::atomic<HANDLE> lockHandle_{INVALID_HANDLE_VALUE};
       std::atomic<bool> fired_{false};
       const volatile uint8_t * cancelByte_ = nullptr;
       LockCancel * prev_ = nullptr;
       LockCancel * next_ = nullptr;
       LockCancelList * list_ = nullptr;
 
-      void set(int) noexcept {}
-      void clear() noexcept {}
+      void set(HANDLE h) noexcept { this->lockHandle_.store(h, std::memory_order_release); }
+      void clear() noexcept { this->lockHandle_.store(INVALID_HANDLE_VALUE, std::memory_order_release); }
+
       bool is_fired() const noexcept {
         return this->fired_.load(std::memory_order_acquire) || (this->cancelByte_ && *this->cancelByte_ != 0);
       }
 
-      void fire() noexcept { this->fired_.store(true, std::memory_order_release); }
+      /** Signal cancellation. If a LockFileEx is pending on the lock handle, cancel it. */
+      void fire() noexcept {
+        this->fired_.store(true, std::memory_order_release);
+        const HANDLE h = this->lockHandle_.exchange(INVALID_HANDLE_VALUE, std::memory_order_acq_rel);
+        if (h != INVALID_HANDLE_VALUE) {
+          CancelIoEx(h, nullptr);
+        }
+      }
     };
 
     struct LockCancelList {
@@ -191,127 +215,61 @@ namespace fast_fs_hash {
     /**
      * Open-or-create a cache file and acquire an exclusive LockFileEx lock.
      *
+     * Uses a two-handle approach:
+     *   1. Open with FILE_FLAG_OVERLAPPED for async LockFileEx + WaitForSingleObject
+     *   2. Once locked, open a second non-overlapped handle for synchronous I/O
+     *
+     * Returns an invalid FfshFile on failure (lock contention, timeout, cancel, I/O error).
+     * Callers check `if (!file)` — lock failure is a normal status, not an exception.
+     *
      * @param path      Cache file path (UTF-8).
      * @param timeoutMs -1 = block forever, 0 = non-blocking try, >0 = timeout in ms.
-     * @param outError  Set to an error string on failure.
-     * @param cancel    Optional LockCancel — fire() signals cancellation.
-     * @return FfshFile with the locked handle, or invalid on failure.
+     * @param cancel    Optional LockCancel — fire() signals cancellation via CancelIoEx.
+     * @return FfshFile with locked handle, or invalid on failure.
      */
     static FSH_NO_INLINE FfshFile open_locked(
       const char * path,
       int timeoutMs,
-      const char *& outError,
       LockCancel * cancel = nullptr) noexcept {
-      outError = nullptr;
       FfshFile f;
 
       if (!path || path[0] == '\0') [[unlikely]] {
-        outError = "CacheLock: empty cache path";
         return f;
       }
-      if (strlen(path) >= FSH_MAX_PATH) [[unlikely]] {
-        outError = "CacheLock: cache path too long";
-        return f;
-      }
-
-      HANDLE hFile = open_rw_handle_mkdir(path);
-      if (hFile == INVALID_HANDLE_VALUE) [[unlikely]] {
-        outError = "CacheLock: failed to open cache file for locking";
+      wchar_t wpath[FSH_MAX_PATH];
+      const int wlen = path_to_wide_(path, wpath);
+      if (wlen == 0) [[unlikely]] {
         return f;
       }
 
-      DWORD flags = LOCKFILE_EXCLUSIVE_LOCK;
-
-      if (timeoutMs == 0) {
-        // Non-blocking try
-        OVERLAPPED ov{};
-        if (!LockFileEx(hFile, flags | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov)) [[unlikely]] {
-          CloseHandle(hFile);
-          outError = "CacheLock: lock not available";
-          return f;
-        }
-      } else {
-        // Overlapped LockFileEx + WaitForSingleObject — kernel-level blocking
-        HANDLE hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-        if (!hEvent) [[unlikely]] {
-          CloseHandle(hFile);
-          outError = "CacheLock: CreateEvent failed";
-          return f;
-        }
-        OVERLAPPED ov{};
-        ov.hEvent = hEvent;
-        bool locked = false;
-        if (LockFileEx(hFile, flags, 0, 1, 0, &ov)) {
-          locked = true;
-        } else if (GetLastError() == ERROR_IO_PENDING) {
-          if (timeoutMs > 0 && !cancel) {
-            // Finite timeout, no cancel — single wait
-            const DWORD rc = WaitForSingleObject(hEvent, static_cast<DWORD>(timeoutMs));
-            if (rc == WAIT_OBJECT_0) {
-              DWORD transferred = 0;
-              locked = GetOverlappedResult(hFile, &ov, &transferred, FALSE) != FALSE;
-            } else {
-              CancelIoEx(hFile, &ov);
-            }
-          } else {
-            // Infinite wait or cancellable — poll with short waits so we can check cancel
-            const ULONGLONG start = (timeoutMs > 0) ? GetTickCount64() : 0;
-            for (;;) {
-              const DWORD rc = WaitForSingleObject(hEvent, 100);
-              if (rc == WAIT_OBJECT_0) {
-                DWORD transferred = 0;
-                locked = GetOverlappedResult(hFile, &ov, &transferred, FALSE) != FALSE;
-                break;
-              }
-              if (cancel && cancel->is_fired()) [[unlikely]] {
-                CancelIoEx(hFile, &ov);
-                break;
-              }
-              if (timeoutMs > 0) {
-                if (GetTickCount64() - start >= static_cast<ULONGLONG>(timeoutMs)) [[unlikely]] {
-                  CancelIoEx(hFile, &ov);
-                  break;
-                }
-              }
-            }
-          }
-        }
-        CloseHandle(hEvent);
-        if (!locked) [[unlikely]] {
-          CloseHandle(hFile);
-          if (cancel && cancel->is_fired()) {
-            outError = "CacheLock: lock acquisition cancelled";
-          } else {
-            outError = (timeoutMs > 0) ? "CacheLock: timed out waiting for exclusive lock"
-                                       : "CacheLock: failed to acquire exclusive lock";
-          }
-          return f;
-        }
+      // Step 1: Open with FILE_FLAG_OVERLAPPED for async lock acquisition
+      HANDLE hLock = open_with_mkdir_(wpath, wlen, open_overlapped_handle_);
+      if (hLock == INVALID_HANDLE_VALUE) [[unlikely]] {
+        return f;
       }
 
-      // Wrap the locked HANDLE as a CRT fd for uniform API
-      const int crt_fd = _open_osfhandle(reinterpret_cast<intptr_t>(hFile), _O_RDWR | _O_BINARY);
+      // Step 2: Acquire the lock
+      if (!acquire_lock_(hLock, LOCKFILE_EXCLUSIVE_LOCK, timeoutMs, cancel)) [[unlikely]] {
+        CloseHandle(hLock);
+        return f;
+      }
+
+      // Step 3: Open a non-overlapped handle for synchronous I/O
+      HANDLE hIO = open_with_mkdir_(wpath, wlen, open_rw_handle_);
+      if (hIO == INVALID_HANDLE_VALUE) [[unlikely]] {
+        CloseHandle(hLock);
+        return f;
+      }
+
+      const int crt_fd = _open_osfhandle(reinterpret_cast<intptr_t>(hIO), _O_RDWR | _O_BINARY);
       if (crt_fd < 0) [[unlikely]] {
-        OVERLAPPED ov{};
-        UnlockFileEx(hFile, 0, 1, 0, &ov);
-        CloseHandle(hFile);
-        outError = "CacheLock: _open_osfhandle failed";
+        CloseHandle(hIO);
+        CloseHandle(hLock);
         return f;
       }
 
       f.fd = crt_fd;
-      return f;
-    }
-
-    /** Convert this FfshFile to a FfshFileHandle (the raw CRT fd). Releases ownership. */
-    FSH_FORCE_INLINE FfshFileHandle to_file_handle() noexcept { return static_cast<FfshFileHandle>(this->release()); }
-
-    /** Create an FfshFile from a FfshFileHandle. Takes ownership. */
-    static FSH_FORCE_INLINE FfshFile from_file_handle(FfshFileHandle handle) noexcept {
-      FfshFile f;
-      if (handle != FFSH_FILE_HANDLE_INVALID) [[likely]] {
-        f.fd = static_cast<int>(handle);
-      }
+      f.lockHandle_ = hLock;
       return f;
     }
 
@@ -320,12 +278,10 @@ namespace fast_fs_hash {
       if (!cachePath || cachePath[0] == '\0') [[unlikely]] {
         return false;
       }
-      const int wlen = MultiByteToWideChar(CP_UTF8, 0, cachePath, -1, nullptr, 0);
-      if (wlen <= 0 || wlen > static_cast<int>(FSH_MAX_PATH)) [[unlikely]] {
+      wchar_t wpath[FSH_MAX_PATH];
+      if (path_to_wide_(cachePath, wpath) == 0) [[unlikely]] {
         return false;
       }
-      wchar_t wpath[FSH_MAX_PATH];
-      MultiByteToWideChar(CP_UTF8, 0, cachePath, -1, wpath, wlen);
 
       HANDLE hFile = CreateFileW(
         wpath,
@@ -351,12 +307,12 @@ namespace fast_fs_hash {
     /**
      * Wait until the file is no longer exclusively locked, or timeout/cancellation.
      *
-     * Uses overlapped LockFileEx (shared lock) + WaitForSingleObject.
-     * Cancellable via LockCancel::fire() — checked between short waits.
+     * Opens with FILE_FLAG_OVERLAPPED for proper async LockFileEx +
+     * WaitForSingleObject with timeout and CancelIoEx cancellation.
      *
      * @param cachePath  File path (UTF-8).
      * @param timeoutMs  -1 = block forever, 0 = non-blocking, >0 = timeout in ms.
-     * @param cancel     Optional LockCancel — fire() signals cancellation.
+     * @param cancel     Optional LockCancel — fire() signals cancellation via CancelIoEx.
      * @return true if the file is (now) unlocked, false on timeout/cancel/error.
      */
     static FSH_NO_INLINE bool wait_unlocked(
@@ -364,12 +320,10 @@ namespace fast_fs_hash {
       if (!cachePath || cachePath[0] == '\0') [[unlikely]] {
         return true;
       }
-      const int wlen = MultiByteToWideChar(CP_UTF8, 0, cachePath, -1, nullptr, 0);
-      if (wlen <= 0 || wlen > static_cast<int>(FSH_MAX_PATH)) [[unlikely]] {
+      wchar_t wpath[FSH_MAX_PATH];
+      if (path_to_wide_(cachePath, wpath) == 0) [[unlikely]] {
         return true;
       }
-      wchar_t wpath[FSH_MAX_PATH];
-      MultiByteToWideChar(CP_UTF8, 0, cachePath, -1, wpath, wlen);
 
       HANDLE hFile = CreateFileW(
         wpath,
@@ -377,52 +331,14 @@ namespace fast_fs_hash {
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         nullptr,
         OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL,
+        FILE_FLAG_OVERLAPPED,
         nullptr);
       if (hFile == INVALID_HANDLE_VALUE) [[unlikely]] {
         return true;  // Can't open → not locked (or doesn't exist)
       }
 
-      bool acquired = false;
-
-      if (timeoutMs == 0) {
-        OVERLAPPED ov{};
-        acquired = LockFileEx(hFile, LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov) != FALSE;
-      } else {
-        // Use overlapped I/O so we can wait with a timeout and check cancel
-        HANDLE hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-        if (hEvent) {
-          OVERLAPPED ov{};
-          ov.hEvent = hEvent;
-          // Shared lock (no LOCKFILE_EXCLUSIVE_LOCK) — blocks until exclusive holder releases
-          if (LockFileEx(hFile, 0, 0, 1, 0, &ov)) {
-            acquired = true;
-          } else if (GetLastError() == ERROR_IO_PENDING) {
-            // Wait in a loop with short timeouts so we can check cancel
-            const DWORD waitMs = (timeoutMs < 0) ? 100 : (timeoutMs < 100 ? static_cast<DWORD>(timeoutMs) : 100);
-            const ULONGLONG start = (timeoutMs > 0) ? GetTickCount64() : 0;
-            for (;;) {
-              const DWORD rc = WaitForSingleObject(hEvent, waitMs);
-              if (rc == WAIT_OBJECT_0) {
-                DWORD transferred = 0;
-                acquired = GetOverlappedResult(hFile, &ov, &transferred, FALSE) != FALSE;
-                break;
-              }
-              if (cancel && cancel->is_fired()) [[unlikely]] {
-                CancelIoEx(hFile, &ov);
-                break;
-              }
-              if (timeoutMs > 0) {
-                if (GetTickCount64() - start >= static_cast<ULONGLONG>(timeoutMs)) [[unlikely]] {
-                  CancelIoEx(hFile, &ov);
-                  break;
-                }
-              }
-            }
-          }
-          CloseHandle(hEvent);
-        }
-      }
+      // Shared lock (no LOCKFILE_EXCLUSIVE_LOCK) — succeeds once exclusive holder releases
+      const bool acquired = acquire_lock_(hFile, 0, timeoutMs, cancel);
 
       if (acquired) {
         OVERLAPPED ov{};
@@ -590,6 +506,9 @@ namespace fast_fs_hash {
     }
 
    private:
+    /** Overlapped handle that holds the byte-range lock. INVALID_HANDLE_VALUE when unused. */
+    HANDLE lockHandle_ = INVALID_HANDLE_VALUE;
+
     /** Get the Win32 HANDLE from the CRT fd via _get_osfhandle. */
     FSH_FORCE_INLINE HANDLE get_handle() const noexcept {
       if (this->fd < 0) [[unlikely]] {
@@ -652,7 +571,7 @@ namespace fast_fs_hash {
       return f;
     }
 
-    /** Open/create a file with GENERIC_READ|GENERIC_WRITE for locking — returns raw HANDLE. */
+    /** Open/create a file with GENERIC_READ|GENERIC_WRITE — synchronous handle for I/O. */
     static FSH_NO_INLINE HANDLE open_rw_handle_(const wchar_t * wpath) noexcept {
       return CreateFileW(
         wpath,
@@ -661,6 +580,18 @@ namespace fast_fs_hash {
         nullptr,
         OPEN_ALWAYS,
         FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    }
+
+    /** Open/create a file with FILE_FLAG_OVERLAPPED — for async lock acquisition. */
+    static FSH_NO_INLINE HANDLE open_overlapped_handle_(const wchar_t * wpath) noexcept {
+      return CreateFileW(
+        wpath,
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_ALWAYS,
+        FILE_FLAG_OVERLAPPED,
         nullptr);
     }
 
@@ -681,15 +612,20 @@ namespace fast_fs_hash {
       return CreateDirectoryW(buf, nullptr) || GetLastError() == ERROR_ALREADY_EXISTS;
     }
 
-    static inline HANDLE open_rw_handle_mkdir(const char * path) noexcept {
+    /** Convert UTF-8 path to UTF-16, returning the wchar_t buffer and length. */
+    static inline int path_to_wide_(const char * path, wchar_t * wpath) noexcept {
       const int wlen = MultiByteToWideChar(CP_UTF8, 0, path, -1, nullptr, 0);
       if (wlen <= 0 || wlen > static_cast<int>(FSH_MAX_PATH)) [[unlikely]] {
-        return INVALID_HANDLE_VALUE;
+        return 0;
       }
-      wchar_t wpath[FSH_MAX_PATH];
       MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, wlen);
+      return wlen;
+    }
 
-      HANDLE h = open_rw_handle_(wpath);
+    /** Open with mkdir retry — calls Opener(wpath), retries after creating parent dirs. */
+    template <typename Opener>
+    static inline HANDLE open_with_mkdir_(const wchar_t * wpath, int wlen, Opener opener) noexcept {
+      HANDLE h = opener(wpath);
       if (h != INVALID_HANDLE_VALUE) [[likely]] {
         return h;
       }
@@ -703,7 +639,74 @@ namespace fast_fs_hash {
       if (sep > 0) {
         mkdirW_(wpath, sep);
       }
-      return open_rw_handle_(wpath);
+      return opener(wpath);
+    }
+
+    /**
+     * Acquire a byte-range lock on an overlapped handle.
+     *
+     * Uses LockFileEx with an event + WaitForSingleObject for timeout,
+     * and CancelIoEx for cancellation. No polling — kernel-level waiting.
+     *
+     * @param hFile     Handle opened with FILE_FLAG_OVERLAPPED.
+     * @param lockFlags LOCKFILE_EXCLUSIVE_LOCK or 0 (shared).
+     * @param timeoutMs -1 = infinite, 0 = non-blocking, >0 = timeout.
+     * @param cancel    Optional cancellation token.
+     * @return true if lock was acquired.
+     */
+    static FSH_NO_INLINE bool acquire_lock_(
+      HANDLE hFile, DWORD lockFlags, int timeoutMs,
+      LockCancel * cancel = nullptr) noexcept {
+
+      if (cancel && cancel->is_fired()) [[unlikely]] {
+        return false;
+      }
+
+      if (timeoutMs == 0) {
+        OVERLAPPED ov{};
+        return LockFileEx(hFile, lockFlags | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov) != FALSE;
+      }
+
+      HANDLE hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+      if (!hEvent) [[unlikely]] {
+        return false;
+      }
+
+      OVERLAPPED ov{};
+      ov.hEvent = hEvent;
+      bool locked = false;
+
+      if (LockFileEx(hFile, lockFlags, 0, 1, 0, &ov)) {
+        locked = true;
+      } else if (GetLastError() == ERROR_IO_PENDING) {
+        if (cancel) {
+          cancel->set(hFile);
+        }
+
+        // Single wait — CancelIoEx from fire() signals the event, no polling needed.
+        const DWORD waitMs = (timeoutMs < 0) ? INFINITE : static_cast<DWORD>(timeoutMs);
+        const DWORD rc = WaitForSingleObject(hEvent, waitMs);
+
+        if (rc == WAIT_OBJECT_0) {
+          DWORD transferred = 0;
+          locked = GetOverlappedResult(hFile, &ov, &transferred, FALSE) != FALSE;
+        } else {
+          CancelIoEx(hFile, &ov);
+          WaitForSingleObject(hEvent, INFINITE);
+          // Lock may have been acquired between timeout and CancelIoEx
+          DWORD transferred = 0;
+          if (GetOverlappedResult(hFile, &ov, &transferred, FALSE)) {
+            locked = true;
+          }
+        }
+
+        if (cancel) {
+          cancel->clear();
+        }
+      }
+
+      CloseHandle(hEvent);
+      return locked;
     }
 
     static FSH_FORCE_INLINE bool stat_query_(

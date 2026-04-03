@@ -76,8 +76,7 @@ namespace fast_fs_hash {
         this->signal();
         return;
       }
-      const char * error = nullptr;
-      this->lockedFile_ = FfshFile::open_locked(this->cachePath_.c_str(), this->timeoutMs_, error, &this->cancel_);
+      this->lockedFile_ = FfshFile::open_locked(this->cachePath_.c_str(), this->timeoutMs_, &this->cancel_);
       if (!this->lockedFile_) [[unlikely]] {
         this->lockFailed_ = true;
         this->signal();

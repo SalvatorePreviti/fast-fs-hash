@@ -67,10 +67,8 @@ namespace fast_fs_hash {
       }
 
       // Open file for writing (create + truncate, with mkdir-p on ENOENT)
-      const char * error = nullptr;
       // Use open_locked with timeout=0 to get a file handle with mkdir-p support.
-      // This acquires a lock but we'll close immediately after writing so it's fine.
-      FfshFile fh = FfshFile::open_locked(this->path_.c_str(), 0, error, nullptr);
+      FfshFile fh = FfshFile::open_locked(this->path_.c_str(), 0);
       if (!fh) [[unlikely]] {
         free(outBuf);
         this->signal("lz4DecompressAndWrite: failed to open file for writing");
