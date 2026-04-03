@@ -28,6 +28,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
+    "smoke-test": "cd test/smoke-test && npm test",
+    "smoke-test:install": "cd test/smoke-test && npm install fast-fs-hash@latest",
     "update-xxhash": "bash scripts/update-xxhash.sh",
     "docs": "npx typedoc"
   },

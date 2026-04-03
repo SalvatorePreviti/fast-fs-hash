@@ -155,10 +155,10 @@ namespace fast_fs_hash {
     }
 
     /**
-     * Lock cancellation token — cross-platform interface.
-     * On Win32, fire() sets a flag; the lock wait loop uses CancelIoEx to
-     * interrupt a pending overlapped LockFileEx. On POSIX, fire() closes
-     * the fd to interrupt fcntl.
+     * Lock cancellation token — Win32 implementation.
+     * fire() sets fired_=true and calls CancelIoEx to interrupt a pending
+     * overlapped LockFileEx. On POSIX, fire() sets fired_=true; poll_lock_
+     * checks is_fired() between non-blocking F_SETLK attempts.
      */
     struct LockCancelList;
 
@@ -219,6 +219,22 @@ namespace fast_fs_hash {
         for (LockCancel * c = this->head_; c; c = c->next_) {
           c->fire();
         }
+      }
+
+      /** Find the LockCancel whose cancelByte_ matches the given pointer and fire it.
+       *  Called from JS thread when AbortSignal fires — triggers CancelIoEx to wake
+       *  any pending WaitForSingleObject without polling. */
+      bool fire_by_cancel_byte(const volatile uint8_t * cancelByte) noexcept {
+        if (!cancelByte) {
+          return false;
+        }
+        for (LockCancel * c = this->head_; c; c = c->next_) {
+          if (c->cancelByte_ == cancelByte) {
+            c->fire();
+            return true;
+          }
+        }
+        return false;
       }
     };
 
@@ -725,6 +741,12 @@ namespace fast_fs_hash {
       } else if (GetLastError() == ERROR_IO_PENDING) {
         if (cancel) {
           cancel->set(hFile);
+          // Check after set(): if fire() already ran before set(), fired_ is true
+          // but CancelIoEx was never called (fire() saw lockHandle_==INVALID).
+          // Cancel now to avoid blocking forever in WaitForSingleObject.
+          if (cancel->is_fired()) [[unlikely]] {
+            CancelIoEx(hFile, &ov);
+          }
         }
 
         // Single wait — CancelIoEx from fire() signals the event, no polling needed.

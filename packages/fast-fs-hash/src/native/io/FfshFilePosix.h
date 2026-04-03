@@ -93,45 +93,41 @@ namespace fast_fs_hash {
     }
 
     /**
-     * Lock cancellation token — allows another thread to interrupt a blocking
-     * fcntl F_SETLKW by closing the fd, causing EBADF.
+     * Lock cancellation token — POSIX implementation.
      *
-     * Usage: set(fd) before blocking fcntl, clear() after it returns.
-     * Another thread calls fire() to close the fd and interrupt the wait.
-     * Thread-safe — fire() is callable from any thread (e.g. shutdown).
+     * All cancellable lock paths use poll_lock_ (non-blocking F_SETLK with
+     * exponential backoff). fire() sets fired_=true; poll_lock_ checks
+     * is_fired() between attempts and exits promptly.
+     *
+     * Why not close the fd to wake blocked fcntl(F_SETLKW)?
+     * POSIX doesn't guarantee that closing an fd from thread B wakes a
+     * blocked fcntl(F_SETLKW) on that fd in thread A. macOS in particular
+     * does not — the thread stays blocked indefinitely. Polling with
+     * non-blocking F_SETLK is the only portable approach.
      */
     struct LockCancelList;
 
     struct LockCancel : NonCopyable {
-      std::atomic<int> fd_{-1};
       std::atomic<bool> fired_{false};
       const volatile uint8_t * cancelByte_ = nullptr;
       LockCancel * prev_ = nullptr;
       LockCancel * next_ = nullptr;
       LockCancelList * list_ = nullptr;
 
-      void set(int lockFd) noexcept { this->fd_.store(lockFd, std::memory_order_release); }
-
-      void clear() noexcept { this->fd_.store(-1, std::memory_order_release); }
-
       bool is_fired() const noexcept {
         return this->fired_.load(std::memory_order_acquire) || (this->cancelByte_ && *this->cancelByte_ != 0);
       }
 
-      /** Close the fd to interrupt a blocked fcntl. Safe to call multiple times. */
+      /** Signal cancellation. Safe to call from any thread, multiple times. */
       void fire() noexcept {
         this->fired_.store(true, std::memory_order_release);
-        const int f = this->fd_.exchange(-1, std::memory_order_acq_rel);
-        if (f >= 0) {
-          ::close(f);
-        }
       }
     };
 
     /** JS-thread-only doubly-linked list of active LockCancel tokens.
      *  Workers register on construction, unregister on destruction.
-     *  fire_all() is called before pool.shutdown() to unblock any threads
-     *  stuck in fcntl(F_SETLKW). */
+     *  fire_all() before pool.shutdown() ensures poll_lock_ threads see
+     *  is_fired()==true and exit within one sleep interval. */
     struct LockCancelList {
       LockCancel * head_ = nullptr;
 
@@ -165,6 +161,21 @@ namespace fast_fs_hash {
           c->fire();
         }
       }
+
+      /** Find the LockCancel whose cancelByte_ matches the given pointer and fire it.
+       *  Called from JS thread when AbortSignal fires (via cacheFireCancel). */
+      bool fire_by_cancel_byte(const volatile uint8_t * cancelByte) noexcept {
+        if (!cancelByte) {
+          return false;
+        }
+        for (LockCancel * c = this->head_; c; c = c->next_) {
+          if (c->cancelByte_ == cancelByte) {
+            c->fire();
+            return true;
+          }
+        }
+        return false;
+      }
     };
 
     /**
@@ -175,7 +186,7 @@ namespace fast_fs_hash {
      *
      * @param path      Cache file path.
      * @param timeoutMs -1 = block forever, 0 = non-blocking try, >0 = timeout in ms.
-     * @param cancel    Optional LockCancel — fire() closes the fd to interrupt blocking fcntl.
+     * @param cancel    Optional LockCancel — fire() sets fired_ flag; poll_lock_ exits within one sleep.
      * @return FfshFile with the locked fd, or invalid on failure.
      */
     static FSH_NO_INLINE FfshFile open_locked(
@@ -201,23 +212,22 @@ namespace fast_fs_hash {
           f.close();
           return f;
         }
+      } else if (cancel) {
+        // Cancel present: poll with non-blocking F_SETLK + exponential backoff.
+        // cacheFireCancel (called from JS) sets fired_ flag; poll_lock_ checks
+        // is_fired() between attempts and exits within one sleep interval (≤50ms).
+        if (poll_lock_(f.fd, F_WRLCK, timeoutMs < 0 ? INT_MAX : timeoutMs, cancel) != 0) [[unlikely]] {
+          f.close();
+          return f;
+        }
       } else if (timeoutMs < 0) {
-        if (!cancel) {
-          if (fcntl_lock_(f.fd, F_SETLKW) != 0) [[unlikely]] {
-            f.close();
-            return f;
-          }
-        } else {
-          // Infinite wait with cancel: use poll_lock_ so the thread remains
-          // interruptible via cancel->is_fired(). Never use blocking F_SETLKW
-          // with a cancel token — pool.shutdown() must be able to join all threads.
-          if (poll_lock_(f.fd, F_WRLCK, INT_MAX, cancel) != 0) [[unlikely]] {
-            f.close();
-            return f;
-          }
+        if (fcntl_lock_(f.fd, F_SETLKW) != 0) [[unlikely]] {
+          f.close();
+          return f;
         }
       } else {
-        if (poll_lock_(f.fd, F_WRLCK, timeoutMs, cancel) != 0) [[unlikely]] {
+        // Finite timeout, no cancel: poll with backoff.
+        if (poll_lock_(f.fd, F_WRLCK, timeoutMs, nullptr) != 0) [[unlikely]] {
           f.close();
           return f;
         }
@@ -261,13 +271,13 @@ namespace fast_fs_hash {
     /**
      * Wait until the file is no longer exclusively locked, or timeout/cancellation.
      *
-     * Uses F_SETLKW (shared read lock) — the kernel blocks with zero CPU until
-     * the exclusive holder releases. Cancellable via LockCancel::fire() which
-     * closes the fd, causing fcntl to return EBADF.
+     * Without cancel: F_SETLKW (shared read lock) blocks with zero CPU until
+     * the exclusive holder releases. With cancel or finite timeout: poll_lock_
+     * with non-blocking F_SETLK + exponential backoff.
      *
      * @param cachePath  File path.
      * @param timeoutMs  -1 = block forever, 0 = non-blocking, >0 = timeout in ms.
-     * @param cancel     Optional LockCancel — fire() closes the fd to interrupt.
+     * @param cancel     Optional LockCancel — fire() sets fired_ flag; poll exits within one sleep.
      * @return true if the file is (now) unlocked, false on timeout/cancel/error.
      */
     static FSH_NO_INLINE bool wait_unlocked(
@@ -281,31 +291,20 @@ namespace fast_fs_hash {
       }
 
       bool acquired = false;
-      bool fd_stolen = false;  // true if fire() already closed our fd
       if (timeoutMs == 0) {
         acquired = fcntl_lock_rd_(fd, F_SETLK) == 0;
+      } else if (cancel) {
+        // Cancel present: poll with non-blocking F_SETLK + backoff.
+        // See open_locked comment — macOS doesn't wake blocked fcntl on fd close.
+        acquired = poll_lock_(fd, F_RDLCK, timeoutMs < 0 ? INT_MAX : timeoutMs, cancel) == 0;
       } else if (timeoutMs < 0) {
-        if (!cancel) {
-          acquired = fcntl_lock_rd_(fd, F_SETLKW) == 0;
-        } else if (cancel->cancelByte_) {
-          // cancelByte present — poll instead of blocking F_SETLKW.
-          acquired = poll_lock_(fd, F_RDLCK, INT_MAX, cancel) == 0;
-        } else {
-          // fire() can close the fd from another thread → track fd_stolen.
-          acquired = fcntl_lock_cancellable_(fd, F_RDLCK, cancel) == 0;
-          // Only check fd_stolen when acquisition failed — on success, clear()
-          // already disarmed the fd before fire() could close it.
-          fd_stolen = !acquired && cancel->is_fired();
-        }
+        acquired = fcntl_lock_rd_(fd, F_SETLKW) == 0;
       } else {
-        acquired = poll_lock_(fd, F_RDLCK, timeoutMs, cancel) == 0;
+        acquired = poll_lock_(fd, F_RDLCK, timeoutMs, nullptr) == 0;
       }
 
       // close() releases the fcntl lock — no explicit F_UNLCK needed.
-      // Skip if fire() already closed the fd (only possible via fcntl_lock_cancellable_).
-      if (!fd_stolen) {
-        ::close(fd);
-      }
+      ::close(fd);
       return acquired;
     }
 
@@ -444,62 +443,33 @@ namespace fast_fs_hash {
     static FSH_FORCE_INLINE int fcntl_lock_(int fd, int cmd) noexcept { return fcntl_lock_type_(fd, cmd, F_WRLCK); }
     static FSH_FORCE_INLINE int fcntl_lock_rd_(int fd, int cmd) noexcept { return fcntl_lock_type_(fd, cmd, F_RDLCK); }
 
-    /**
-     * Blocking lock (F_SETLKW) with cancellation via fd-close.
-     * Registers the fd with LockCancel so fire() can close it from another thread.
-     * Retries on EINTR (spurious signals) unless fire() was called.
-     * Returns 0 on success, -1 on cancel or error.
-     */
-    static FSH_NO_INLINE int fcntl_lock_cancellable_(int fd, short lock_type, LockCancel * cancel) noexcept {
-      cancel->set(fd);
-      struct flock fl{};
-      fl.l_type = lock_type;
-      fl.l_whence = SEEK_SET;
-      fl.l_start = 0;
-      fl.l_len = 1;
-      for (;;) {
-        const int rc = ::fcntl(fd, F_SETLKW, &fl);
-        if (rc == 0) [[likely]] {
-          cancel->clear();
-          return 0;
-        }
-        // EBADF = fire() closed our fd (cancellation). EINTR = spurious signal.
-        if (errno == EINTR && !cancel->is_fired()) [[unlikely]] {
-          continue;
-        }
-        cancel->clear();
-        return -1;
-      }
+    /** Sleep for the given number of milliseconds via nanosleep. */
+    static FSH_NO_INLINE void poll_sleep_(int ms) noexcept {
+      struct timespec ts{};
+      ts.tv_sec = ms / 1000;
+      ts.tv_nsec = (ms % 1000) * 1000000L;
+      ::nanosleep(&ts, nullptr);
     }
 
     /**
      * Polling lock acquisition with timeout and optional cancellation.
-     * Non-blocking F_SETLK with exponential backoff (1ms → 50ms).
+     * Non-blocking F_SETLK with exponential backoff (1ms → 50ms cap).
      * Returns 0 on success, -1 on timeout/cancel/error.
      */
-    static FSH_NO_INLINE void poll_sleep_(int & sleepMs) noexcept {
-      struct timespec ts{};
-      ts.tv_nsec = sleepMs * 1000000L;
-      ::nanosleep(&ts, nullptr);
-      if (sleepMs < 50) {
-        sleepMs = sleepMs * 2;
-        if (sleepMs > 50) {
-          sleepMs = 50;
-        }
-      }
-    }
-
     static FSH_NO_INLINE int poll_lock_(
       int fd, short lock_type, int timeoutMs, LockCancel * cancel = nullptr) noexcept {
-      struct flock fl{};
-      fl.l_type = lock_type;
-      fl.l_whence = SEEK_SET;
-      fl.l_start = 0;
-      fl.l_len = 1;
+      if (cancel && cancel->is_fired()) [[unlikely]] {
+        return -1;
+      }
       struct timespec start;
       clock_gettime(CLOCK_MONOTONIC, &start);
       int sleepMs = 1;
       for (;;) {
+        struct flock fl{};
+        fl.l_type = lock_type;
+        fl.l_whence = SEEK_SET;
+        fl.l_start = 0;
+        fl.l_len = 1;
         if (::fcntl(fd, F_SETLK, &fl) == 0) {
           return 0;
         }
@@ -515,7 +485,20 @@ namespace fast_fs_hash {
         if (elapsedMs >= static_cast<int64_t>(timeoutMs)) [[unlikely]] {
           return -1;
         }
-        poll_sleep_(sleepMs);
+        // Clamp sleep to remaining timeout so we don't overshoot
+        const int remainMs = static_cast<int>(static_cast<int64_t>(timeoutMs) - elapsedMs);
+        int actualSleep = sleepMs < remainMs ? sleepMs : remainMs;
+        if (actualSleep < 1) {
+          actualSleep = 1;
+        }
+        poll_sleep_(actualSleep);
+        // Advance the backoff interval (independent of clamping)
+        if (sleepMs < 50) {
+          sleepMs = sleepMs * 2;
+          if (sleepMs > 50) {
+            sleepMs = 50;
+          }
+        }
       }
     }
 

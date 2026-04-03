@@ -8,8 +8,8 @@ namespace fast_fs_hash {
   /**
    * Blocks a pool thread until the cache file is no longer exclusively locked.
    *
-   * POSIX: uses F_SETLKW (kernel blocks, zero CPU) — cancelled via fd-close (EBADF).
-   * Win32: uses LockFileEx shared lock with overlapped I/O.
+   * POSIX: F_SETLKW (kernel blocks, zero CPU) without cancel; poll_lock_ with cancel.
+   * Win32: LockFileEx shared lock with overlapped I/O + CancelIoEx for cancel.
    * Resolves true if unlocked, false on timeout or shutdown.
    */
   class CacheWaitUnlocked final : public AddonWorker {

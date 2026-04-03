@@ -77,6 +77,7 @@ static Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("cacheClose", Napi::Function::New(env, fast_fs_hash::bindCacheClose));
   exports.Set("cacheIsLocked", Napi::Function::New(env, fast_fs_hash::bindCacheIsLocked));
   exports.Set("cacheWaitUnlocked", Napi::Function::New(env, fast_fs_hash::bindCacheWaitUnlocked));
+  exports.Set("cacheFireCancel", Napi::Function::New(env, fast_fs_hash::bindCacheFireCancel));
 
   // File comparison
   exports.Set("filesEqual", Napi::Function::New(env, fast_fs_hash::bindFilesEqual));

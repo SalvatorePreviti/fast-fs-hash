@@ -114,7 +114,9 @@ function cancelBufFromSignal(signal: AbortSignal): Uint8Array {
   }
   const buf = new Uint8Array(1);
   const cb = () => {
-    buf[0] = 1;
+    // Calls into C++ which writes the cancelByte AND calls fire() on the
+    // matching LockCancel — CancelIoEx on Windows, fired_ flag on POSIX.
+    binding.cacheFireCancel(buf);
   };
   signal.addEventListener("abort", cb, { once: true });
   (_cancelStates ??= []).push({ buf, sig: signal, cb });

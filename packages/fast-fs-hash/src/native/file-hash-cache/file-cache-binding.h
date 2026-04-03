@@ -322,6 +322,33 @@ namespace fast_fs_hash {
     return deferred.Promise();
   }
 
+  /**
+   * cacheFireCancel(cancelBuf: Uint8Array) → void
+   *
+   * Called from JS when an AbortSignal fires. Finds the active LockCancel
+   * whose cancelByte_ points into the given buffer and calls fire() on it,
+   * which triggers CancelIoEx (Windows) or sets fired_ (POSIX, checked by poll_lock_).
+   */
+  inline Napi::Value bindCacheFireCancel(const Napi::CallbackInfo & info) {
+    const auto env = info.Env();
+    if (info.Length() < 1 || !info[0].IsTypedArray()) [[unlikely]] {
+      return env.Undefined();
+    }
+    auto cbBuf = info[0].As<Napi::Uint8Array>();
+    if (cbBuf.ByteLength() < 1) [[unlikely]] {
+      return env.Undefined();
+    }
+    volatile uint8_t * cancelByte = cbBuf.Data();
+    // Write the byte so is_fired() returns true even if the cancel
+    // has not yet been registered (race: signal fires before worker starts).
+    *cancelByte = 1;
+    auto * addon = AddonData::get(env);
+    if (addon) [[likely]] {
+      addon->active_cancels.fire_by_cancel_byte(cancelByte);
+    }
+    return env.Undefined();
+  }
+
 }  // namespace fast_fs_hash
 
 #endif

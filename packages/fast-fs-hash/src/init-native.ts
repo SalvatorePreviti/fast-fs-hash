@@ -90,6 +90,7 @@ export interface BindingExportNative {
   cacheClose(handle: number): void;
   cacheIsLocked(cachePath: string): boolean;
   cacheWaitUnlocked(cachePath: string, lockTimeoutMs?: number, cancelBuf?: Uint8Array | null): Promise<boolean>;
+  cacheFireCancel(cancelBuf: Uint8Array): void;
   filesEqual(pathA: string, pathB: string): Promise<boolean>;
   poolTrim(): void;
   lz4CompressBlock(input: Uint8Array, offset?: number, length?: number): Buffer;
