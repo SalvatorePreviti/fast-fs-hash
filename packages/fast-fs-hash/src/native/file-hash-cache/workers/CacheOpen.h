@@ -7,6 +7,8 @@
 #include "AddonWorker.h"
 
 #include <lz4.h>
+#include <string_view>
+#include <unordered_set>
 
 namespace fast_fs_hash {
 
@@ -36,7 +38,12 @@ namespace fast_fs_hash {
       const uint8_t * fingerprint,
       int timeoutMs,
       const volatile uint8_t * cancelByte = nullptr,
-      Napi::ObjectReference && cancelRef = {}) :
+      Napi::ObjectReference && cancelRef = {},
+      const uint8_t * dirtyPaths = nullptr,
+      size_t dirtyLen = 0,
+      uint32_t dirtyCount = 0,
+      bool hasDirtyHint = false,
+      Napi::ObjectReference && dirtyRef = {}) :
       AddonWorker(env, deferred),
       encodedPaths_(encodedPaths),
       encodedLen_(encodedLen),
@@ -44,10 +51,15 @@ namespace fast_fs_hash {
       version_(version),
       hasFingerprint_(fingerprint != nullptr),
       timeoutMs_(timeoutMs),
+      dirtyPaths_(dirtyPaths),
+      dirtyLen_(dirtyLen),
+      dirtyCount_(dirtyCount),
+      hasDirtyHint_(hasDirtyHint),
       cachePath_(std::move(cachePath)),
       rootPath_(std::move(rootPath)),
       pathsRef_(std::move(pathsRef)),
-      cancelRef_(std::move(cancelRef)) {
+      cancelRef_(std::move(cancelRef)),
+      dirtyRef_(std::move(dirtyRef)) {
       if (fingerprint) {
         memcpy(&this->fingerprint_, fingerprint, 16);
       }
@@ -119,6 +131,12 @@ namespace fast_fs_hash {
     int timeoutMs_;
     Hash128 fingerprint_{};
 
+    // Dirty hint from JS (watch-mode optimization)
+    const uint8_t * dirtyPaths_;
+    size_t dirtyLen_;
+    uint32_t dirtyCount_;
+    bool hasDirtyHint_;
+
     // Paths (pool thread: stat loop + finalize)
     std::string cachePath_;
     std::string rootPath_;
@@ -154,6 +172,7 @@ namespace fast_fs_hash {
 
     Napi::ObjectReference pathsRef_;
     Napi::ObjectReference cancelRef_;
+    Napi::ObjectReference dirtyRef_;
 
     static_assert(
       READ_BUFFER_SIZE + sizeof(PathResolver) <= ThreadPool::THREAD_STACK_SIZE - 64 * 1024,
@@ -184,6 +203,11 @@ namespace fast_fs_hash {
       hdr->fileHandle = FFSH_FILE_HANDLE_INVALID;
       if (this->hasFingerprint_) {
         hdr->fingerprint = this->fingerprint_;
+      }
+      if (this->lockedFile_) {
+        stampCacheFileStat(hdr, this->lockedFile_.fd);
+      } else {
+        hdr->clearCacheFileStat();
       }
     }
 
@@ -260,10 +284,53 @@ namespace fast_fs_hash {
       CacheHeader * hdr = headerOf(buf);
       const uint32_t udCount = hdr->udItemCount;
 
-      // Stamp HAS_OLD state into high 2 bits of each entry's ino
       CacheEntry * entries = entriesOf(buf);
-      for (uint32_t i = 0; i < fc; ++i) {
-        entries[i].ino = (entries[i].ino & INO_VALUE_MASK) | CACHE_S_HAS_OLD;
+
+      // Dirty-hint optimization: if JS told us which files changed (watch mode),
+      // stamp only those entries as HAS_OLD (needs stat), all others as DONE (skip).
+      // Falls through to full stat-match if no dirty hint or dirty set is too large.
+      if (this->hasDirtyHint_ && this->dirtyCount_ == 0 && this->dirtyLen_ == 0) {
+        // Empty dirty set — nothing changed, skip all stat-matching.
+        for (uint32_t i = 0; i < fc; ++i) {
+          entries[i].ino = (entries[i].ino & INO_VALUE_MASK) | CACHE_S_DONE;
+        }
+      } else if (this->hasDirtyHint_ && this->dirtyPaths_ && this->dirtyCount_ > 0) {
+        // Build lookup of dirty paths, then selectively stamp entries.
+        // Parse dirty paths from null-separated buffer into a set.
+        std::unordered_set<std::string_view> dirtySet;
+        dirtySet.reserve(this->dirtyCount_);
+        const uint8_t * dp = this->dirtyPaths_;
+        const uint8_t * dpEnd = dp + this->dirtyLen_;
+        const uint8_t * segStart = dp;
+        for (const uint8_t * p = dp; p <= dpEnd; ++p) {
+          if (p == dpEnd || *p == 0) {
+            if (p > segStart) {
+              dirtySet.emplace(reinterpret_cast<const char *>(segStart), p - segStart);
+            }
+            segStart = p + 1;
+          }
+        }
+
+        // Now stamp entries: dirty ones get HAS_OLD, clean ones get DONE.
+        const uint32_t * pathEnds = pathEndsOf(buf, fc, udCount);
+        const uint8_t * packedPaths = pathsOf(buf, fc, udCount);
+        uint32_t prevEnd = 0;
+        for (uint32_t i = 0; i < fc; ++i) {
+          const uint32_t pEnd = pathEnds[i];
+          const uint32_t pLen = pEnd - prevEnd;
+          std::string_view path(reinterpret_cast<const char *>(packedPaths + prevEnd), pLen);
+          prevEnd = pEnd;
+          if (dirtySet.count(path) > 0) {
+            entries[i].ino = (entries[i].ino & INO_VALUE_MASK) | CACHE_S_HAS_OLD;
+          } else {
+            entries[i].ino = (entries[i].ino & INO_VALUE_MASK) | CACHE_S_DONE;
+          }
+        }
+      } else {
+        // No dirty hint or dirtyAll — full stat-match (default behavior).
+        for (uint32_t i = 0; i < fc; ++i) {
+          entries[i].ino = (entries[i].ino & INO_VALUE_MASK) | CACHE_S_HAS_OLD;
+        }
       }
 
       this->runEntries_ = entries;

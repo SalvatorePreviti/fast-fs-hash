@@ -7,7 +7,7 @@
  * ### On-disk file format
  *
  * ```
- * [header:80 bytes, uncompressed][LZ4 compressed body]
+ * [header:96 bytes, uncompressed][LZ4 compressed body]
  * ```
  *
  * The header is always uncompressed — magic, version, fingerprint, and file count
@@ -16,11 +16,13 @@
  * [entries:n×48][udDir:m×4][pathEnds:n×4][paths:pathsLen][udPayloads]
  * ```
  *
- * In-memory dataBuf layout is identical: [header:80][body].
+ * In-memory dataBuf layout is identical: [header:96][body].
+ * Bytes 72–95 are in-memory-only fields (status, fileHandle, cacheFileStat0/1),
+ * zeroed before writing to disk.
  * No trailing data — rootPath/cachePath are passed separately via string members.
  * Per-file state is encoded in the high 2 bits of CacheEntry::ino.
  *
- * Header (80 bytes, all little-endian, naturally aligned):
+ * Header (96 bytes, all little-endian, naturally aligned):
  *
  *   Offset  Size  Field
  *   ------  ----  ------------------------------------------------
@@ -37,6 +39,8 @@
  *    68      4    User data total byte length (u32)
  *    72      4    status (in-memory only, 0 on disk)
  *    76      4    fileHandle (int32, in-memory only, -1 on disk)
+ *    80      8    cacheFileStat0 (f64, in-memory only, 0 on disk)
+ *    88      8    cacheFileStat1 (f64, in-memory only, 0 on disk)
  */
 
 #include "cache-constants.h"
@@ -98,6 +102,8 @@ namespace fast_fs_hash {
     uint32_t udPayloadsLen;  // 68: total byte length of user data payloads
     uint32_t status;  // 72: CacheStatus (in-memory only, 0 on disk)
     int32_t fileHandle;  // 76: FfshFileHandle (in-memory only, -1 on disk)
+    double cacheFileStat0;  // 80: xxHash128 of cache file stat (in-memory only, 0 on disk)
+    double cacheFileStat1;  // 88: xxHash128 of cache file stat (in-memory only, 0 on disk)
 
     /** Store a file handle (int32_t fd, -1 = invalid). */
     FSH_FORCE_INLINE void setFileHandle(int32_t h) noexcept { this->fileHandle = h; }
@@ -105,7 +111,13 @@ namespace fast_fs_hash {
     /** Recover the file handle (int32_t fd, -1 = invalid). */
     FSH_FORCE_INLINE int32_t getFileHandle() const noexcept { return this->fileHandle; }
 
-    static constexpr size_t SIZE = 80;
+    /** Clear cache file stat fields (used before writing to disk). */
+    FSH_FORCE_INLINE void clearCacheFileStat() noexcept {
+      this->cacheFileStat0 = 0;
+      this->cacheFileStat1 = 0;
+    }
+
+    static constexpr size_t SIZE = 96;
     static constexpr uint32_t MAGIC = 0x00485346u;
 
     /** Byte length of the decompressed body (entries+udDir+pathEnds+paths+udPayloads). */
@@ -128,7 +140,7 @@ namespace fast_fs_hash {
     inline bool packedPathsValid(const uint8_t * buf) const noexcept;
   };
 
-  static_assert(sizeof(CacheHeader) == CacheHeader::SIZE, "CacheHeader must be exactly 80 bytes");
+  static_assert(sizeof(CacheHeader) == CacheHeader::SIZE, "CacheHeader must be exactly 96 bytes");
   static_assert(offsetof(CacheHeader, magic) == 0);
   static_assert(offsetof(CacheHeader, version) == 4);
   static_assert(offsetof(CacheHeader, fileCount) == 8);
@@ -142,6 +154,8 @@ namespace fast_fs_hash {
   static_assert(offsetof(CacheHeader, udPayloadsLen) == 68);
   static_assert(offsetof(CacheHeader, status) == 72);
   static_assert(offsetof(CacheHeader, fileHandle) == 76);
+  static_assert(offsetof(CacheHeader, cacheFileStat0) == 80);
+  static_assert(offsetof(CacheHeader, cacheFileStat1) == 88);
 
   enum class CacheStatus : uint32_t {
     UP_TO_DATE = 0,

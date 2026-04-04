@@ -122,53 +122,64 @@ async function main() {
   const cachePath = join(tmp, "cache.fsh");
   const cacheFiles = [fileA, fileB, fileC];
 
+  const cacheConfig = new ffsh.FileHashCache({ cachePath, files: cacheFiles, rootPath: tmp, version: 1 });
+
   // First open: cache does not exist -> status should be 'missing'
   {
-    await using cache = await ffsh.FileHashCache.open(cachePath, tmp, cacheFiles, 1);
-    check("first open: status is 'missing'", cache.status === "missing");
-    check("first open: fileCount matches", cache.fileCount === 3);
+    await using session = await cacheConfig.open();
+    check("first open: status is 'missing'", session.status === "missing");
+    check("first open: fileCount matches", session.fileCount === 3);
 
-    const written = await cache.write();
+    const written = await session.write();
     check("write() returns true", written === true);
   }
 
   // Second open: cache exists and files unchanged -> status should be 'upToDate'
   {
-    await using cache = await ffsh.FileHashCache.open(cachePath, tmp, cacheFiles, 1);
-    check("second open: status is 'upToDate'", cache.status === "upToDate");
-    check("second open: fileCount matches", cache.fileCount === 3);
+    cacheConfig.invalidateAll();
+    await using session = await cacheConfig.open();
+    check("second open: status is 'upToDate'", session.status === "upToDate");
+    check("second open: fileCount matches", session.fileCount === 3);
   }
 
   // Modify a file and re-open: status should be 'changed'
   writeFileSync(fileC, "modified content");
   {
-    await using cache = await ffsh.FileHashCache.open(cachePath, tmp, cacheFiles, 1);
-    check("after modify: status is 'changed'", cache.status === "changed");
+    cacheConfig.invalidateAll();
+    await using session = await cacheConfig.open();
+    check("after modify: status is 'changed'", session.status === "changed");
 
-    const written = await cache.write();
+    const written = await session.write();
     check("re-write returns true", written === true);
   }
 
   // Verify it's up-to-date again after re-write
   {
-    await using cache = await ffsh.FileHashCache.open(cachePath, tmp, cacheFiles, 1);
-    check("after re-write: status is 'upToDate'", cache.status === "upToDate");
+    cacheConfig.invalidateAll();
+    await using session = await cacheConfig.open();
+    check("after re-write: status is 'upToDate'", session.status === "upToDate");
   }
 
   // Version change -> stale
   {
-    await using cache = await ffsh.FileHashCache.open(cachePath, tmp, cacheFiles, 2);
-    check("version bump: status is 'stale'", cache.status === "stale");
+    const staleConfig = new ffsh.FileHashCache({ cachePath, files: cacheFiles, rootPath: tmp, version: 2 });
+    await using session = await staleConfig.open();
+    check("version bump: status is 'stale'", session.status === "stale");
   }
 
-  // writeNew convenience method
+  // overwrite convenience method
   const cachePathNew = join(tmp, "cache-new.fsh");
-  const wnResult = await ffsh.FileHashCache.writeNew(cachePathNew, tmp, cacheFiles);
-  check("writeNew returns true", wnResult === true);
+  const wnResult = await new ffsh.FileHashCache({
+    cachePath: cachePathNew,
+    files: cacheFiles,
+    rootPath: tmp,
+  }).overwrite();
+  check("overwrite returns true", wnResult === true);
 
   {
-    await using cache = await ffsh.FileHashCache.open(cachePathNew, tmp, cacheFiles, 0);
-    check("after writeNew: status is 'upToDate'", cache.status === "upToDate");
+    const wnConfig = new ffsh.FileHashCache({ cachePath: cachePathNew, files: cacheFiles, rootPath: tmp });
+    await using session = await wnConfig.open();
+    check("after overwrite: status is 'upToDate'", session.status === "upToDate");
   }
 
   // -- Summary --

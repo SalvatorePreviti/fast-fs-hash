@@ -11,6 +11,20 @@
 
 namespace fast_fs_hash {
 
+  /** Stamp cacheFileStat0/1 in a header from an open fd by fstat + xxHash128 of {ino, ctimeNs, mtimeNs, size}. */
+  inline void stampCacheFileStat(CacheHeader * hdr, int fd) noexcept {
+    CacheEntry tmp{};
+    if (FfshFile::fstat_into(fd, tmp)) {
+      uint64_t fields[4] = {tmp.ino & INO_VALUE_MASK, tmp.ctimeNs, tmp.mtimeNs, tmp.size};
+      Hash128 h;
+      h.from_xxh128(XXH3_128bits(fields, sizeof(fields)));
+      memcpy(&hdr->cacheFileStat0, &h.bytes[0], 8);
+      memcpy(&hdr->cacheFileStat1, &h.bytes[8], 8);
+    } else {
+      hdr->clearCacheFileStat();
+    }
+  }
+
   /** Initial threads for CacheOpen stat-match (stat-only is kernel-bound, 4 is optimal). */
   static constexpr int MAX_OPEN_THREADS = 4;
 
@@ -58,7 +72,10 @@ namespace fast_fs_hash {
     }
 
     memcpy(outBuf.ptr, hdr, CacheHeader::SIZE);
-    headerOf(outBuf.ptr)->fileHandle = FFSH_FILE_HANDLE_INVALID;
+    auto * diskHdr = headerOf(outBuf.ptr);
+    diskHdr->fileHandle = FFSH_FILE_HANDLE_INVALID;
+    diskHdr->cacheFileStat0 = 0;
+    diskHdr->cacheFileStat1 = 0;
 
     const int compressedSize = LZ4_compress_fast(
       reinterpret_cast<const char *>(body),
@@ -80,6 +97,10 @@ namespace fast_fs_hash {
 
     file.preallocate(actualFileSize);
     const bool ok = file.seek(0) && file.write_all(outBuf.ptr, actualFileSize) && file.truncate(actualFileSize);
+
+    if (ok) {
+      stampCacheFileStat(hdr, file.fd);
+    }
 
     file.close();
     return ok;

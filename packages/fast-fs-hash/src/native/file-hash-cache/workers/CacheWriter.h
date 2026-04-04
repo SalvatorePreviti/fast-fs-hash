@@ -17,7 +17,7 @@ namespace fast_fs_hash {
    *   3. If work needed → fork hash threads on pool
    *   4. Assemble body, LZ4 compress, write directly to the locked cache fd
    *
-   * On-disk format: [header:80 uncompressed][LZ4(body)]
+   * On-disk format: [header:96 uncompressed][LZ4(body)]
    */
   class CacheWriter final : public AddonWorker {
    public:

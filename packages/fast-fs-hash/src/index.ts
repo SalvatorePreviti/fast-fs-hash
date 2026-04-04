@@ -19,9 +19,15 @@ import { binding } from "./init-native";
 import { findCommonRootPath, normalizeFilePaths, toRelativePath } from "./utils";
 import { XxHash128Stream } from "./XxHash128Stream";
 
-export type { CacheStatus, FileHashCacheWriteNewOptions, FileHashCacheWriteOptions } from "./FileHashCache";
+export type {
+  CacheStatus,
+  FileHashCacheOptions,
+  FileHashCachePayloads,
+  FileHashCacheSession,
+  FileHashCacheWriteOptions,
+} from "./FileHashCache";
 export { FileHashCache } from "./FileHashCache";
-export type { FileHashCacheOptions, IXxHash128Functions } from "./public-types";
+export type { IXxHash128Functions } from "./public-types";
 export { XxHash128Stream };
 
 /**

@@ -16,7 +16,7 @@ import type { ChildProcess } from "node:child_process";
 import { fork } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { FileHashCache, threadPoolTrim } from "fast-fs-hash";
+import { FileHashCache } from "fast-fs-hash";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 //  - Fixture setup
@@ -172,8 +172,8 @@ describe("FileHashCache.isLocked", () => {
     const cp = cachePath("unlocked");
     const files = [fixtureFile("a.txt")];
 
-    await using ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-    await ctx.write();
+    await using session = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
+    await session.write();
     // write() releases the lock
     expect(FileHashCache.isLocked(cp)).toBe(false);
   });
@@ -201,7 +201,7 @@ describe("FileHashCache.isLocked", () => {
 
     // POSIX: fcntl F_GETLK never reports the calling process's own locks → false
     // Windows: LockFileEx on a separate handle sees the lock even within the same process → true
-    await using _ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
+    await using _session = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
     const expected = process.platform === "win32";
     expect(FileHashCache.isLocked(cp)).toBe(expected);
   });
@@ -219,8 +219,8 @@ describe("FileHashCache.waitUnlocked", () => {
     const cp = cachePath("unlocked-wait");
     const files = [fixtureFile("a.txt")];
 
-    await using ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-    await ctx.write();
+    await using session = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
+    await session.write();
 
     const result = await FileHashCache.waitUnlocked(cp);
     expect(result).toBe(true);
@@ -283,57 +283,11 @@ describe("FileHashCache.waitUnlocked", () => {
   }, 30_000);
 });
 
-//  - threadPoolTrim
+//  - threadPoolTrim (child-process-dependent test only; basic tests in thread-pool-trim.test.ts)
 
 describe("threadPoolTrim", () => {
-  it("does not throw and is callable", () => {
-    expect(() => threadPoolTrim()).not.toThrow();
-  });
-
-  it("can be called multiple times without error", () => {
-    threadPoolTrim();
-    threadPoolTrim();
-    threadPoolTrim();
-  });
-
-  it("does not break subsequent cache operations", async () => {
-    const cp = cachePath("post-trim");
-    const files = [fixtureFile("a.txt")];
-
-    // Seed cache
-    {
-      await using ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      await ctx.write();
-    }
-
-    // Trim idle threads
-    threadPoolTrim();
-
-    // Cache operations should still work
-    {
-      await using ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-      expect(ctx.status).toBe("upToDate");
-    }
-  }, 30_000);
-
-  it("pool recovers after trim (new work spawns threads)", async () => {
-    threadPoolTrim();
-
-    // Wait a bit for threads to self-terminate
-    await new Promise((r) => setTimeout(r, 50));
-
-    // New heavy work should still succeed
-    const cp = cachePath("post-trim-heavy");
-    const files = [fixtureFile("a.txt"), fixtureFile("b.txt")];
-    const ok = await FileHashCache.writeNew(cp, FIXTURE_DIR, files);
-    expect(ok).toBe(true);
-
-    await using ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 0);
-    expect(ctx.status).toBe("upToDate");
-  }, 30_000);
-
   it("does not strand new work while idle threads self-terminate", async () => {
-    const result = await runTrimRaceInChild(fixtureFile("a.txt"), 250);
+    const result = await runTrimRaceInChild(fixtureFile("a.txt"), 50);
     expect(result.ok).toBe(true);
   }, 30_000);
 });

@@ -8,7 +8,7 @@ Standalone package that installs `fast-fs-hash` from the npm registry and verifi
 - **xxHash128 files** — `digestFile`, `digestFileToHex`, `digestFilesToHexArray`, `filesEqual`
 - **LZ4 buffers** — `lz4CompressBlock` / `lz4DecompressBlock` round-trip
 - **LZ4 files** — `lz4ReadAndCompress` / `lz4DecompressAndWrite` round-trip
-- **FileHashCache** — open (missing) → write → re-open (upToDate) → modify file → re-open (changed) → re-write → verify upToDate → version bump (stale) → `writeNew`
+- **FileHashCache** — open (missing) → write → re-open (upToDate) → modify file → re-open (changed) → re-write → verify upToDate → version bump (stale) → `overwrite`
 
 ## Run locally
 

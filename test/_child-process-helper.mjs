@@ -19,13 +19,19 @@ import { digestFile, FileHashCache, threadPoolTrim } from "fast-fs-hash";
 const args = JSON.parse(process.argv[2]);
 
 if (args.mode === "lock-and-hang") {
-  const cache = await FileHashCache.open(args.cachePath, args.rootPath, args.files, 1);
-  process.send({ acquired: true, disposed: cache.disposed });
+  const cache = new FileHashCache({
+    cachePath: args.cachePath,
+    files: args.files,
+    rootPath: args.rootPath,
+    version: 1,
+  });
+  const session = await cache.open();
+  process.send({ acquired: true, disposed: session.disposed });
 
   // Listen for parent's "release" command to gracefully close the cache
   process.on("message", async (msg) => {
     if (msg === "release") {
-      await cache[Symbol.asyncDispose]();
+      await session[Symbol.asyncDispose]();
       process.send({ released: true });
     }
   });

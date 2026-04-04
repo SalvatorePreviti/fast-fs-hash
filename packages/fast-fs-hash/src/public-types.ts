@@ -43,15 +43,3 @@ export interface IXxHash128Functions {
     throwOnError?: boolean
   ): Promise<TOut>;
 }
-
-/** Options for FileHashCache.open(). */
-export interface FileHashCacheOptions {
-  /** User-defined cache version (u32). Default: 0. */
-  version?: number;
-
-  /** 16-byte fingerprint for fast cache rejection. Must be exactly 16 bytes. */
-  fingerprint?: Uint8Array;
-
-  /** Root path for file resolution. Auto-detected from files if omitted. Required when files is null (reuse mode). */
-  rootPath?: string | null;
-}

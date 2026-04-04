@@ -28,20 +28,25 @@ describe("FileHashCache — no change", async () => {
   // Seed
   const seedCp = cp(cacheDir, "seed");
   {
-    await using seedCtx = await FileHashCache.open(seedCp, RAW_DATA_DIR, files);
-    await seedCtx.write();
+    const cache = new FileHashCache({ cachePath: seedCp, files, rootPath: RAW_DATA_DIR });
+    await using session = await cache.open();
+    await session.write();
   }
 
   const benchCp = cp(cacheDir, "unchanged");
   {
-    await using seedCtx2 = await FileHashCache.open(benchCp, RAW_DATA_DIR, files);
-    await seedCtx2.write();
+    const cache = new FileHashCache({ cachePath: benchCp, files, rootPath: RAW_DATA_DIR });
+    await using session = await cache.open();
+    await session.write();
   }
+
+  const benchCache = new FileHashCache({ cachePath: benchCp, files, rootPath: RAW_DATA_DIR });
 
   bench(
     "native  no change",
     async () => {
-      await using _ctx = await FileHashCache.open(benchCp, RAW_DATA_DIR, files);
+      benchCache.invalidateAll();
+      await using _session = await benchCache.open();
     },
     { warmupIterations: 1, throws: true }
   );

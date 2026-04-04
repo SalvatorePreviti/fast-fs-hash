@@ -31,8 +31,9 @@ describe("FileHashCache — 1 file changed", async () => {
   // Warmup
   const warmupCp = cp(cacheDir, "warmup");
   {
-    await using warmupCtx = await FileHashCache.open(warmupCp, RAW_DATA_DIR, files);
-    await warmupCtx.write();
+    const cache = new FileHashCache({ cachePath: warmupCp, files, rootPath: RAW_DATA_DIR });
+    await using session = await cache.open();
+    await session.write();
   }
 
   const benchCp = cp(cacheDir, "one-change");
@@ -40,23 +41,27 @@ describe("FileHashCache — 1 file changed", async () => {
 
   // Seed the cache
   {
-    await using seedCtx = await FileHashCache.open(benchCp, RAW_DATA_DIR, files);
-    await seedCtx.write();
+    const cache = new FileHashCache({ cachePath: benchCp, files, rootPath: RAW_DATA_DIR });
+    await using session = await cache.open();
+    await session.write();
   }
 
   // Save stale snapshot, then mutate one file
   copyFileSync(benchCp, stalePath);
   mutateModFile();
 
+  const benchCache = new FileHashCache({ cachePath: benchCp, files, rootPath: RAW_DATA_DIR });
+
   bench(
     "native  1 file changed",
     async () => {
       copyFileSync(stalePath, benchCp);
-      await using ctx = await FileHashCache.open(benchCp, RAW_DATA_DIR, files);
-      if (ctx.status === "upToDate") {
+      benchCache.invalidateAll();
+      await using session = await benchCache.open();
+      if (session.status === "upToDate") {
         throw new Error("should not be upToDate");
       }
-      await ctx.write();
+      await session.write();
     },
     { warmupIterations: 1, throws: true }
   );

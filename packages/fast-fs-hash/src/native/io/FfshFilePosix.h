@@ -420,6 +420,19 @@ namespace fast_fs_hash {
       return stat_from_struct_(st, entry);
     }
 
+    /** Open a file for reading only (no lock). Returns raw fd, -1 on error. */
+    static inline int open_rd(const char * path) noexcept {
+#  ifdef __linux__
+      int f = ::open(path, O_RDONLY | O_CLOEXEC | O_NOATIME);
+      if (f < 0 && errno == EPERM) [[unlikely]] {
+        f = ::open(path, O_RDONLY | O_CLOEXEC);
+      }
+      return f;
+#  else
+      return ::open(path, O_RDONLY | O_CLOEXEC);
+#  endif
+    }
+
    private:
     /** Apply or try a fcntl lock on byte 0 of fd. Retries on EINTR. */
     static FSH_FORCE_INLINE int fcntl_lock_type_(int fd, int cmd, short lock_type) noexcept {
@@ -500,18 +513,6 @@ namespace fast_fs_hash {
           }
         }
       }
-    }
-
-    static inline int open_rd(const char * path) noexcept {
-#  ifdef __linux__
-      int f = ::open(path, O_RDONLY | O_CLOEXEC | O_NOATIME);
-      if (f < 0 && errno == EPERM) [[unlikely]] {
-        f = ::open(path, O_RDONLY | O_CLOEXEC);
-      }
-      return f;
-#  else
-      return ::open(path, O_RDONLY | O_CLOEXEC);
-#  endif
     }
 
     static inline int open_rw_fd_(const char * path) noexcept { return ::open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0666); }

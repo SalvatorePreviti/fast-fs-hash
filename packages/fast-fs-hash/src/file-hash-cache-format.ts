@@ -4,10 +4,10 @@
  * ### On-disk layout
  *
  * ```
- * [header: 80 bytes, uncompressed][LZ4 compressed body]
+ * [header: 96 bytes, uncompressed][LZ4 compressed body]
  *
- * The header is 80 bytes. Bytes 72–79 contain in-memory-only fields (status,
- * fileHandle) that are reset before writing to disk.
+ * The header is 96 bytes. Bytes 72–95 contain in-memory-only fields (status,
+ * fileHandle, cacheFileStat0, cacheFileStat1) that are zeroed before writing to disk.
  * ```
  *
  * The header is always readable without decompression. The LZ4 body contains:
@@ -19,7 +19,7 @@
  * [user data payloads]
  * ```
  *
- * In-memory dataBuf layout is identical: [header:80][body].
+ * In-memory dataBuf layout is identical: [header:96][body].
  * Per-file state is encoded in the high 2 bits of each entry's inode field.
  *
  * @module
@@ -30,7 +30,10 @@
 export const MAGIC = 0x00485346;
 
 /** Fixed header size in bytes. */
-export const HEADER_SIZE = 80;
+export const HEADER_SIZE = 96;
+
+/** Header byte 4: User cache version (u32). */
+export const H_VERSION = 4;
 
 /** Header byte 8: Number of file entries (u32). */
 export const H_FILE_COUNT = 8;
@@ -64,6 +67,12 @@ export const H_STATUS_BYTE = 72;
 
 /** Header byte 76: fileHandle (int32 LE fd, in-memory only, -1 on disk). */
 export const H_FILE_HANDLE = 76;
+
+/** Header byte 80: cacheFileStat0 (f64 LE, in-memory only, 0 on disk). */
+export const H_CACHE_STAT0 = 80;
+
+/** Header byte 88: cacheFileStat1 (f64 LE, in-memory only, 0 on disk). */
+export const H_CACHE_STAT1 = 88;
 
 /** Fixed byte size of each file entry (48 bytes, 16-byte aligned). */
 export const ENTRY_STRIDE = 48;

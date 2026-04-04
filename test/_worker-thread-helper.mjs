@@ -26,8 +26,14 @@ if (!isMainThread && parentPort && workerData) {
 
     parentPort.postMessage({ hashHex, fileHashHex });
   } else if (workerData.mode === "lock-and-hang") {
-    const cache = await FileHashCache.open(workerData.cachePath, workerData.rootPath, workerData.files, 1);
-    parentPort.postMessage({ acquired: true, disposed: cache.disposed });
+    const cache = new FileHashCache({
+      cachePath: workerData.cachePath,
+      files: workerData.files,
+      rootPath: workerData.rootPath,
+      version: 1,
+    });
+    const session = await cache.open();
+    parentPort.postMessage({ acquired: true, disposed: session.disposed });
     // Hang forever — parent will terminate() us. setTimeout avoids vitest's unsettled-await warning.
     setTimeout(() => {}, 2147483647);
   } else if (workerData.mode === "bulk") {

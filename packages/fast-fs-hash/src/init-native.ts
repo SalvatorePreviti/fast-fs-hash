@@ -61,7 +61,9 @@ export interface BindingExportNative {
     version: number,
     fingerprint: Uint8Array | null,
     lockTimeoutMs: number,
-    cancelBuf?: Uint8Array | null
+    cancelBuf?: Uint8Array | null,
+    dirtyPaths?: Uint8Array | null,
+    dirtyCount?: number
   ): Promise<Buffer>;
   cacheWrite(
     dataBuf: Uint8Array,
@@ -91,6 +93,8 @@ export interface BindingExportNative {
   cacheIsLocked(cachePath: string): boolean;
   cacheWaitUnlocked(cachePath: string, lockTimeoutMs?: number, cancelBuf?: Uint8Array | null): Promise<boolean>;
   cacheFireCancel(cancelBuf: Uint8Array): void;
+  cacheStatHash(cachePath: string, stat0: number, stat1: number): boolean;
+  cacheFileStatGet(cachePath: string, out: Float64Array): void;
   filesEqual(pathA: string, pathB: string): Promise<boolean>;
   poolTrim(): void;
   lz4CompressBlock(input: Uint8Array, offset?: number, length?: number): Buffer;

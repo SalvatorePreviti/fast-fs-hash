@@ -1,13 +1,14 @@
 /**
- * Tests: Lock cancellation and timeout behavior.
+ * Tests: Lock cancellation and timeout behavior (cross-process).
  *
  * Verifies that:
  * - open() with lockTimeoutMs=0 returns status='lockFailed' when lock is held
  * - open() with a short lockTimeoutMs returns status='lockFailed' when lock is held
- * - writeNew() with a short lockTimeoutMs returns false when lock is held
- * - write() on a lockFailed instance falls back to writeNew()
+ * - overwrite() with a short lockTimeoutMs returns false when lock is held
+ * - write() on a lockFailed instance falls back to overwrite
  * - needsWrite is false for lockFailed status
  * - waitUnlocked() with lockTimeoutMs=0 returns false when lock is held
+ * - AbortSignal cancellation during cross-process lock wait
  *
  * Coordination uses IPC messages for deterministic signaling:
  * - Child sends { acquired: true } when it holds the lock
@@ -115,9 +116,15 @@ describe("Lock cancellation and timeout", () => {
     try {
       expect(acquired).toBe(true);
 
-      await using ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1, null, 0);
-      expect(ctx.status).toBe("lockFailed");
-      expect(ctx.needsWrite).toBe(false);
+      await using session = await new FileHashCache({
+        cachePath: cp,
+        files,
+        rootPath: FIXTURE_DIR,
+        version: 1,
+        lockTimeoutMs: 0,
+      }).open();
+      expect(session.status).toBe("lockFailed");
+      expect(session.needsWrite).toBe(false);
     } finally {
       await killChild(child);
     }
@@ -131,9 +138,15 @@ describe("Lock cancellation and timeout", () => {
     try {
       expect(acquired).toBe(true);
 
-      await using ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1, null, 100);
-      expect(ctx.status).toBe("lockFailed");
-      expect(ctx.needsWrite).toBe(false);
+      await using session = await new FileHashCache({
+        cachePath: cp,
+        files,
+        rootPath: FIXTURE_DIR,
+        version: 1,
+        lockTimeoutMs: 100,
+      }).open();
+      expect(session.status).toBe("lockFailed");
+      expect(session.needsWrite).toBe(false);
     } finally {
       await killChild(child);
     }
@@ -147,18 +160,24 @@ describe("Lock cancellation and timeout", () => {
     expect(acquired).toBe(true);
 
     // Start open with generous timeout — will block on the lock
-    const openPromise = FileHashCache.open(cp, FIXTURE_DIR, files, 1, null, 20_000);
+    const openPromise = new FileHashCache({
+      cachePath: cp,
+      files,
+      rootPath: FIXTURE_DIR,
+      version: 1,
+      lockTimeoutMs: 20_000,
+    }).open();
 
     // Gracefully release the lock via IPC — deterministic, no guessing
     await releaseChild(child);
     await killChild(child);
 
-    await using ctx = await openPromise;
-    expect(ctx.status).not.toBe("lockFailed");
-    expect(ctx.disposed).toBe(false);
+    await using session = await openPromise;
+    expect(session.status).not.toBe("lockFailed");
+    expect(session.disposed).toBe(false);
   }, 30_000);
 
-  it("writeNew() with lockTimeoutMs=0 returns false when lock is held", async () => {
+  it("overwrite() with lockTimeoutMs=0 returns false when lock is held", async () => {
     const cp = cachePath("write-new-nonblocking");
     const files = [fixtureFile("a.txt")];
 
@@ -166,14 +185,19 @@ describe("Lock cancellation and timeout", () => {
     try {
       expect(acquired).toBe(true);
 
-      const result = await FileHashCache.writeNew(cp, FIXTURE_DIR, files, { lockTimeoutMs: 0 });
+      const result = await new FileHashCache({
+        cachePath: cp,
+        files,
+        rootPath: FIXTURE_DIR,
+        lockTimeoutMs: 0,
+      }).overwrite();
       expect(result).toBe(false);
     } finally {
       await killChild(child);
     }
   }, 30_000);
 
-  it("writeNew() with short lockTimeoutMs returns false on timeout", async () => {
+  it("overwrite() with short lockTimeoutMs returns false on timeout", async () => {
     const cp = cachePath("write-new-timeout");
     const files = [fixtureFile("a.txt")];
 
@@ -181,7 +205,12 @@ describe("Lock cancellation and timeout", () => {
     try {
       expect(acquired).toBe(true);
 
-      const result = await FileHashCache.writeNew(cp, FIXTURE_DIR, files, { lockTimeoutMs: 100 });
+      const result = await new FileHashCache({
+        cachePath: cp,
+        files,
+        rootPath: FIXTURE_DIR,
+        lockTimeoutMs: 100,
+      }).overwrite();
       expect(result).toBe(false);
     } finally {
       await killChild(child);
@@ -196,18 +225,18 @@ describe("Lock cancellation and timeout", () => {
     expect(acquired).toBe(true);
 
     // Start open with infinite timeout (-1, the default)
-    const openPromise = FileHashCache.open(cp, FIXTURE_DIR, files, 1, null, -1);
+    const openPromise = new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
 
     // Gracefully release the lock via IPC
     await releaseChild(child);
     await killChild(child);
 
-    await using ctx = await openPromise;
-    expect(ctx.status).not.toBe("lockFailed");
-    expect(ctx.disposed).toBe(false);
+    await using session = await openPromise;
+    expect(session.status).not.toBe("lockFailed");
+    expect(session.disposed).toBe(false);
   }, 30_000);
 
-  it("write() on lockFailed instance falls back to writeNew after lock is released", async () => {
+  it("write() on lockFailed instance falls back to overwrite after lock is released", async () => {
     const cp = cachePath("write-fallback");
     const files = [fixtureFile("a.txt"), fixtureFile("b.txt")];
 
@@ -215,21 +244,27 @@ describe("Lock cancellation and timeout", () => {
     expect(acquired).toBe(true);
 
     // Open with non-blocking — gets lockFailed
-    const ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1, null, 0);
-    expect(ctx.status).toBe("lockFailed");
-    expect(ctx.needsWrite).toBe(false);
+    const session = await new FileHashCache({
+      cachePath: cp,
+      files,
+      rootPath: FIXTURE_DIR,
+      version: 1,
+      lockTimeoutMs: 0,
+    }).open();
+    expect(session.status).toBe("lockFailed");
+    expect(session.needsWrite).toBe(false);
 
-    // Gracefully release the lock so write() -> writeNew() can acquire it
+    // Gracefully release the lock so write() -> overwrite can acquire it
     await releaseChild(child);
     await killChild(child);
 
-    // write() should fall back to writeNew() and succeed
-    const result = await ctx.write();
+    // write() should fall back to overwrite and succeed
+    const result = await session.write();
     expect(result).toBe(true);
-    expect(ctx.disposed).toBe(true);
+    expect(session.disposed).toBe(true);
 
     // Verify the cache was actually written by re-opening it
-    await using verify = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
+    await using verify = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
     expect(verify.status).toBe("upToDate");
   }, 30_000);
 
@@ -242,34 +277,26 @@ describe("Lock cancellation and timeout", () => {
       expect(acquired).toBe(true);
 
       // Open with non-blocking — gets lockFailed
-      const ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1, null, 0);
-      expect(ctx.status).toBe("lockFailed");
+      const session = await new FileHashCache({
+        cachePath: cp,
+        files,
+        rootPath: FIXTURE_DIR,
+        version: 1,
+        lockTimeoutMs: 0,
+      }).open();
+      expect(session.status).toBe("lockFailed");
 
-      // write() falls back to writeNew() which also can't acquire the lock
-      const result = await ctx.write();
+      // write() falls back to overwrite which also can't acquire the lock
+      const result = await session.write();
       expect(result).toBe(false);
-      expect(ctx.disposed).toBe(true);
+      expect(session.disposed).toBe(true);
     } finally {
       await killChild(child);
     }
   }, 30_000);
 });
 
-describe("AbortSignal cancellation", () => {
-  it("open() with already-aborted signal returns lockFailed immediately", async () => {
-    const cp = cachePath("abort-pre");
-    const files = [fixtureFile("a.txt")];
-    const ac = new AbortController();
-    ac.abort();
-
-    const start = Date.now();
-    await using ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1, null, -1, ac.signal);
-    const elapsed = Date.now() - start;
-    expect(ctx.status).toBe("lockFailed");
-    expect(ctx.needsWrite).toBe(false);
-    expect(elapsed).toBeLessThan(5000);
-  }, 30_000);
-
+describe("AbortSignal cancellation (cross-process)", () => {
   it("open() with signal aborted during lock wait returns lockFailed", async () => {
     const cp = cachePath("abort-during");
     const files = [fixtureFile("a.txt")];
@@ -282,34 +309,16 @@ describe("AbortSignal cancellation", () => {
       // Abort on next tick — native poll loop (100ms) picks it up promptly
       setTimeout(() => ac.abort(), 0);
 
-      await using ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1, null, -1, ac.signal);
-      expect(ctx.status).toBe("lockFailed");
+      await using session = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open(
+        ac.signal
+      );
+      expect(session.status).toBe("lockFailed");
     } finally {
       await killChild(child);
     }
   }, 30_000);
 
-  it("open() with signal that is not aborted succeeds normally", async () => {
-    const cp = cachePath("abort-not-fired");
-    const files = [fixtureFile("a.txt")];
-    const ac = new AbortController();
-
-    await using ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1, null, -1, ac.signal);
-    expect(ctx.status).not.toBe("lockFailed");
-    expect(ctx.disposed).toBe(false);
-  }, 30_000);
-
-  it("writeNew() with already-aborted signal returns false", async () => {
-    const cp = cachePath("abort-writenew-pre");
-    const files = [fixtureFile("a.txt")];
-    const ac = new AbortController();
-    ac.abort();
-
-    const result = await FileHashCache.writeNew(cp, FIXTURE_DIR, files, { signal: ac.signal });
-    expect(result).toBe(false);
-  }, 30_000);
-
-  it("writeNew() with signal aborted during lock wait returns false", async () => {
+  it("overwrite() with signal aborted during lock wait returns false", async () => {
     const cp = cachePath("abort-writenew-during");
     const files = [fixtureFile("a.txt")];
 
@@ -320,7 +329,7 @@ describe("AbortSignal cancellation", () => {
       const ac = new AbortController();
       setTimeout(() => ac.abort(), 0);
 
-      const result = await FileHashCache.writeNew(cp, FIXTURE_DIR, files, {
+      const result = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite({
         lockTimeoutMs: -1,
         signal: ac.signal,
       });
@@ -367,62 +376,5 @@ describe("AbortSignal cancellation", () => {
     } finally {
       await killChild(child);
     }
-  }, 30_000);
-
-  it("write() uses stored cancelBuf from open signal", async () => {
-    const cp = cachePath("abort-write-stored");
-    const files = [fixtureFile("a.txt")];
-
-    // Open without signal, write a cache first
-    await using seed = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-    await seed.write();
-
-    // Modify file so cache is dirty
-    writeFileSync(fixtureFile("a.txt"), "modified-for-abort-test\n");
-
-    // Open with a signal, then abort before write
-    const ac = new AbortController();
-    const ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1, null, -1, ac.signal);
-    expect(ctx.status).not.toBe("lockFailed");
-    expect(ctx.status).not.toBe("upToDate");
-
-    // Abort the signal — write's hash phase should see this
-    ac.abort();
-    // write() should still succeed because cancellation doesn't apply during file write
-    // (CacheWriter checks cancelByte during hash loop but completes the write)
-    const result = await ctx.write();
-    // The write may succeed or the hash phase may detect cancellation —
-    // either outcome is valid depending on timing
-    expect(typeof result).toBe("boolean");
-    expect(ctx.disposed).toBe(true);
-
-    // Restore fixture
-    writeFileSync(fixtureFile("a.txt"), "lock-cancel-test\n");
-  }, 30_000);
-
-  it("write() accepts its own signal in options", async () => {
-    const cp = cachePath("abort-write-opts");
-    const files = [fixtureFile("a.txt")];
-
-    // Seed a cache
-    await using seed = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-    await seed.write();
-
-    // Modify file
-    writeFileSync(fixtureFile("a.txt"), "modified-for-write-signal-test\n");
-
-    // Open without signal
-    const ctx = await FileHashCache.open(cp, FIXTURE_DIR, files, 1);
-    expect(ctx.status).not.toBe("upToDate");
-
-    // Write with an already-aborted signal
-    const ac = new AbortController();
-    ac.abort();
-    const result = await ctx.write({ signal: ac.signal });
-    expect(typeof result).toBe("boolean");
-    expect(ctx.disposed).toBe(true);
-
-    // Restore fixture
-    writeFileSync(fixtureFile("a.txt"), "lock-cancel-test\n");
   }, 30_000);
 });

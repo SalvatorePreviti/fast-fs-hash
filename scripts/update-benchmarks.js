@@ -411,7 +411,7 @@ const FHC_GROUPS = [
   "FileHashCache — 1 file changed",
   "FileHashCache — many files changed",
   "FileHashCache — no existing cache",
-  "FileHashCache — writeNew",
+  "FileHashCache — overwrite",
 ];
 
 const fhcGroups = FHC_GROUPS.map((g) => findBenchesInGroup(benchData, g));

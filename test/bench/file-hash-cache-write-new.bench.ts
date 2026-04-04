@@ -1,7 +1,7 @@
 /**
- * Benchmark: FileHashCache.writeNew — static write (hash all from scratch).
+ * Benchmark: FileHashCache.overwrite — write (hash all from scratch).
  *
- * writeNew skips reading/decompressing the old cache — it locks the file,
+ * overwrite skips reading/decompressing the old cache — it locks the file,
  * hashes every entry, LZ4-compresses, and writes. Useful when you already
  * know a full rebuild is needed.
  *
@@ -23,21 +23,18 @@ function cp(cacheDir: string, label: string): string {
   return path.join(cacheDir, `${label}-${++counter}.cache`);
 }
 
-describe("FileHashCache — writeNew", async () => {
+describe("FileHashCache — overwrite", async () => {
   const { files, cacheDir } = generate();
 
-  // Warmup
-  const warmupCp = cp(cacheDir, "warmup");
-  await FileHashCache.writeNew(warmupCp, RAW_DATA_DIR, files);
+  const cacheInstance = new FileHashCache({ cachePath: cp(cacheDir, "overwrite"), files, rootPath: RAW_DATA_DIR });
 
-  // Seed a cache to overwrite
-  const benchCp = cp(cacheDir, "writeNew");
-  await FileHashCache.writeNew(benchCp, RAW_DATA_DIR, files);
+  // Warmup
+  await cacheInstance.overwrite();
 
   bench(
-    "native  writeNew",
+    "native  overwrite",
     async () => {
-      await FileHashCache.writeNew(benchCp, RAW_DATA_DIR, files);
+      await cacheInstance.overwrite();
     },
     { warmupIterations: 1, throws: true }
   );

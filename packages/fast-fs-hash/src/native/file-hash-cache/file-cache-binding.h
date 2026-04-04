@@ -69,6 +69,25 @@ namespace fast_fs_hash {
       }
     }
 
+    // Optional dirty paths buffer (arg 8) and dirty count (arg 9).
+    // When non-null, C++ will only stat-match entries whose paths appear
+    // in the dirty set, skipping stat for all others (watch-mode optimization).
+    const uint8_t * dirtyPaths = nullptr;
+    size_t dirtyLen = 0;
+    uint32_t dirtyCount = 0;
+    bool hasDirtyHint = false;
+    Napi::ObjectReference dirtyRef;
+    if (info.Length() > 8 && !info[8].IsNull() && !info[8].IsUndefined() && info[8].IsTypedArray()) {
+      auto dirtyBuf = info[8].As<Napi::Uint8Array>();
+      dirtyPaths = dirtyBuf.Data();
+      dirtyLen = dirtyBuf.ByteLength();
+      hasDirtyHint = true;
+      dirtyRef = Napi::ObjectReference::New(dirtyBuf, 1);
+      if (info.Length() > 9) {
+        napi_get_value_uint32(env, info[9], &dirtyCount);
+      }
+    }
+
     auto paths_ref = Napi::ObjectReference::New(pathsBuf, 1);
 
     auto * worker = new CacheOpen(
@@ -84,7 +103,12 @@ namespace fast_fs_hash {
       fingerprint,
       timeoutMs,
       cancelByte,
-      std::move(cancelRef));
+      std::move(cancelRef),
+      dirtyPaths,
+      dirtyLen,
+      dirtyCount,
+      hasDirtyHint,
+      std::move(dirtyRef));
     worker->Start();
     return deferred.Promise();
   }
@@ -320,6 +344,97 @@ namespace fast_fs_hash {
     auto * worker = new CacheWaitUnlocked(env, deferred, std::move(cachePath), timeoutMs, cancelByte, std::move(cancelRef));
     worker->Queue();
     return deferred.Promise();
+  }
+
+  /**
+   * cacheStatHash(cachePath: string, stat0: number, stat1: number) → boolean
+   *
+   * Sync binding: opens the cache file readonly (no lock), fstats it, hashes
+   * {ino, ctimeNs, mtimeNs, size} with XXH3_128bits, and compares the result
+   * against the provided stat0/stat1 doubles. Returns true if they differ
+   * (i.e., the cache file has changed). Returns true on error (treat as changed).
+   */
+  inline Napi::Value bindCacheStatHash(const Napi::CallbackInfo & info) {
+    const auto env = info.Env();
+    if (info.Length() < 3 || !info[0].IsString()) [[unlikely]] {
+      return Napi::Boolean::New(env, true);
+    }
+
+    double oldStat0 = 0, oldStat1 = 0;
+    napi_get_value_double(env, info[1], &oldStat0);
+    napi_get_value_double(env, info[2], &oldStat1);
+
+    char cachePath[FSH_MAX_PATH];
+    size_t copied = 0;
+    napi_get_value_string_utf8(env, info[0], cachePath, sizeof(cachePath), &copied);
+
+    const int fd = FfshFile::open_rd(cachePath);
+    if (fd < 0) [[unlikely]] {
+      return Napi::Boolean::New(env, true);
+    }
+
+    CacheEntry tmp{};
+    const bool statOk = FfshFile::fstat_into(fd, tmp);
+    FfshFile::close_fd(fd);
+    if (!statOk) [[unlikely]] {
+      return Napi::Boolean::New(env, true);
+    }
+
+    uint64_t fields[4] = {tmp.ino & INO_VALUE_MASK, tmp.ctimeNs, tmp.mtimeNs, tmp.size};
+    Hash128 h;
+    h.from_xxh128(XXH3_128bits(fields, sizeof(fields)));
+    double newStat0, newStat1;
+    memcpy(&newStat0, &h.bytes[0], 8);
+    memcpy(&newStat1, &h.bytes[8], 8);
+
+    return Napi::Boolean::New(env, newStat0 != oldStat0 || newStat1 != oldStat1);
+  }
+
+  /**
+   * cacheFileStatGet(cachePath: string, out: Float64Array) → void
+   *
+   * Sync binding: opens the cache file readonly (no lock), fstats it, hashes
+   * {ino, ctimeNs, mtimeNs, size} with XXH3_128bits, and writes the two f64
+   * halves into out[0] and out[1]. On error, writes [0, 0].
+   */
+  inline Napi::Value bindCacheFileStatGet(const Napi::CallbackInfo & info) {
+    const auto env = info.Env();
+    if (info.Length() < 2 || !info[0].IsString() || !info[1].IsTypedArray()) [[unlikely]] {
+      return env.Undefined();
+    }
+
+    auto outArr = info[1].As<Napi::Float64Array>();
+    if (outArr.ElementLength() < 2) [[unlikely]] {
+      return env.Undefined();
+    }
+    double * out = outArr.Data();
+
+    char cachePath[FSH_MAX_PATH];
+    size_t copied = 0;
+    napi_get_value_string_utf8(env, info[0], cachePath, sizeof(cachePath), &copied);
+
+    const int fd = FfshFile::open_rd(cachePath);
+    if (fd < 0) [[unlikely]] {
+      out[0] = 0;
+      out[1] = 0;
+      return env.Undefined();
+    }
+
+    CacheEntry tmp{};
+    const bool statOk = FfshFile::fstat_into(fd, tmp);
+    FfshFile::close_fd(fd);
+    if (!statOk) [[unlikely]] {
+      out[0] = 0;
+      out[1] = 0;
+      return env.Undefined();
+    }
+
+    uint64_t fields[4] = {tmp.ino & INO_VALUE_MASK, tmp.ctimeNs, tmp.mtimeNs, tmp.size};
+    Hash128 h;
+    h.from_xxh128(XXH3_128bits(fields, sizeof(fields)));
+    memcpy(&out[0], &h.bytes[0], 8);
+    memcpy(&out[1], &h.bytes[8], 8);
+    return env.Undefined();
   }
 
   /**

@@ -8,6 +8,7 @@
 
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import type { FileHashCacheSession } from "fast-fs-hash";
 import { FileHashCache } from "fast-fs-hash";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -23,11 +24,14 @@ function cachePath(label = "test"): string {
   return path.join(CACHE_DIR, `${label}-${++cacheCounter}.cache`);
 }
 
-type OpenArgs = Parameters<typeof FileHashCache.open>;
-
-async function withCache<T>(args: OpenArgs, run: (ctx: FileHashCache) => Promise<T> | T): Promise<T> {
-  await using ctx = await FileHashCache.open(...args);
-  return await run(ctx);
+async function withCache<T>(
+  cp: string,
+  files: string[],
+  opts: { rootPath?: string; version?: number; fingerprint?: string; lockTimeoutMs?: number },
+  run: (session: FileHashCacheSession) => Promise<T> | T
+): Promise<T> {
+  await using session = await new FileHashCache({ cachePath: cp, files, ...opts }).open();
+  return await run(session);
 }
 
 //  - Tests
@@ -54,12 +58,12 @@ describe("FileHashCache auto root path [native]", () => {
     const fileB = path.join(FIX_A, "b.txt");
     const files = [fileA, fileB];
 
-    await withCache([cp, TEST_DIR, [], 1], async (ctx1) => {
+    await withCache(cp, [], { rootPath: TEST_DIR, version: 1 }, async (ctx1) => {
       await ctx1.write({ files, rootPath: true });
     });
 
     // Verify: re-open with the same files (root auto-detected as FIX_A)
-    const status = await withCache([cp, FIX_A, files, 1], (ctx2) => ctx2.status);
+    const status = await withCache(cp, files, { rootPath: FIX_A, version: 1 }, (ctx2) => ctx2.status);
     expect(status).toBe("upToDate");
   });
 
@@ -69,12 +73,12 @@ describe("FileHashCache auto root path [native]", () => {
     const fileC = path.join(FIX_B, "c.txt");
     const files = [fileA, fileC];
 
-    await withCache([cp, TEST_DIR, [], 1], async (ctx1) => {
+    await withCache(cp, [], { rootPath: TEST_DIR, version: 1 }, async (ctx1) => {
       await ctx1.write({ files, rootPath: true });
     });
 
     // Root should be TEST_DIR (common parent of project-a and project-b)
-    const status = await withCache([cp, TEST_DIR, files, 1], (ctx2) => ctx2.status);
+    const status = await withCache(cp, files, { rootPath: TEST_DIR, version: 1 }, (ctx2) => ctx2.status);
     expect(status).toBe("upToDate");
   });
 
@@ -84,11 +88,11 @@ describe("FileHashCache auto root path [native]", () => {
     const fileB = path.join(FIX_A, "b.txt");
     const files = [fileA, fileB];
 
-    await withCache([cp, FIX_A, files, 1], async (ctx1) => {
+    await withCache(cp, files, { rootPath: FIX_A, version: 1 }, async (ctx1) => {
       await ctx1.write();
     });
 
-    const status = await withCache([cp, FIX_A, files, 1], (ctx2) => ctx2.status);
+    const status = await withCache(cp, files, { rootPath: FIX_A, version: 1 }, (ctx2) => ctx2.status);
     expect(status).toBe("upToDate");
   });
 
@@ -98,12 +102,12 @@ describe("FileHashCache auto root path [native]", () => {
     const fileB = path.join(FIX_A, "b.txt");
     const files = [fileA, fileB];
 
-    await withCache([cp, TEST_DIR, [], 1], async (ctx1) => {
+    await withCache(cp, [], { rootPath: TEST_DIR, version: 1 }, async (ctx1) => {
       await ctx1.write({ files, rootPath: true });
     });
 
     // Should have used auto-computed root (FIX_A)
-    const status = await withCache([cp, FIX_A, files, 1], (ctx2) => ctx2.status);
+    const status = await withCache(cp, files, { rootPath: FIX_A, version: 1 }, (ctx2) => ctx2.status);
     expect(status).toBe("upToDate");
   });
 
@@ -111,11 +115,11 @@ describe("FileHashCache auto root path [native]", () => {
     const cp = cachePath("auto-explicit");
     const files = [path.join(FIX_A, "a.txt")];
 
-    await withCache([cp, TEST_DIR, [], 1], async (ctx1) => {
+    await withCache(cp, [], { rootPath: TEST_DIR, version: 1 }, async (ctx1) => {
       await ctx1.write({ files, rootPath: FIX_A });
     });
 
-    const status = await withCache([cp, FIX_A, files, 1], (ctx2) => ctx2.status);
+    const status = await withCache(cp, files, { rootPath: FIX_A, version: 1 }, (ctx2) => ctx2.status);
     expect(status).toBe("upToDate");
   });
 });

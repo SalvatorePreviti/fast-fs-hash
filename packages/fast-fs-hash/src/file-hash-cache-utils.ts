@@ -7,7 +7,7 @@
 
 import { findCommonRootPath, pathResolve } from "./utils";
 
-function resolveDir(p: string): string {
+export function resolveDir(p: string): string {
   const r = pathResolve(p);
   return r.charCodeAt(r.length - 1) === 0x2f /* '/' */ ? r : r + "/";
 }

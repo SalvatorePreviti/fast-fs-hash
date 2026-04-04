@@ -561,6 +561,19 @@ namespace fast_fs_hash {
       return stat_write_(info, basicInfo, entry);
     }
 
+    /** Open a file for reading only (no lock). Returns raw fd, -1 on error. */
+    static inline int open_rd(const char * path) noexcept {
+      wchar_t wbuf[512];
+      wchar_t * heap = nullptr;
+      const int wlen = utf8_to_wide(path, wbuf, 512, &heap);
+      if (wlen <= 0) {
+        return -1;
+      }
+      const int f = open_rd_w(heap ? heap : wbuf);
+      free(heap);
+      return f;
+    }
+
    private:
     /** Overlapped handle that holds the byte-range lock. INVALID_HANDLE_VALUE when unused. */
     HANDLE lockHandle_ = INVALID_HANDLE_VALUE;
@@ -590,18 +603,6 @@ namespace fast_fs_hash {
       MultiByteToWideChar(CP_UTF8, 0, utf8, -1, h, wlen);
       *heap_out = h;
       return wlen;
-    }
-
-    static inline int open_rd(const char * path) noexcept {
-      wchar_t wbuf[512];
-      wchar_t * heap = nullptr;
-      const int wlen = utf8_to_wide(path, wbuf, 512, &heap);
-      if (wlen <= 0) {
-        return -1;
-      }
-      const int f = open_rd_w(heap ? heap : wbuf);
-      free(heap);
-      return f;
     }
 
     static inline int open_rd_w(const wchar_t * wpath) noexcept {
