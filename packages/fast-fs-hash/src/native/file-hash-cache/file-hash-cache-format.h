@@ -7,7 +7,7 @@
  * ### On-disk file format
  *
  * ```
- * [header:96 bytes, uncompressed][LZ4 compressed body]
+ * [header:80 bytes, uncompressed][LZ4 compressed body]
  * ```
  *
  * The header is always uncompressed — magic, version, fingerprint, and file count
@@ -16,13 +16,11 @@
  * [entries:n×48][udDir:m×4][pathEnds:n×4][paths:pathsLen][udPayloads]
  * ```
  *
- * In-memory dataBuf layout is identical: [header:96][body].
- * Bytes 72–95 are in-memory-only fields (status, fileHandle, cacheFileStat0/1),
- * zeroed before writing to disk.
- * No trailing data — rootPath/cachePath are passed separately via string members.
+ * In-memory dataBuf layout is identical: [header:80][body].
+ * No trailing data — rootPath/cachePath are passed separately.
  * Per-file state is encoded in the high 2 bits of CacheEntry::ino.
  *
- * Header (96 bytes, all little-endian, naturally aligned):
+ * Header (80 bytes, all little-endian, naturally aligned):
  *
  *   Offset  Size  Field
  *   ------  ----  ------------------------------------------------
@@ -37,10 +35,32 @@
  *    56      8    userValue3 (f64 LE, user-defined)
  *    64      4    Paths section byte length (u32)
  *    68      4    User data total byte length (u32)
- *    72      4    status (in-memory only, 0 on disk)
- *    76      4    fileHandle (int32, in-memory only, -1 on disk)
- *    80      8    cacheFileStat0 (f64, in-memory only, 0 on disk)
- *    88      8    cacheFileStat1 (f64, in-memory only, 0 on disk)
+ *    72      8    Reserved (zero)
+ *
+ * ### CacheStateBuf (shared JS ↔ C++ per-instance communication buffer)
+ *
+ * Allocated once per FileHashCache JS instance. Fixed 96-byte header followed
+ * by the null-terminated UTF-8 cache path. JS writes config fields before each
+ * C++ call; C++ writes result fields in OnOK (JS thread).
+ *
+ *   Offset  Size  Field
+ *   ------  ----  ------------------------------------------------
+ *     0     16    fingerprint (JS→C++, zeroed = none)
+ *    16      4    version (u32, JS→C++)
+ *    20      4    lockTimeoutMs (i32, JS→C++)
+ *    24      4    status (u32, C++→JS)
+ *    28      4    fileHandle (i32, C++↔JS, -1 = invalid)
+ *    32      8    cacheFileStat0 (f64, C++→JS)
+ *    40      8    cacheFileStat1 (f64, C++→JS)
+ *    48      8    userValue0 (f64, JS→C++)
+ *    56      8    userValue1 (f64, JS→C++)
+ *    64      8    userValue2 (f64, JS→C++)
+ *    72      8    userValue3 (f64, JS→C++)
+ *    80      4    cancelFlag (u32, JS↔C++, volatile)
+ *    84      4    fileCount (u32, JS→C++)
+ *    88      4    cachePathLen (u32, JS→C++)
+ *    92      4    reserved (zero)
+ *    96      N+1  cachePath (UTF-8, null-terminated, JS→C++)
  */
 
 #include "cache-constants.h"
@@ -100,24 +120,9 @@ namespace fast_fs_hash {
     double userValue3;  // 56: f64 LE, user-defined
     uint32_t pathsLen;  // 64: byte length of packed paths section
     uint32_t udPayloadsLen;  // 68: total byte length of user data payloads
-    uint32_t status;  // 72: CacheStatus (in-memory only, 0 on disk)
-    int32_t fileHandle;  // 76: FfshFileHandle (in-memory only, -1 on disk)
-    double cacheFileStat0;  // 80: xxHash128 of cache file stat (in-memory only, 0 on disk)
-    double cacheFileStat1;  // 88: xxHash128 of cache file stat (in-memory only, 0 on disk)
+    uint64_t reserved;  // 72: reserved (zero on disk)
 
-    /** Store a file handle (int32_t fd, -1 = invalid). */
-    FSH_FORCE_INLINE void setFileHandle(int32_t h) noexcept { this->fileHandle = h; }
-
-    /** Recover the file handle (int32_t fd, -1 = invalid). */
-    FSH_FORCE_INLINE int32_t getFileHandle() const noexcept { return this->fileHandle; }
-
-    /** Clear cache file stat fields (used before writing to disk). */
-    FSH_FORCE_INLINE void clearCacheFileStat() noexcept {
-      this->cacheFileStat0 = 0;
-      this->cacheFileStat1 = 0;
-    }
-
-    static constexpr size_t SIZE = 96;
+    static constexpr size_t SIZE = 80;
     static constexpr uint32_t MAGIC = 0x00485346u;
 
     /** Byte length of the decompressed body (entries+udDir+pathEnds+paths+udPayloads). */
@@ -140,7 +145,8 @@ namespace fast_fs_hash {
     inline bool packedPathsValid(const uint8_t * buf) const noexcept;
   };
 
-  static_assert(sizeof(CacheHeader) == CacheHeader::SIZE, "CacheHeader must be exactly 96 bytes");
+  static_assert(sizeof(CacheHeader) == CacheHeader::SIZE, "CacheHeader must be exactly 80 bytes");
+  static_assert(CacheHeader::SIZE % 16 == 0, "header must be 16-byte aligned for CacheEntry u64/Hash128 fields");
   static_assert(offsetof(CacheHeader, magic) == 0);
   static_assert(offsetof(CacheHeader, version) == 4);
   static_assert(offsetof(CacheHeader, fileCount) == 8);
@@ -152,10 +158,61 @@ namespace fast_fs_hash {
   static_assert(offsetof(CacheHeader, userValue3) == 56);
   static_assert(offsetof(CacheHeader, pathsLen) == 64);
   static_assert(offsetof(CacheHeader, udPayloadsLen) == 68);
-  static_assert(offsetof(CacheHeader, status) == 72);
-  static_assert(offsetof(CacheHeader, fileHandle) == 76);
-  static_assert(offsetof(CacheHeader, cacheFileStat0) == 80);
-  static_assert(offsetof(CacheHeader, cacheFileStat1) == 88);
+  static_assert(offsetof(CacheHeader, reserved) == 72);
+
+  /** Shared JS ↔ C++ per-instance communication buffer. */
+  struct CacheStateBuf {
+    Hash128 fingerprint;  //  0: 16-byte fingerprint (JS→C++, zeroed = none)
+    uint32_t version;  // 16: user cache version (JS→C++)
+    int32_t lockTimeoutMs;  // 20: lock timeout in ms (JS→C++, -1 = infinite)
+    uint32_t status;  // 24: CacheStatus (C++→JS)
+    int32_t fileHandle;  // 28: FfshFileHandle (C++↔JS, -1 = invalid)
+    double cacheFileStat0;  // 32: xxHash128 of cache file stat (C++→JS)
+    double cacheFileStat1;  // 40: (C++→JS)
+    double userValue0;  // 48: f64 (JS→C++)
+    double userValue1;  // 56: f64 (JS→C++)
+    double userValue2;  // 64: f64 (JS→C++)
+    double userValue3;  // 72: f64 (JS→C++)
+    uint32_t cancelFlag;  // 80: 0=running, 1=cancelled (JS↔C++, volatile read)
+    uint32_t fileCount;  // 84: number of file entries (JS→C++)
+    uint32_t cachePathLen;  // 88: byte length of cachePath (excluding null)
+    uint32_t reserved;  // 92: reserved (zero)
+    // Byte 96+: null-terminated UTF-8 cachePath (immutable after construction)
+
+    static constexpr size_t HEADER_SIZE = 96;
+
+    /** Pointer to the null-terminated cache path at offset 96. */
+    FSH_FORCE_INLINE const char * cachePath() const noexcept {
+      return reinterpret_cast<const char *>(this) + HEADER_SIZE;
+    }
+
+    /** Cancel byte pointer for LockCancel (volatile read from pool thread). */
+    FSH_FORCE_INLINE const volatile uint8_t * cancelByte() const noexcept {
+      return reinterpret_cast<const volatile uint8_t *>(&this->cancelFlag);
+    }
+
+    /** Whether fingerprint is set (non-zero). */
+    FSH_FORCE_INLINE bool hasFingerprint() const noexcept {
+      return !this->fingerprint.is_zero();
+    }
+  };
+
+  static_assert(offsetof(CacheStateBuf, fingerprint) == 0);
+  static_assert(offsetof(CacheStateBuf, version) == 16);
+  static_assert(offsetof(CacheStateBuf, lockTimeoutMs) == 20);
+  static_assert(offsetof(CacheStateBuf, status) == 24);
+  static_assert(offsetof(CacheStateBuf, fileHandle) == 28);
+  static_assert(offsetof(CacheStateBuf, cacheFileStat0) == 32);
+  static_assert(offsetof(CacheStateBuf, cacheFileStat1) == 40);
+  static_assert(offsetof(CacheStateBuf, userValue0) == 48);
+  static_assert(offsetof(CacheStateBuf, userValue1) == 56);
+  static_assert(offsetof(CacheStateBuf, userValue2) == 64);
+  static_assert(offsetof(CacheStateBuf, userValue3) == 72);
+  static_assert(offsetof(CacheStateBuf, cancelFlag) == 80);
+  static_assert(offsetof(CacheStateBuf, fileCount) == 84);
+  static_assert(offsetof(CacheStateBuf, cachePathLen) == 88);
+  static_assert(offsetof(CacheStateBuf, reserved) == 92);
+  static_assert(CacheStateBuf::HEADER_SIZE == 96);
 
   enum class CacheStatus : uint32_t {
     UP_TO_DATE = 0,
@@ -166,19 +223,19 @@ namespace fast_fs_hash {
     LOCK_FAILED = 5,
   };
 
-  static_assert(CacheHeader::SIZE % 16 == 0, "header must be 16-byte aligned for CacheEntry u64/Hash128 fields");
-
   struct UserDataSlice {
     const uint8_t * ptr = nullptr;
     size_t len = 0;
   };
 
-  FSH_FORCE_INLINE CacheHeader * headerOf(uint8_t * buf) { return reinterpret_cast<CacheHeader *>(buf); }
+  /** Cast a raw buffer pointer to CacheStateBuf. */
+  FSH_FORCE_INLINE CacheStateBuf * stateOf(uint8_t * buf) { return reinterpret_cast<CacheStateBuf *>(buf); }
+  FSH_FORCE_INLINE const CacheStateBuf * stateOf(const uint8_t * buf) { return reinterpret_cast<const CacheStateBuf *>(buf); }
 
+  FSH_FORCE_INLINE CacheHeader * headerOf(uint8_t * buf) { return reinterpret_cast<CacheHeader *>(buf); }
   FSH_FORCE_INLINE const CacheHeader * headerOf(const uint8_t * buf) { return reinterpret_cast<const CacheHeader *>(buf); }
 
   FSH_FORCE_INLINE CacheEntry * entriesOf(uint8_t * buf) { return reinterpret_cast<CacheEntry *>(buf + CacheHeader::SIZE); }
-
   FSH_FORCE_INLINE const CacheEntry * entriesOf(const uint8_t * buf) {
     return reinterpret_cast<const CacheEntry *>(buf + CacheHeader::SIZE);
   }
@@ -186,7 +243,6 @@ namespace fast_fs_hash {
   FSH_FORCE_INLINE uint8_t * udDirOf(uint8_t * buf, size_t fileCount) {
     return buf + CacheHeader::SIZE + fileCount * CacheEntry::STRIDE;
   }
-
   FSH_FORCE_INLINE const uint8_t * udDirOf(const uint8_t * buf, size_t fileCount) {
     return buf + CacheHeader::SIZE + fileCount * CacheEntry::STRIDE;
   }
@@ -194,7 +250,6 @@ namespace fast_fs_hash {
   FSH_FORCE_INLINE uint32_t * pathEndsOf(uint8_t * buf, size_t fileCount, size_t udItemCount) {
     return reinterpret_cast<uint32_t *>(buf + CacheHeader::SIZE + fileCount * CacheEntry::STRIDE + udItemCount * 4);
   }
-
   FSH_FORCE_INLINE const uint32_t * pathEndsOf(const uint8_t * buf, size_t fileCount, size_t udItemCount) {
     return reinterpret_cast<const uint32_t *>(buf + CacheHeader::SIZE + fileCount * CacheEntry::STRIDE + udItemCount * 4);
   }
@@ -202,7 +257,6 @@ namespace fast_fs_hash {
   FSH_FORCE_INLINE uint8_t * pathsOf(uint8_t * buf, size_t fileCount, size_t udItemCount) {
     return buf + CacheHeader::SIZE + fileCount * (CacheEntry::STRIDE + CacheEntry::PATH_END_SIZE) + udItemCount * 4;
   }
-
   FSH_FORCE_INLINE const uint8_t * pathsOf(const uint8_t * buf, size_t fileCount, size_t udItemCount) {
     return buf + CacheHeader::SIZE + fileCount * (CacheEntry::STRIDE + CacheEntry::PATH_END_SIZE) + udItemCount * 4;
   }
@@ -211,7 +265,6 @@ namespace fast_fs_hash {
     return buf + CacheHeader::SIZE + fileCount * (CacheEntry::STRIDE + CacheEntry::PATH_END_SIZE) + udItemCount * 4 +
       pathsLen;
   }
-
   FSH_FORCE_INLINE const uint8_t * udPayloadsOf(const uint8_t * buf, size_t fileCount, size_t udItemCount, size_t pathsLen) {
     return buf + CacheHeader::SIZE + fileCount * (CacheEntry::STRIDE + CacheEntry::PATH_END_SIZE) + udItemCount * 4 +
       pathsLen;

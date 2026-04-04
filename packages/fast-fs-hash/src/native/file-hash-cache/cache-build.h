@@ -73,7 +73,7 @@ namespace fast_fs_hash {
 
   /**
    * Build a new dataBuf from encoded paths. Allocates:
-   *   [header:80][entries:n×48][udDir:m×4][pathEnds:n×4][paths][udPayloads]
+   *   [header:80 bytes][entries:n×48][udDir:m×4][pathEnds:n×4][paths][udPayloads]
    *
    * When udItemCount > 0, space is pre-allocated for udDir + udPayloads.
    * Only fills header fields and path data. Entries, udDir, udPayloads are zeroed.
@@ -84,11 +84,7 @@ namespace fast_fs_hash {
       uint32_t udItemCount = 0, uint32_t udPayloadsLen = 0) noexcept {
 
     if (fileCount == 0) {
-      auto buf = OwnedBuf<>::calloc(CacheHeader::SIZE);
-      if (buf) {
-        headerOf(buf.ptr)->fileHandle = FFSH_FILE_HANDLE_INVALID;
-      }
-      return buf;
+      return OwnedBuf<>::calloc(CacheHeader::SIZE);
     }
 
     if (fileCount > CACHE_MAX_FILE_COUNT) {
@@ -137,7 +133,6 @@ namespace fast_fs_hash {
     hdr->pathsLen = static_cast<uint32_t>(totalPathBytes);
     hdr->udItemCount = udItemCount;
     hdr->udPayloadsLen = udPayloadsLen;
-    hdr->fileHandle = FFSH_FILE_HANDLE_INVALID;
 
     return OwnedBuf<>::take(raw, total);
   }

@@ -30,7 +30,7 @@ describe("FileHashCache — no existing cache", async () => {
   const warmupCp = cp(cacheDir, "warmup");
   {
     const cache = new FileHashCache({ cachePath: warmupCp, files, rootPath: RAW_DATA_DIR });
-    await using session = await cache.open();
+    using session = await cache.open();
     await session.write();
   }
 
@@ -44,7 +44,7 @@ describe("FileHashCache — no existing cache", async () => {
         unlinkSync(benchCp);
       } catch {}
       benchCache.invalidateAll();
-      await using session = await benchCache.open();
+      using session = await benchCache.open();
       await session.write();
     },
     { warmupIterations: 1, throws: true }

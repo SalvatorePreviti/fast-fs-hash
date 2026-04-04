@@ -17,13 +17,15 @@ namespace fast_fs_hash {
    *   3. If work needed → fork hash threads on pool
    *   4. Assemble body, LZ4 compress, write directly to the locked cache fd
    *
-   * On-disk format: [header:96 uncompressed][LZ4(body)]
+   * On-disk format: [header:80 uncompressed][LZ4(body)]
    */
   class CacheWriter final : public AddonWorker {
    public:
     CacheWriter(
       Napi::Env env,
       Napi::Promise::Deferred deferred,
+      CacheStateBuf * state,
+      Napi::ObjectReference && stateRef,
       uint8_t * dataBuf,
       size_t dataLen,
       Napi::ObjectReference && dataRef,
@@ -34,10 +36,9 @@ namespace fast_fs_hash {
       std::string cachePath,
       std::string rootPath,
       ParsedUserData && ud,
-      FfshFile && lockedFile,
-      const volatile uint8_t * cancelByte = nullptr,
-      Napi::ObjectReference && cancelRef = {}) :
+      FfshFile && lockedFile) :
       AddonWorker(env, deferred),
+      state_(state),
       dataBuf_(dataBuf),
       dataLen_(dataLen),
       encodedPaths_(encodedPaths),
@@ -49,8 +50,8 @@ namespace fast_fs_hash {
       ud_(std::move(ud)),
       dataRef_(std::move(dataRef)),
       pathsRef_(std::move(pathsRef)),
-      cancelRef_(std::move(cancelRef)) {
-      this->cancel_.cancelByte_ = cancelByte;
+      stateRef_(std::move(stateRef)) {
+      this->cancel_.cancelByte_ = state->cancelByte();
       AddonData * d = this->addon;
       if (d) {
         d->active_cancels.add(&this->cancel_);
@@ -80,12 +81,11 @@ namespace fast_fs_hash {
         const CacheHeader * prevHdr = headerOf(this->dataBuf_);
         const uint32_t oldFc = prevHdr->fileCount;
 
-        // Same file list → skip remap, preserve ino state bits from CacheOpen
         const bool sameFiles = pathsMatch(this->encodedPaths_, this->encodedLen_, newFc, this->dataBuf_);
 
         if (!sameFiles) {
           if (!this->buildRemappedBuf_(prevHdr, oldFc, newFc)) {
-            return;  // buildRemappedBuf_ already called signalAndClose_
+            return;
           }
           buf = this->newBuf_.ptr;
           len = this->newBuf_.len;
@@ -96,34 +96,32 @@ namespace fast_fs_hash {
     }
 
     void OnOK() override {
-      const int result = this->writeSuccess_ ? 0 : -1;
-      this->deferred.Resolve(Napi::Number::New(Napi::Env(this->env), result));
+      auto e = Napi::Env(this->env);
+      if (this->writeSuccess_) {
+        this->state_->cacheFileStat0 = this->resultStat_[0];
+        this->state_->cacheFileStat1 = this->resultStat_[1];
+      }
+      this->deferred.Resolve(Napi::Number::New(e, this->writeSuccess_ ? 0 : -1));
     }
 
    private:
-    // ── Pool-thread hot fields ──────────────────────────────────────────
+    CacheStateBuf * state_;
 
-    // Input pointers (read on pool thread during remap/hash)
     uint8_t * dataBuf_;
     size_t dataLen_;
     const uint8_t * encodedPaths_;
     size_t encodedLen_;
     uint32_t fileCount_;
 
-    // RAII locked fd. Destructor closes if not already closed.
     FfshFile lockedFile_;
 
-    // Paths (used on pool thread for hash loop + disk write)
     std::string cachePath_;
     std::string rootPath_;
 
-    // User data (read on pool thread during write)
     ParsedUserData ud_;
 
-    // Cancellation — unified: fire() in dtor, is_fired() in hash loop
     FfshFile::LockCancel cancel_;
 
-    // Hash runner state (set before pool.submit, read by worker threads)
     CacheEntry * runEntries_ = nullptr;
     const uint32_t * runPathEnds_ = nullptr;
     const uint8_t * runPackedPaths_ = nullptr;
@@ -131,11 +129,10 @@ namespace fast_fs_hash {
     size_t workBatch_ = 0;
     uint32_t writerFc_ = 0;
     bool writeSuccess_ = false;
+    double resultStat_[2] = {0, 0};
 
-    // Remap output (owned, freed on destruction)
     OwnedBuf<> newBuf_;
 
-    // Work-stealing counter — own cache line to avoid false sharing
     alignas(64) mutable std::atomic<size_t> nextIndex_{0};
 
     struct Job : ForkJob<Job, MAX_CACHE_IO_THREADS> {
@@ -145,31 +142,24 @@ namespace fast_fs_hash {
     };
     Job job_;
 
-    // ── JS-thread-only fields (cold, never touched by pool threads) ─────
-
     Napi::ObjectReference dataRef_;
     Napi::ObjectReference pathsRef_;
-    Napi::ObjectReference cancelRef_;
+    Napi::ObjectReference stateRef_;
 
     static_assert(
       READ_BUFFER_SIZE + sizeof(PathResolver) <= ThreadPool::THREAD_STACK_SIZE - 64 * 1024,
       "buffers exceed pool thread usable stack");
 
-    /** Signal completion and close fd on the current (pool) thread.
-     *  Moves lockedFile_ to a stack local so the JS-thread destructor is a no-op,
-     *  then signals, then the local destructs — closing the fd after signal. */
     void signalAndClose_() noexcept {
       FfshFile f(std::move(this->lockedFile_));
       this->signal();
     }
 
-    /** Signal error + completion and close fd. */
     void signalAndClose_(const char * error) noexcept {
       FfshFile f(std::move(this->lockedFile_));
       this->signal(error);
     }
 
-    /** Build a new dataBuf with remapped entries from the old one. */
     FSH_NO_INLINE bool buildRemappedBuf_(const CacheHeader * prevHdr, uint32_t oldFc, uint32_t newFc) noexcept {
       const uint32_t udCount = prevHdr->udItemCount;
       const uint32_t udPLen = prevHdr->udPayloadsLen;
@@ -189,15 +179,11 @@ namespace fast_fs_hash {
       newHdr->userValue1 = prevHdr->userValue1;
       newHdr->userValue2 = prevHdr->userValue2;
       newHdr->userValue3 = prevHdr->userValue3;
-      newHdr->setFileHandle(FFSH_FILE_HANDLE_INVALID);
-      newHdr->status = static_cast<uint32_t>(CacheStatus::CHANGED);
 
-      // Merge-join: copy matched entries from old, stamp CACHE_S_HAS_OLD
       if (oldFc > 0 && newFc > 0) {
         remapEntries_(this->dataBuf_, oldFc, newPtr, newFc);
       }
 
-      // Copy user data directory + payloads from old buf
       if (udCount > 0) {
         memcpy(udDirOf(newPtr, newFc), udDirOf(this->dataBuf_, oldFc), static_cast<size_t>(udCount) * 4);
         if (udPLen > 0) {
@@ -211,7 +197,6 @@ namespace fast_fs_hash {
       return true;
     }
 
-    /** Count unresolved entries, fork hash threads if needed, then write. */
     void completeAndWrite_(uint8_t * dbuf, size_t dlen) noexcept {
       if (dlen < CacheHeader::SIZE) [[unlikely]] {
         this->signalAndClose_();
@@ -228,11 +213,10 @@ namespace fast_fs_hash {
 
       this->writerFc_ = fc;
       const uint32_t udCount = hdr->udItemCount;
-      const CacheStatus st = static_cast<CacheStatus>(hdr->status);
 
-      // Count entries that still need stat/hash (ino state != DONE)
+      // Count entries that still need stat/hash
       size_t workNeeded = 0;
-      if (st != CacheStatus::UP_TO_DATE && st != CacheStatus::STATS_DIRTY && fc > 0) {
+      if (fc > 0) {
         const CacheEntry * ents = entriesOf(dbuf);
         for (uint32_t i = 0; i < fc; ++i) {
           if ((ents[i].ino & INO_STATE_MASK) != CACHE_S_DONE) {
@@ -266,7 +250,6 @@ namespace fast_fs_hash {
       this->addon->pool.submit(this->job_, threadCount);
     }
 
-    /** Called by the last hash thread. Writes file if not cancelled. */
     static void onHashDone_(CacheWriter * self) {
       if (!self->cancel_.is_fired() && !self->addon->pool.is_shutdown()) [[likely]] {
         uint8_t * buf = self->dataBuf_;
@@ -275,15 +258,11 @@ namespace fast_fs_hash {
       self->signalAndClose_();
     }
 
-    /** Assemble and write the cache file to the locked fd. */
     void writeFile_(uint8_t * buf, CacheHeader * hdr, uint32_t fc) noexcept {
-      // Snapshot old udItemCount before assembleAndWriteCache overwrites it
-      // (needed for correct pathEnds/paths offset in the in-memory layout).
       const uint32_t oldUdCount = hdr->udItemCount;
-      this->writeSuccess_ = assembleAndWriteCache(buf, hdr, fc, oldUdCount, this->ud_, this->lockedFile_);
+      this->writeSuccess_ = assembleAndWriteCache(buf, hdr, fc, oldUdCount, this->ud_, this->lockedFile_, this->resultStat_);
     }
 
-    /** Merge-join old entries into the new dataBuf by sorted path comparison. */
     static void remapEntries_(
       const uint8_t * FSH_RESTRICT oldData, uint32_t oldFc, uint8_t * FSH_RESTRICT newData, uint32_t newFc) noexcept {
       const CacheHeader * oldHdr = headerOf(oldData);
@@ -334,13 +313,11 @@ namespace fast_fs_hash {
       }
     }
 
-    /** Per-thread entry point — allocates stack read buffer and runs hash loop. */
     static void hashProc_(CacheWriter * wr) {
       alignas(64) unsigned char rbuf[READ_BUFFER_SIZE];
       wr->processHash_(rbuf);
     }
 
-    /** Per-thread hash work loop. Hoists all shared state to locals. */
     void processHash_(unsigned char * readBuf) const {
       constexpr size_t readBufSize = READ_BUFFER_SIZE;
       const uint32_t fileCount = this->writerFc_;
@@ -390,7 +367,6 @@ namespace fast_fs_hash {
           CacheEntry & entry = entries[idx];
           const uint64_t state = entry.ino & INO_STATE_MASK;
 
-          // Already resolved by CacheOpen — skip
           if (state == CACHE_S_DONE) [[likely]] {
             pathStart = pathEnd;
             continue;
@@ -410,7 +386,6 @@ namespace fast_fs_hash {
 
           resolver.resolve(packedPaths + pathOffset, pathLen);
 
-          // Old entry from cache — stat to check if unchanged
           if (state == CACHE_S_HAS_OLD) {
             const uint64_t oldIno = entry.ino & INO_VALUE_MASK;
             const uint64_t oldMtime = entry.mtimeNs;
@@ -427,7 +402,6 @@ namespace fast_fs_hash {
             continue;
           }
 
-          // CacheOpen already stat'd — just hash
           if (state == CACHE_S_STAT_DONE) {
             if (entry.size == 0) {
               entry.contentHash.from_xxh128(XXH3_128bits(nullptr, 0));
@@ -437,7 +411,6 @@ namespace fast_fs_hash {
             continue;
           }
 
-          // New entry (NOT_CHECKED) — combined stat + hash in one open
           if (!resolver.stat_and_hash_file(entry, entry.contentHash, readBuf, readBufSize)) [[unlikely]] {
             continue;
           }

@@ -29,14 +29,14 @@ describe("FileHashCache — no change", async () => {
   const seedCp = cp(cacheDir, "seed");
   {
     const cache = new FileHashCache({ cachePath: seedCp, files, rootPath: RAW_DATA_DIR });
-    await using session = await cache.open();
+    using session = await cache.open();
     await session.write();
   }
 
   const benchCp = cp(cacheDir, "unchanged");
   {
     const cache = new FileHashCache({ cachePath: benchCp, files, rootPath: RAW_DATA_DIR });
-    await using session = await cache.open();
+    using session = await cache.open();
     await session.write();
   }
 
@@ -46,7 +46,7 @@ describe("FileHashCache — no change", async () => {
     "native  no change",
     async () => {
       benchCache.invalidateAll();
-      await using _session = await benchCache.open();
+      using _session = await benchCache.open();
     },
     { warmupIterations: 1, throws: true }
   );

@@ -47,7 +47,7 @@ describe("FileHashCache.overwrite [native]", () => {
 
       // Verify the cache is valid
       {
-        await using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
+        using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
         expect(ctx.status).toBe("upToDate");
         expect(ctx.fileCount).toBe(2);
       }
@@ -68,7 +68,7 @@ describe("FileHashCache.overwrite [native]", () => {
       await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite();
 
       {
-        await using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
+        using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
         expect(ctx.status).toBe("upToDate");
         expect(ctx.fileCount).toBe(1);
       }
@@ -81,7 +81,7 @@ describe("FileHashCache.overwrite [native]", () => {
       await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite();
 
       {
-        await using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
+        using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
         expect(ctx.status).toBe("upToDate");
         expect(ctx.fileCount).toBe(3);
       }
@@ -93,7 +93,7 @@ describe("FileHashCache.overwrite [native]", () => {
       await new FileHashCache({ cachePath: cp, files: [], rootPath: FIXTURE_DIR }).overwrite();
 
       {
-        await using ctx = await new FileHashCache({ cachePath: cp, files: [], rootPath: FIXTURE_DIR }).open();
+        using ctx = await new FileHashCache({ cachePath: cp, files: [], rootPath: FIXTURE_DIR }).open();
         expect(["upToDate", "missing"]).toContain(ctx.status);
       }
     });
@@ -109,13 +109,13 @@ describe("FileHashCache.overwrite [native]", () => {
       await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 42 }).overwrite();
 
       {
-        await using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 42 }).open();
+        using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 42 }).open();
         expect(ctx.status).toBe("upToDate");
       }
 
       // Different version → stale
       {
-        await using ctx2 = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 99 }).open();
+        using ctx2 = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 99 }).open();
         expect(ctx2.status).toBe("stale");
       }
     });
@@ -128,7 +128,7 @@ describe("FileHashCache.overwrite [native]", () => {
       await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, fingerprint: fp }).overwrite();
 
       {
-        await using ctx = await new FileHashCache({
+        using ctx = await new FileHashCache({
           cachePath: cp,
           files,
           rootPath: FIXTURE_DIR,
@@ -140,7 +140,7 @@ describe("FileHashCache.overwrite [native]", () => {
       // Different fingerprint → stale
       const fp2 = new Uint8Array(16).fill(0xbb);
       {
-        await using ctx2 = await new FileHashCache({
+        using ctx2 = await new FileHashCache({
           cachePath: cp,
           files,
           rootPath: FIXTURE_DIR,
@@ -175,7 +175,7 @@ describe("FileHashCache.overwrite [native]", () => {
       });
 
       {
-        await using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
+        using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
         expect(ctx.status).toBe("upToDate");
         expect(ctx.userValue0).toBe(10);
         expect(ctx.userValue1).toBe(20);
@@ -191,7 +191,7 @@ describe("FileHashCache.overwrite [native]", () => {
       await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite();
 
       {
-        await using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
+        using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
         expect(ctx.userValue0).toBe(0);
         expect(ctx.userValue1).toBe(0);
         expect(ctx.userValue2).toBe(0);
@@ -212,7 +212,7 @@ describe("FileHashCache.overwrite [native]", () => {
       });
 
       {
-        await using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
+        using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
         expect(ctx.status).toBe("upToDate");
         expect(ctx.userData.length).toBe(1);
         expect(ctx.userData[0].toString()).toBe("test payload");
@@ -227,7 +227,7 @@ describe("FileHashCache.overwrite [native]", () => {
       await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite({ userData: items });
 
       {
-        await using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
+        using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
         expect(ctx.userData.length).toBe(3);
         for (let i = 0; i < 3; i++) {
           expect(ctx.userData[i].toString()).toBe(items[i].toString());
@@ -242,7 +242,7 @@ describe("FileHashCache.overwrite [native]", () => {
       await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite({ userData: null });
 
       {
-        await using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
+        using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
         expect(ctx.userData.length).toBe(0);
       }
     });
@@ -257,7 +257,7 @@ describe("FileHashCache.overwrite [native]", () => {
       });
 
       {
-        await using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
+        using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
         expect(ctx.userData[0].toString("utf8")).toBe(utf8Str);
       }
     });
@@ -271,7 +271,7 @@ describe("FileHashCache.overwrite [native]", () => {
       });
 
       {
-        await using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
+        using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
         expect(ctx.userData.length).toBe(3);
         expect(ctx.userData[0].length).toBe(0);
         expect(ctx.userData[1].toString()).toBe("non-empty");
@@ -289,7 +289,7 @@ describe("FileHashCache.overwrite [native]", () => {
 
       // Seed via open+write with userValue
       {
-        await using ctx1 = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
+        using ctx1 = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
         await ctx1.write({ userValue0: 42, userData: [Buffer.from("old")] });
       }
 
@@ -300,7 +300,7 @@ describe("FileHashCache.overwrite [native]", () => {
       });
 
       {
-        await using ctx2 = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 2 }).open();
+        using ctx2 = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 2 }).open();
         expect(ctx2.status).toBe("upToDate");
         expect(ctx2.userValue0).toBe(99);
         expect(ctx2.userData.length).toBe(1);
@@ -309,7 +309,7 @@ describe("FileHashCache.overwrite [native]", () => {
 
       // Old version → stale
       {
-        await using ctx3 = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
+        using ctx3 = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
         expect(ctx3.status).toBe("stale");
       }
     });
@@ -321,7 +321,7 @@ describe("FileHashCache.overwrite [native]", () => {
 
       // Seed with files1
       {
-        await using ctx1 = await new FileHashCache({
+        using ctx1 = await new FileHashCache({
           cachePath: cp,
           files: files1,
           rootPath: FIXTURE_DIR,
@@ -334,7 +334,7 @@ describe("FileHashCache.overwrite [native]", () => {
       await new FileHashCache({ cachePath: cp, files: files2, rootPath: FIXTURE_DIR, version: 1 }).overwrite();
 
       {
-        await using ctx2 = await new FileHashCache({
+        using ctx2 = await new FileHashCache({
           cachePath: cp,
           files: files2,
           rootPath: FIXTURE_DIR,
@@ -363,7 +363,7 @@ describe("FileHashCache.overwrite [native]", () => {
       });
 
       {
-        await using ctx = await new FileHashCache({
+        using ctx = await new FileHashCache({
           cachePath: cp,
           files,
           rootPath: FIXTURE_DIR,
@@ -398,7 +398,7 @@ describe("FileHashCache.overwrite [native]", () => {
       utimesSync(fixtureFile("a.txt"), t, t);
 
       {
-        await using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
+        using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
         expect(ctx.status).toBe("changed");
       }
 
@@ -414,7 +414,7 @@ describe("FileHashCache.overwrite [native]", () => {
       await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite();
 
       {
-        await using ctx1 = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
+        using ctx1 = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
         expect(ctx1.status).toBe("upToDate");
       }
 
@@ -424,7 +424,7 @@ describe("FileHashCache.overwrite [native]", () => {
       utimesSync(fixtureFile("a.txt"), t, t);
 
       {
-        await using ctx2 = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
+        using ctx2 = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
         expect(ctx2.status).toBe("changed");
       }
 
@@ -432,7 +432,7 @@ describe("FileHashCache.overwrite [native]", () => {
       await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite();
 
       {
-        await using ctx3 = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
+        using ctx3 = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
         expect(ctx3.status).toBe("upToDate");
       }
 
@@ -455,7 +455,7 @@ describe("FileHashCache.overwrite [native]", () => {
 
       // Open and validate
       {
-        await using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
+        using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
         expect(ctx.status).toBe("upToDate");
         expect(ctx.userData[0].toString()).toBe("initial data");
 
@@ -465,7 +465,7 @@ describe("FileHashCache.overwrite [native]", () => {
 
       // Verify the update persisted
       {
-        await using ctx2 = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
+        using ctx2 = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
         expect(ctx2.status).toBe("upToDate");
         expect(ctx2.userData[0].toString()).toBe("updated data");
       }
@@ -487,7 +487,7 @@ describe("FileHashCache.overwrite [native]", () => {
       }
 
       {
-        await using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
+        using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
         expect(ctx.status).toBe("upToDate");
         expect(ctx.userValue0).toBe(2); // last write wins
       }
@@ -504,7 +504,7 @@ describe("FileHashCache.overwrite [native]", () => {
       await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite();
 
       {
-        await using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
+        using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
         expect(ctx.files).toHaveLength(2);
         for (const f of ctx.files) {
           expect(typeof f).toBe("string");
@@ -521,7 +521,7 @@ describe("FileHashCache.overwrite [native]", () => {
 
       // Reuse: files=null
       {
-        await using ctx = await new FileHashCache({
+        using ctx = await new FileHashCache({
           cachePath: cp,
           files: null,
           rootPath: FIXTURE_DIR,
@@ -544,7 +544,7 @@ describe("FileHashCache.overwrite [native]", () => {
       expect(ok).toBe(true);
 
       {
-        await using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
+        using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
         expect(ctx.status).toBe("upToDate");
       }
     });

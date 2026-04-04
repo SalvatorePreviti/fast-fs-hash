@@ -20,6 +20,13 @@ function tmpFile(name: string, content: Buffer): string {
   return p;
 }
 
+/** Fast buffer equality check — avoids vitest's slow deep comparison on large buffers. */
+function expectBuffersEqual(actual: Buffer | Uint8Array, expected: Buffer | Uint8Array): void {
+  const a = Buffer.isBuffer(actual) ? actual : Buffer.from(actual);
+  expect(a.length).toBe(expected.length);
+  expect(a.equals(expected)).toBe(true);
+}
+
 describe("lz4ReadAndCompress", () => {
   it("compresses a file and round-trips correctly", async () => {
     const data = Buffer.from("Hello, LZ4 file compression! ".repeat(500));
@@ -32,7 +39,7 @@ describe("lz4ReadAndCompress", () => {
     expect(result.data.length).toBeLessThan(data.length);
 
     const decompressed = lz4DecompressBlock(result.data, result.uncompressedSize);
-    expect(Buffer.from(decompressed)).toEqual(data);
+    expectBuffersEqual(decompressed, data);
   });
 
   it("handles empty file", async () => {
@@ -54,7 +61,7 @@ describe("lz4ReadAndCompress", () => {
     expect(result.data.length).toBeGreaterThan(0);
 
     const decompressed = lz4DecompressBlock(result.data, result.uncompressedSize);
-    expect(Buffer.from(decompressed)).toEqual(data);
+    expectBuffersEqual(decompressed, data);
   });
 
   it("handles incompressible data", async () => {
@@ -68,19 +75,18 @@ describe("lz4ReadAndCompress", () => {
 
     expect(result.uncompressedSize).toBe(data.length);
     const decompressed = lz4DecompressBlock(result.data, result.uncompressedSize);
-    expect(Buffer.from(decompressed)).toEqual(data);
+    expectBuffersEqual(decompressed, data);
   });
 
   it("handles large file (> 128 KiB)", async () => {
-    // Semi-random pattern that's partially compressible
-    const data = Buffer.from("Large LZ4 block test pattern. ".repeat(8738)); // ~256 KiB
+    const data = Buffer.from("Large LZ4 block test pattern. ".repeat(4800)); // ~140 KiB
     const path = tmpFile("large.bin", data);
 
     const result = await lz4ReadAndCompress(path);
 
     expect(result.uncompressedSize).toBe(data.length);
     const decompressed = lz4DecompressBlock(result.data, result.uncompressedSize);
-    expect(Buffer.from(decompressed)).toEqual(data);
+    expectBuffersEqual(decompressed, data);
   });
 
   it("throws on non-existent file", async () => {
@@ -123,8 +129,7 @@ describe("lz4DecompressAndWrite", () => {
     const result = await lz4DecompressAndWrite(compressed.data, compressed.uncompressedSize, outPath);
     expect(result).toBe(true);
 
-    const written = readFileSync(outPath);
-    expect(written).toEqual(data);
+    expectBuffersEqual(readFileSync(outPath), data);
   });
 
   it("handles empty data", async () => {
@@ -145,8 +150,7 @@ describe("lz4DecompressAndWrite", () => {
     const result = await lz4DecompressAndWrite(compressed.data, compressed.uncompressedSize, outPath);
     expect(result).toBe(true);
 
-    const written = readFileSync(outPath);
-    expect(written).toEqual(data);
+    expectBuffersEqual(readFileSync(outPath), data);
   });
 
   it("overwrites existing file", async () => {
@@ -158,8 +162,7 @@ describe("lz4DecompressAndWrite", () => {
     const compressed = await lz4ReadAndCompress(srcPath);
 
     await lz4DecompressAndWrite(compressed.data, compressed.uncompressedSize, outPath);
-    const written = readFileSync(outPath);
-    expect(written).toEqual(data);
+    expectBuffersEqual(readFileSync(outPath), data);
   });
 
   it("handles small file (1 byte)", async () => {
@@ -170,20 +173,18 @@ describe("lz4DecompressAndWrite", () => {
     const outPath = join(TMP_DIR, "dw-tiny.bin");
     await lz4DecompressAndWrite(compressed.data, compressed.uncompressedSize, outPath);
 
-    const written = readFileSync(outPath);
-    expect(written).toEqual(data);
+    expectBuffersEqual(readFileSync(outPath), data);
   });
 
   it("handles large file (> 128 KiB)", async () => {
-    const data = Buffer.from("Decompress and write large block. ".repeat(7710)); // ~256 KiB
+    const data = Buffer.from("Decompress and write large block. ".repeat(4300)); // ~140 KiB
     const srcPath = tmpFile("dw-large-src.bin", data);
     const compressed = await lz4ReadAndCompress(srcPath);
 
     const outPath = join(TMP_DIR, "dw-large.bin");
     await lz4DecompressAndWrite(compressed.data, compressed.uncompressedSize, outPath);
 
-    const written = readFileSync(outPath);
-    expect(written).toEqual(data);
+    expectBuffersEqual(readFileSync(outPath), data);
   });
 
   it("can write multiple files concurrently", async () => {
@@ -201,7 +202,7 @@ describe("lz4DecompressAndWrite", () => {
     );
 
     for (const p of pairs) {
-      expect(readFileSync(p.outPath)).toEqual(p.content);
+      expectBuffersEqual(readFileSync(p.outPath), p.content);
     }
   });
 });

@@ -26,7 +26,13 @@ function fixtureFile(name: string): string {
   return path.join(FIXTURE_DIR, name);
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/** Write file with an explicit mtime so stat changes are guaranteed without sleeping. */
+let epochCounter = 1700000000;
+function writeWithMtime(filePath: string, content: string): void {
+  writeFileSync(filePath, content);
+  const t = new Date(++epochCounter * 1000);
+  utimesSync(filePath, t, t);
+}
 
 async function withCache<T>(
   cp: string,
@@ -41,7 +47,7 @@ async function withCache<T>(
     version: opts.version ?? 1,
     fingerprint: opts.fingerprint,
   });
-  await using session = await cache.open();
+  using session = await cache.open();
   return await run(session);
 }
 
@@ -52,9 +58,9 @@ beforeAll(() => {
   mkdirSync(FIXTURE_DIR, { recursive: true });
   mkdirSync(CACHE_DIR, { recursive: true });
 
-  writeFileSync(fixtureFile("a.txt"), "hello world\n");
-  writeFileSync(fixtureFile("b.txt"), "goodbye world\n");
-  writeFileSync(fixtureFile("c.txt"), "third file\n");
+  writeWithMtime(fixtureFile("a.txt"), "hello world\n");
+  writeWithMtime(fixtureFile("b.txt"), "goodbye world\n");
+  writeWithMtime(fixtureFile("c.txt"), "third file\n");
 });
 
 afterAll(() => {
@@ -121,15 +127,14 @@ describe("FileHashCache change detection [native]", () => {
     it("detects file content change", async () => {
       const cp = cachePath("content");
       const mutable = fixtureFile("mut-content.txt");
-      writeFileSync(mutable, "original content");
+      writeWithMtime(mutable, "original content");
       const files = [mutable];
 
       await withCache(cp, files, { version: 1 }, async (ctx1) => {
         await ctx1.write();
       });
 
-      await sleep(50);
-      writeFileSync(mutable, "modified content");
+      writeWithMtime(mutable, "modified content");
 
       const status = await withCache(cp, files, { version: 1 }, (ctx2) => {
         expect(ctx2.needsWrite).toBe(true);
@@ -141,15 +146,14 @@ describe("FileHashCache change detection [native]", () => {
     it("detects file size change", async () => {
       const cp = cachePath("size");
       const mutable = fixtureFile("mut-size.txt");
-      writeFileSync(mutable, "short");
+      writeWithMtime(mutable, "short");
       const files = [mutable];
 
       await withCache(cp, files, { version: 1 }, async (ctx1) => {
         await ctx1.write();
       });
 
-      await sleep(50);
-      writeFileSync(mutable, "much longer content here!!!");
+      writeWithMtime(mutable, "much longer content here!!!");
 
       const status = await withCache(cp, files, { version: 1 }, (ctx2) => ctx2.status);
       expect(status).toBe("changed");
@@ -158,16 +162,15 @@ describe("FileHashCache change detection [native]", () => {
     it("same content after metadata change round-trips correctly", async () => {
       const cp = cachePath("meta");
       const mutable = fixtureFile("mut-meta.txt");
-      writeFileSync(mutable, "stable content here");
+      writeWithMtime(mutable, "stable content here");
       const files = [mutable];
 
       await withCache(cp, files, { version: 1 }, async (ctx1) => {
         await ctx1.write();
       });
 
-      // Rewrite with identical content — metadata changes, hash same.
-      await sleep(50);
-      writeFileSync(mutable, "stable content here");
+      // Rewrite with identical content — metadata changes via writeWithMtime, hash same.
+      writeWithMtime(mutable, "stable content here");
 
       // Native does stat+size+rehash optimization -> "statsDirty" (stat changed, content same).
       // Stat change detected -> "changed".
@@ -189,7 +192,7 @@ describe("FileHashCache change detection [native]", () => {
     it("detects deleted file", async () => {
       const cp = cachePath("del");
       const mutable = fixtureFile("will-delete.txt");
-      writeFileSync(mutable, "soon to be gone");
+      writeWithMtime(mutable, "soon to be gone");
       const files = [mutable];
 
       await withCache(cp, files, { version: 1 }, async (ctx1) => {
@@ -363,7 +366,7 @@ describe("FileHashCache change detection [native]", () => {
     it("rapid update cycles detect deterministic file mutation", async () => {
       const cp = cachePath("rapid");
       const mutPath = fixtureFile("rapid-cycle.txt");
-      writeFileSync(mutPath, "A".repeat(100));
+      writeWithMtime(mutPath, "A".repeat(100));
       const files = [mutPath, fixtureFile("a.txt"), fixtureFile("b.txt")];
 
       await withCache(cp, files, { version: 1 }, async (ctx0) => {
@@ -414,13 +417,12 @@ describe("FileHashCache change detection [native]", () => {
     it("returns true for changed", async () => {
       const cp = cachePath("nw-chg");
       const mutable = fixtureFile("nw-chg.txt");
-      writeFileSync(mutable, "before");
+      writeWithMtime(mutable, "before");
       const files = [mutable];
       await withCache(cp, files, { version: 1 }, async (ctx) => {
         await ctx.write();
       });
-      await sleep(50);
-      writeFileSync(mutable, "after-changed");
+      writeWithMtime(mutable, "after-changed");
       await withCache(cp, files, { version: 1 }, (ctx) => {
         expect(ctx.status).toBe("changed");
         expect(ctx.needsWrite).toBe(true);
@@ -469,7 +471,7 @@ describe("FileHashCache change detection [native]", () => {
       // so parallel stat workers detect changes at different positions.
       const fileNames = Array.from({ length: 20 }, (_, i) => `scattered-${String(i).padStart(3, "0")}.txt`);
       for (const name of fileNames) {
-        writeFileSync(fixtureFile(name), `original-${name}`);
+        writeWithMtime(fixtureFile(name), `original-${name}`);
       }
       const files = fileNames.map(fixtureFile);
 
@@ -486,11 +488,8 @@ describe("FileHashCache change detection [native]", () => {
       // Mutate files at scattered positions (indices 2, 7, 13, 18) with explicit
       // timestamps so stat changes are guaranteed even on coarse-granularity fs.
       const changedIndices = [2, 7, 13, 18];
-      await sleep(50);
       for (const i of changedIndices) {
-        writeFileSync(fixtureFile(fileNames[i]), `modified-${fileNames[i]}-${Date.now()}`);
-        const t = new Date(1700002000000 + i * 1000);
-        utimesSync(fixtureFile(fileNames[i]), t, t);
+        writeWithMtime(fixtureFile(fileNames[i]), `modified-${fileNames[i]}-${Date.now()}`);
       }
 
       // open+write should update ALL changed entries

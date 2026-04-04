@@ -46,7 +46,7 @@ describe("AbortSignal cancellation", () => {
     ac.abort();
 
     const start = Date.now();
-    await using session = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open(
+    using session = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open(
       ac.signal
     );
     const elapsed = Date.now() - start;
@@ -60,7 +60,7 @@ describe("AbortSignal cancellation", () => {
     const files = [fixtureFile("a.txt")];
     const ac = new AbortController();
 
-    await using session = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open(
+    using session = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open(
       ac.signal
     );
     expect(session.status).not.toBe("lockFailed");
@@ -84,7 +84,7 @@ describe("AbortSignal cancellation", () => {
     const files = [fixtureFile("a.txt")];
 
     // Open without signal, write a cache first
-    await using seed = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
+    using seed = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
     await seed.write();
 
     // Modify file so cache is dirty
@@ -117,7 +117,7 @@ describe("AbortSignal cancellation", () => {
     const files = [fixtureFile("a.txt")];
 
     // Seed a cache
-    await using seed = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
+    using seed = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
     await seed.write();
 
     // Modify file

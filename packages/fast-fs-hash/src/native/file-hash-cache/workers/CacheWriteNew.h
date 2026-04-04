@@ -12,22 +12,19 @@ namespace fast_fs_hash {
    * Static write — acquires an exclusive lock, hashes all files,
    * LZ4-compresses, and writes a brand-new cache file without reading the old one.
    *
-   * Flow:
-   *   1. Pool thread: acquire exclusive lock on the cache file
-   *   2. Build a fresh dataBuf from the encoded path list
-   *   3. Fork hash threads on pool (all entries are NOT_CHECKED → stat+hash)
-   *   4. Assemble body, LZ4 compress, write directly to the locked fd
-   *   5. Close fd and resolve promise
+   * On-disk format: [header:80 uncompressed][LZ4(body)]
    *
-   * Unlike open+write, this skips read/decompress/pathsMatch entirely.
-   * The fd is owned end-to-end by this worker — it is NOT registered in the
-   * heldFileHandles set (no JS-side ownership, nothing to abandon).
+   * All config (version, fingerprint, lockTimeoutMs, userValues, fileCount)
+   * is read from CacheStateBuf by the binding function and copied to member fields.
+   * Stat result is written back to CacheStateBuf in OnOK.
    */
   class CacheWriteNew final : public AddonWorker {
    public:
     CacheWriteNew(
       Napi::Env env,
       Napi::Promise::Deferred deferred,
+      CacheStateBuf * state,
+      Napi::ObjectReference && stateRef,
       const uint8_t * encodedPaths,
       size_t encodedLen,
       Napi::ObjectReference && pathsRef,
@@ -41,10 +38,9 @@ namespace fast_fs_hash {
       double userValue2,
       double userValue3,
       ParsedUserData && ud,
-      int timeoutMs,
-      const volatile uint8_t * cancelByte = nullptr,
-      Napi::ObjectReference && cancelRef = {}) :
+      int timeoutMs) :
       AddonWorker(env, deferred),
+      state_(state),
       encodedPaths_(encodedPaths),
       encodedLen_(encodedLen),
       fileCount_(fileCount),
@@ -59,11 +55,11 @@ namespace fast_fs_hash {
       rootPath_(std::move(rootPath)),
       ud_(std::move(ud)),
       pathsRef_(std::move(pathsRef)),
-      cancelRef_(std::move(cancelRef)) {
+      stateRef_(std::move(stateRef)) {
       if (fingerprint) {
         memcpy(&this->fingerprint_, fingerprint, 16);
       }
-      this->cancel_.cancelByte_ = cancelByte;
+      this->cancel_.cancelByte_ = state->cancelByte();
       AddonData * d = this->addon;
       if (d) {
         d->active_cancels.add(&this->cancel_);
@@ -78,7 +74,6 @@ namespace fast_fs_hash {
       this->cancel_.fire();
     }
 
-    /** Queue this worker on the thread pool. */
     void Start() { this->Queue(); }
 
     void Execute() override {
@@ -96,14 +91,17 @@ namespace fast_fs_hash {
     }
 
     void OnOK() override {
-      const int result = this->writeSuccess_ ? 0 : -1;
-      this->deferred.Resolve(Napi::Number::New(Napi::Env(this->env), result));
+      auto e = Napi::Env(this->env);
+      if (this->writeSuccess_) {
+        this->state_->cacheFileStat0 = this->resultStat_[0];
+        this->state_->cacheFileStat1 = this->resultStat_[1];
+      }
+      this->deferred.Resolve(Napi::Number::New(e, this->writeSuccess_ ? 0 : -1));
     }
 
    private:
-    // ── Pool-thread hot fields ──────────────────────────────────────────
+    CacheStateBuf * state_;
 
-    // Inputs (read on pool thread)
     const uint8_t * encodedPaths_;
     size_t encodedLen_;
     uint32_t fileCount_;
@@ -116,20 +114,14 @@ namespace fast_fs_hash {
     double userValue2_;
     double userValue3_;
 
-    // Paths (used on pool thread for hash loop + disk write)
     std::string cachePath_;
     std::string rootPath_;
 
-    // User data (read on pool thread during write)
     ParsedUserData ud_;
 
-    // Cancellation
     FfshFile::LockCancel cancel_;
-
-    // RAII locked fd. Destructor closes if not already closed.
     FfshFile lockedFile_;
 
-    // Hash runner state
     CacheEntry * runEntries_ = nullptr;
     const uint32_t * runPathEnds_ = nullptr;
     const uint8_t * runPackedPaths_ = nullptr;
@@ -137,11 +129,10 @@ namespace fast_fs_hash {
     size_t workBatch_ = 0;
     uint32_t writerFc_ = 0;
     bool writeSuccess_ = false;
+    double resultStat_[2] = {0, 0};
 
-    // Working dataBuf
     OwnedBuf<> dataBuf_;
 
-    // Work-stealing counter — own cache line to avoid false sharing
     alignas(64) mutable std::atomic<size_t> nextIndex_{0};
 
     struct Job : ForkJob<Job, MAX_CACHE_IO_THREADS> {
@@ -151,41 +142,32 @@ namespace fast_fs_hash {
     };
     Job job_;
 
-    // ── JS-thread-only fields (cold, never touched by pool threads) ─────
-
     Napi::ObjectReference pathsRef_;
-    Napi::ObjectReference cancelRef_;
+    Napi::ObjectReference stateRef_;
 
     static_assert(
       READ_BUFFER_SIZE + sizeof(PathResolver) <= ThreadPool::THREAD_STACK_SIZE - 64 * 1024,
       "buffers exceed pool thread usable stack");
 
-    /** Signal completion and close fd on the current (pool) thread.
-     *  Moves lockedFile_ to a stack local so the JS-thread destructor is a no-op,
-     *  then signals, then the local destructs — closing the fd after signal. */
     void signalAndClose_() noexcept {
       FfshFile f(std::move(this->lockedFile_));
       this->signal();
     }
 
-    /** Signal error + completion and close fd. */
     void signalAndClose_(const char * error) noexcept {
       FfshFile f(std::move(this->lockedFile_));
       this->signal(error);
     }
 
-    /** Build dataBuf, populate header, and fork hash threads. */
     void doWriteNew_() noexcept {
       const uint32_t fc = this->fileCount_;
 
-      // Build a fresh dataBuf from the file list
       this->dataBuf_ = buildCacheDataBuf(this->encodedPaths_, this->encodedLen_, fc);
       if (!this->dataBuf_) [[unlikely]] {
         this->signalAndClose_("CacheWriteNew: failed to build dataBuf");
         return;
       }
 
-      // Populate header
       CacheHeader * hdr = headerOf(this->dataBuf_.ptr);
       hdr->version = this->version_;
       hdr->userValue0 = this->userValue0_;
@@ -197,7 +179,6 @@ namespace fast_fs_hash {
       }
 
       if (fc == 0) {
-        // No files — just write header
         this->writeFile_(this->dataBuf_.ptr, hdr, 0);
         this->signalAndClose_();
         return;
@@ -208,7 +189,6 @@ namespace fast_fs_hash {
         return;
       }
 
-      // All entries are NOT_CHECKED (calloc'd) — hash all of them
       uint8_t * buf = this->dataBuf_.ptr;
       this->writerFc_ = fc;
       this->runEntries_ = entriesOf(buf);
@@ -224,7 +204,6 @@ namespace fast_fs_hash {
       this->addon->pool.submit(this->job_, threadCount);
     }
 
-    /** Called by the last hash thread. Writes file if not cancelled. */
     static void onHashDone_(CacheWriteNew * self) {
       if (!self->cancel_.is_fired() && !self->addon->pool.is_shutdown()) [[likely]] {
         uint8_t * buf = self->dataBuf_.ptr;
@@ -233,19 +212,15 @@ namespace fast_fs_hash {
       self->signalAndClose_();
     }
 
-    /** Assemble and write the cache file to the locked fd. */
     void writeFile_(uint8_t * buf, CacheHeader * hdr, uint32_t fc) noexcept {
-      // Fresh dataBuf has udItemCount=0, so prevUdCount=0.
-      this->writeSuccess_ = assembleAndWriteCache(buf, hdr, fc, 0, this->ud_, this->lockedFile_);
+      this->writeSuccess_ = assembleAndWriteCache(buf, hdr, fc, 0, this->ud_, this->lockedFile_, this->resultStat_);
     }
 
-    /** Per-thread entry point — allocates stack read buffer and runs hash loop. */
     static void hashProc_(CacheWriteNew * self) {
       alignas(64) unsigned char rbuf[READ_BUFFER_SIZE];
       self->processHash_(rbuf);
     }
 
-    /** Per-thread hash work loop. Hoists all shared state to locals. */
     void processHash_(unsigned char * readBuf) const {
       constexpr size_t readBufSize = READ_BUFFER_SIZE;
       const uint32_t fileCount = this->writerFc_;
@@ -307,7 +282,6 @@ namespace fast_fs_hash {
 
           resolver.resolve(packedPaths + pathOffset, pathLen);
 
-          // All entries are new (NOT_CHECKED) — combined stat + hash in one open
           if (!resolver.stat_and_hash_file(entry, entry.contentHash, readBuf, readBufSize)) [[unlikely]] {
             continue;
           }

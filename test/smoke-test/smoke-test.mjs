@@ -126,7 +126,7 @@ async function main() {
 
   // First open: cache does not exist -> status should be 'missing'
   {
-    await using session = await cacheConfig.open();
+    using session = await cacheConfig.open();
     check("first open: status is 'missing'", session.status === "missing");
     check("first open: fileCount matches", session.fileCount === 3);
 
@@ -137,7 +137,7 @@ async function main() {
   // Second open: cache exists and files unchanged -> status should be 'upToDate'
   {
     cacheConfig.invalidateAll();
-    await using session = await cacheConfig.open();
+    using session = await cacheConfig.open();
     check("second open: status is 'upToDate'", session.status === "upToDate");
     check("second open: fileCount matches", session.fileCount === 3);
   }
@@ -146,7 +146,7 @@ async function main() {
   writeFileSync(fileC, "modified content");
   {
     cacheConfig.invalidateAll();
-    await using session = await cacheConfig.open();
+    using session = await cacheConfig.open();
     check("after modify: status is 'changed'", session.status === "changed");
 
     const written = await session.write();
@@ -156,14 +156,14 @@ async function main() {
   // Verify it's up-to-date again after re-write
   {
     cacheConfig.invalidateAll();
-    await using session = await cacheConfig.open();
+    using session = await cacheConfig.open();
     check("after re-write: status is 'upToDate'", session.status === "upToDate");
   }
 
   // Version change -> stale
   {
     const staleConfig = new ffsh.FileHashCache({ cachePath, files: cacheFiles, rootPath: tmp, version: 2 });
-    await using session = await staleConfig.open();
+    using session = await staleConfig.open();
     check("version bump: status is 'stale'", session.status === "stale");
   }
 
@@ -178,7 +178,7 @@ async function main() {
 
   {
     const wnConfig = new ffsh.FileHashCache({ cachePath: cachePathNew, files: cacheFiles, rootPath: tmp });
-    await using session = await wnConfig.open();
+    using session = await wnConfig.open();
     check("after overwrite: status is 'upToDate'", session.status === "upToDate");
   }
 

@@ -276,7 +276,7 @@ describe("overwrite() serialization", () => {
 
     // Last overwrite wins
     cache.invalidateAll();
-    await using s = await cache.open();
+    using s = await cache.open();
     expect(s.userValue0).toBe(3);
   });
 });
@@ -354,7 +354,7 @@ describe("mixed operation serialization", () => {
 
     // Definitively verify persistence with a fresh open
     cache.invalidateAll();
-    await using s3 = await cache.open();
+    using s3 = await cache.open();
     expect(s3.userValue0).toBe(777);
   });
 });

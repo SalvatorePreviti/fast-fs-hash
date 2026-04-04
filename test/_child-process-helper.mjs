@@ -31,7 +31,7 @@ if (args.mode === "lock-and-hang") {
   // Listen for parent's "release" command to gracefully close the cache
   process.on("message", async (msg) => {
     if (msg === "release") {
-      await session[Symbol.asyncDispose]();
+      session.close();
       process.send({ released: true });
     }
   });

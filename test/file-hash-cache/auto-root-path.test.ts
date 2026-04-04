@@ -27,10 +27,10 @@ function cachePath(label = "test"): string {
 async function withCache<T>(
   cp: string,
   files: string[],
-  opts: { rootPath?: string; version?: number; fingerprint?: string; lockTimeoutMs?: number },
+  opts: { rootPath?: string; version?: number; fingerprint?: Uint8Array | null; lockTimeoutMs?: number },
   run: (session: FileHashCacheSession) => Promise<T> | T
 ): Promise<T> {
-  await using session = await new FileHashCache({ cachePath: cp, files, ...opts }).open();
+  using session = await new FileHashCache({ cachePath: cp, files, ...opts }).open();
   return await run(session);
 }
 

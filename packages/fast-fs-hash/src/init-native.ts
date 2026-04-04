@@ -54,47 +54,31 @@ export interface BindingExportNative {
   streamIsBusy(state: object): boolean;
   streamClone(dst: object, src: object): void;
   cacheOpen(
+    stateBuf: Uint8Array,
     encodedPaths: Uint8Array,
-    fileCount: number,
-    cachePath: string,
     rootPath: string,
-    version: number,
-    fingerprint: Uint8Array | null,
-    lockTimeoutMs: number,
-    cancelBuf?: Uint8Array | null,
     dirtyPaths?: Uint8Array | null,
     dirtyCount?: number
   ): Promise<Buffer>;
   cacheWrite(
+    stateBuf: Uint8Array,
     dataBuf: Uint8Array,
     encodedPaths: Uint8Array | null,
-    fileCount: number,
-    cachePath: string,
     rootPath: string,
-    userData: readonly Uint8Array[] | null | undefined,
-    cancelBuf?: Uint8Array | null
+    userData: readonly Uint8Array[] | null | undefined
   ): Promise<number>;
   cacheWriteNew(
+    stateBuf: Uint8Array,
     encodedPaths: Uint8Array,
-    fileCount: number,
-    cachePath: string,
     rootPath: string,
-    version: number,
-    fingerprint: Uint8Array | null,
-    userValue0: number,
-    userValue1: number,
-    userValue2: number,
-    userValue3: number,
-    userData: readonly Uint8Array[] | null | undefined,
-    lockTimeoutMs: number,
-    cancelBuf?: Uint8Array | null
+    userData: readonly Uint8Array[] | null | undefined
   ): Promise<number>;
-  cacheClose(handle: number): void;
+  cacheClose(stateBuf: Uint8Array): boolean;
   cacheIsLocked(cachePath: string): boolean;
-  cacheWaitUnlocked(cachePath: string, lockTimeoutMs?: number, cancelBuf?: Uint8Array | null): Promise<boolean>;
-  cacheFireCancel(cancelBuf: Uint8Array): void;
-  cacheStatHash(cachePath: string, stat0: number, stat1: number): boolean;
-  cacheFileStatGet(cachePath: string, out: Float64Array): void;
+  cacheWaitUnlocked(stateBuf: Uint8Array, lockTimeoutMs?: number): Promise<boolean>;
+  cacheFireCancel(stateBuf: Uint8Array): void;
+  cacheStatHash(stateBuf: Uint8Array): boolean;
+  cacheFileStatGet(stateBuf: Uint8Array): void;
   filesEqual(pathA: string, pathB: string): Promise<boolean>;
   poolTrim(): void;
   lz4CompressBlock(input: Uint8Array, offset?: number, length?: number): Buffer;

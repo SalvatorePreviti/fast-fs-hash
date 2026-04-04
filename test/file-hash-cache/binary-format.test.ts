@@ -31,7 +31,7 @@ async function withCache<T>(
   run: (session: FileHashCacheSession) => Promise<T> | T
 ): Promise<T> {
   const cache = new FileHashCache({ cachePath: cp, files, rootPath: opts.rootPath ?? FIXTURE_DIR, ...opts });
-  await using session = await cache.open();
+  using session = await cache.open();
   return await run(session);
 }
 
@@ -91,8 +91,8 @@ describe("FileHashCache binary format [native]", () => {
       expect(data.length).toBeLessThan(HEADER_SIZE + 200);
     });
 
-    it("header size is 96 bytes", () => {
-      expect(HEADER_SIZE).toBe(96);
+    it("header size is 80 bytes", () => {
+      expect(HEADER_SIZE).toBe(80);
     });
   });
 

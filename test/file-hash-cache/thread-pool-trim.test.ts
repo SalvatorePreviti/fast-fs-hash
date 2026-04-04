@@ -48,14 +48,14 @@ describe("threadPoolTrim", () => {
     const files = [fixtureFile("a.txt")];
 
     {
-      await using session = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
+      using session = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
       await session.write();
     }
 
     threadPoolTrim();
 
     {
-      await using session = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
+      using session = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
       expect(session.status).toBe("upToDate");
     }
   });
@@ -69,7 +69,7 @@ describe("threadPoolTrim", () => {
     const ok = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite();
     expect(ok).toBe(true);
 
-    await using session = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 0 }).open();
+    using session = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 0 }).open();
     expect(session.status).toBe("upToDate");
   });
 });

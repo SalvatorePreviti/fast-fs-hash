@@ -5,7 +5,7 @@
  * @internal
  */
 
-export const { from: bufferFrom, allocUnsafe: bufferAllocUnsafe, isBuffer } = Buffer;
+export const { alloc: bufferAlloc, from: bufferFrom, allocUnsafe: bufferAllocUnsafe, isBuffer } = Buffer;
 
 /** Clamp concurrency to [1..8], defaulting 0 to 8, and cap at fileCount. */
 export function effectiveConcurrency(fileCount: number, concurrency: number): number {
@@ -25,7 +25,7 @@ export function encodeFilePaths(paths: Iterable<string>): Buffer {
   const arr = Array.isArray(paths) ? paths : Array.from(paths);
   const n = arr.length;
   if (n === 0) {
-    return Buffer.alloc(0);
+    return bufferAlloc(0);
   }
 
   let totalChars = 0;

@@ -56,7 +56,7 @@ describe("FileHashCache [native]", () => {
       const cp = cachePath("no-exist");
       const files = [fixtureFile("a.txt"), fixtureFile("b.txt")];
       const cache = makeCache(cp, files);
-      await using session = await cache.open();
+      using session = await cache.open();
       expect(session.status).toBe("missing");
     });
 
@@ -67,7 +67,7 @@ describe("FileHashCache [native]", () => {
 
       // Seed the cache via open + write
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         expect(s1.status).not.toBe("upToDate");
         await s1.write();
       }
@@ -75,7 +75,7 @@ describe("FileHashCache [native]", () => {
       // Check should return 'upToDate'
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.status).toBe("upToDate");
       }
     });
@@ -87,7 +87,7 @@ describe("FileHashCache [native]", () => {
 
       // Seed
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write();
       }
 
@@ -99,7 +99,7 @@ describe("FileHashCache [native]", () => {
       // Check should return 'changed'
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.status).toBe("changed");
       }
 
@@ -113,20 +113,20 @@ describe("FileHashCache [native]", () => {
 
       {
         const cache1 = makeCache(cp, files);
-        await using s1 = await cache1.open();
+        using s1 = await cache1.open();
         await s1.write();
       }
 
       {
         const cache2 = makeCache(cp, files, { version: 2 });
-        await using s2 = await cache2.open();
+        using s2 = await cache2.open();
         expect(s2.status).toBe("stale");
       }
     });
 
     it("returns a valid status with empty file list and no cache", async () => {
       const cache = makeCache(cachePath("val-empty"), []);
-      await using session = await cache.open();
+      using session = await cache.open();
       // Empty file list: returns 'upToDate' (nothing to invalidate)
       expect(["upToDate", "missing"]).toContain(session.status);
     });
@@ -140,7 +140,7 @@ describe("FileHashCache [native]", () => {
       const files = [fixtureFile("a.txt"), fixtureFile("b.txt")];
       const cache = makeCache(cp, files);
 
-      await using session = await cache.open();
+      using session = await cache.open();
       expect(session.status).not.toBe("upToDate");
       await session.write();
     });
@@ -152,14 +152,14 @@ describe("FileHashCache [native]", () => {
 
       // Seed
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write();
       }
 
       // Second update — nothing changed
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.status).toBe("upToDate");
       }
     });
@@ -171,7 +171,7 @@ describe("FileHashCache [native]", () => {
 
       // Seed
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write();
       }
 
@@ -183,7 +183,7 @@ describe("FileHashCache [native]", () => {
       // Open — detect change, write
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.status).toBe("changed");
         await s2.write();
       }
@@ -199,7 +199,7 @@ describe("FileHashCache [native]", () => {
 
       // Write with user values
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write({
           userValue0: 42,
           userValue1: 100,
@@ -211,7 +211,7 @@ describe("FileHashCache [native]", () => {
       // Read them back
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.userValue0).toBe(42);
         expect(s2.userValue1).toBe(100);
         expect(s2.userValue2).toBe(200);
@@ -227,20 +227,20 @@ describe("FileHashCache [native]", () => {
       // Write user data
       const testData = Buffer.from("test user data payload");
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write({ userData: [testData] });
       }
 
       // Read user data back
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.userData.length).toBe(1);
         const totalSize = s2.userData.reduce((s, item) => s + item.byteLength, 0);
         expect(totalSize).toBe(testData.length);
         const item0 = s2.userData[0];
         expect(item0.byteLength).toBe(testData.length);
-        expect(Buffer.from(item0)).toEqual(testData);
+        expect(Buffer.from(item0).equals(testData)).toBe(true);
       }
     });
 
@@ -251,14 +251,14 @@ describe("FileHashCache [native]", () => {
 
       // Seed
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write();
       }
 
       // Second open — nothing changed
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.status).toBe("upToDate");
       }
     });
@@ -269,7 +269,7 @@ describe("FileHashCache [native]", () => {
   describe("options", () => {
     it("version is treated as u32", async () => {
       const cache = makeCache(cachePath("ver-u32"), [], { version: -1 });
-      await using session = await cache.open();
+      using session = await cache.open();
       expect(session.version).toBe(0xffffffff);
     });
 
@@ -287,13 +287,13 @@ describe("FileHashCache [native]", () => {
 
       {
         const cache1 = makeCache(cp, files, { fingerprint: fp1 });
-        await using s1 = await cache1.open();
+        using s1 = await cache1.open();
         await s1.write();
       }
 
       {
         const cache2 = makeCache(cp, files, { fingerprint: fp2 });
-        await using s2 = await cache2.open();
+        using s2 = await cache2.open();
         expect(s2.status).toBe("stale");
       }
     });
@@ -308,21 +308,21 @@ describe("FileHashCache [native]", () => {
       // Write with fp1
       {
         const cache1 = makeCache(cp, files, { fingerprint: fp1 });
-        await using s1 = await cache1.open();
+        using s1 = await cache1.open();
         await s1.write();
       }
 
       // Read with fp1 — should be upToDate
       {
         const cache2 = makeCache(cp, files, { fingerprint: fp1 });
-        await using s2 = await cache2.open();
+        using s2 = await cache2.open();
         expect(s2.status).toBe("upToDate");
       }
 
       // Read with fp2 — should be stale
       {
         const cache3 = makeCache(cp, files, { fingerprint: fp2 });
-        await using s3 = await cache3.open();
+        using s3 = await cache3.open();
         expect(s3.status).toBe("stale");
       }
     });
@@ -339,14 +339,14 @@ describe("FileHashCache [native]", () => {
       const items = [Buffer.from("first item"), Buffer.from("second item data"), Buffer.from("third")];
 
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write({ userData: items });
       }
 
       // Read back
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.userData.length).toBe(3);
         const totalSize = s2.userData.reduce((s, item) => s + item.byteLength, 0);
         expect(totalSize).toBe(10 + 16 + 5);
@@ -354,7 +354,7 @@ describe("FileHashCache [native]", () => {
         for (let i = 0; i < 3; i++) {
           const item = items[i] ?? Buffer.alloc(0);
           const readItem = s2.userData[i];
-          expect(Buffer.from(readItem)).toEqual(item);
+          expect(Buffer.from(readItem).equals(item)).toBe(true);
         }
       }
     });
@@ -365,13 +365,13 @@ describe("FileHashCache [native]", () => {
       const cache = makeCache(cp, files);
 
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write({ userData: [] });
       }
 
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.userData.length).toBe(0);
       }
     });
@@ -383,7 +383,7 @@ describe("FileHashCache [native]", () => {
 
       // Write user data
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write({ userData: [Buffer.from("some data")] });
       }
 
@@ -394,14 +394,14 @@ describe("FileHashCache [native]", () => {
 
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         await s2.write({ userData: null });
       }
 
       // Read back — should have no data
       {
         cache.invalidateAll();
-        await using s3 = await cache.open();
+        using s3 = await cache.open();
         expect(s3.userData.length).toBe(0);
       }
 
@@ -416,7 +416,7 @@ describe("FileHashCache [native]", () => {
 
       // Seed with user data
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write({ userData: [Buffer.from("original")] });
       }
 
@@ -428,7 +428,7 @@ describe("FileHashCache [native]", () => {
       // Read old data from session and write new data
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.userData.length).toBe(1);
         const old = s2.userData[0];
         await s2.write({
@@ -439,7 +439,7 @@ describe("FileHashCache [native]", () => {
       // Read back
       {
         cache.invalidateAll();
-        await using s3 = await cache.open();
+        using s3 = await cache.open();
         expect(s3.userData.length).toBe(2);
         const item0 = s3.userData[0];
         const item1 = s3.userData[1];
@@ -456,7 +456,7 @@ describe("FileHashCache [native]", () => {
       const files = [fixtureFile("a.txt")];
       const cache = makeCache(cp, files);
 
-      await using session = await cache.open();
+      using session = await cache.open();
       expect(session.userData.length).toBe(0);
     });
   });
@@ -470,13 +470,13 @@ describe("FileHashCache [native]", () => {
       const cache = makeCache(cp, files);
 
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write({ userData: [Buffer.from("hello world")] });
       }
 
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.userData.length).toBe(1);
         expect(Buffer.isBuffer(s2.userData[0])).toBe(true);
         expect(s2.userData[0].toString("utf8")).toBe("hello world");
@@ -490,13 +490,13 @@ describe("FileHashCache [native]", () => {
 
       const bufs = [Buffer.from("first"), Buffer.from("second item"), Buffer.from("third")];
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write({ userData: bufs });
       }
 
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.userData.length).toBe(3);
         for (let i = 0; i < bufs.length; i++) {
           expect(Buffer.isBuffer(s2.userData[i])).toBe(true);
@@ -517,13 +517,13 @@ describe("FileHashCache [native]", () => {
         Buffer.from("another string"),
       ];
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write({ userData: items });
       }
 
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.userData.length).toBe(4);
 
         expect(Buffer.isBuffer(s2.userData[0])).toBe(true);
@@ -533,7 +533,7 @@ describe("FileHashCache [native]", () => {
         expect(s2.userData[1].toString()).toBe("string item");
 
         expect(Buffer.isBuffer(s2.userData[2])).toBe(true);
-        expect(Buffer.from(s2.userData[2])).toEqual(Buffer.from([0x00, 0xff, 0x42]));
+        expect(Buffer.from(s2.userData[2]).equals(Buffer.from([0x00, 0xff, 0x42]))).toBe(true);
 
         expect(Buffer.isBuffer(s2.userData[3])).toBe(true);
         expect(s2.userData[3].toString()).toBe("another string");
@@ -546,13 +546,13 @@ describe("FileHashCache [native]", () => {
       const cache = makeCache(cp, files);
 
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write({ userData: [Buffer.alloc(0), Buffer.from("non-empty"), Buffer.alloc(0)] });
       }
 
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.userData.length).toBe(3);
         expect(s2.userData[0].length).toBe(0);
         expect(s2.userData[1].toString()).toBe("non-empty");
@@ -567,13 +567,13 @@ describe("FileHashCache [native]", () => {
 
       const utf8Str = "日本語テスト 🚀 émojis";
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write({ userData: [Buffer.from(utf8Str)] });
       }
 
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.userData.length).toBe(1);
         expect(Buffer.isBuffer(s2.userData[0])).toBe(true);
         expect(s2.userData[0].toString("utf8")).toBe(utf8Str);
@@ -586,13 +586,13 @@ describe("FileHashCache [native]", () => {
       const cache = makeCache(cp, files);
 
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write({ userData: [Buffer.from("test data")] });
       }
 
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         const item = s2.userData[0];
         expect(Buffer.isBuffer(item)).toBe(true);
         expect(item.toString("utf8")).toBe("test data");
@@ -605,7 +605,7 @@ describe("FileHashCache [native]", () => {
       const cache = makeCache(cp, files);
 
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write({
           userData: [Buffer.from("preserved first"), Buffer.from("preserved second")],
         });
@@ -617,13 +617,13 @@ describe("FileHashCache [native]", () => {
 
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         await s2.write({ userValue0: 99 });
       }
 
       {
         cache.invalidateAll();
-        await using s3 = await cache.open();
+        using s3 = await cache.open();
         expect(s3.userValue0).toBe(99);
         expect(s3.userData.length).toBe(2);
         expect(Buffer.isBuffer(s3.userData[0])).toBe(true);
@@ -642,7 +642,7 @@ describe("FileHashCache [native]", () => {
 
       {
         const cache1 = makeCache(cp, files1);
-        await using s1 = await cache1.open();
+        using s1 = await cache1.open();
         await s1.write({
           files: files2,
           rootPath: FIXTURE_DIR,
@@ -652,7 +652,7 @@ describe("FileHashCache [native]", () => {
 
       {
         const cache2 = makeCache(cp, files2);
-        await using s2 = await cache2.open();
+        using s2 = await cache2.open();
         expect(s2.status).toBe("upToDate");
         expect(s2.userData.length).toBe(1);
         expect(Buffer.isBuffer(s2.userData[0])).toBe(true);
@@ -669,13 +669,13 @@ describe("FileHashCache [native]", () => {
       const expectedSize = items.reduce((s, b) => s + b.byteLength, 0);
 
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write({ userData: items });
       }
 
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         const totalSize = s2.userData.reduce((s, item) => s + item.byteLength, 0);
         expect(totalSize).toBe(expectedSize);
       }
@@ -687,7 +687,7 @@ describe("FileHashCache [native]", () => {
       const cache = makeCache(cp, files);
 
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write({ userData: [Buffer.from("will be cleared")] });
       }
 
@@ -696,13 +696,13 @@ describe("FileHashCache [native]", () => {
       utimesSync(fixtureFile("a.txt"), t, t);
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         await s2.write({ userData: null });
       }
 
       {
         cache.invalidateAll();
-        await using s3 = await cache.open();
+        using s3 = await cache.open();
         expect(s3.userData.length).toBe(0);
       }
 
@@ -720,14 +720,14 @@ describe("FileHashCache [native]", () => {
 
       {
         const cache1 = makeCache(cp, files1);
-        await using s1 = await cache1.open();
+        using s1 = await cache1.open();
         await s1.write({ files: files2, rootPath: FIXTURE_DIR });
       }
 
       // Verify the cache was written with the updated file list
       {
         const cache2 = makeCache(cp, files2);
-        await using s2 = await cache2.open();
+        using s2 = await cache2.open();
         expect(s2.status).toBe("upToDate");
       }
     });
@@ -743,7 +743,7 @@ describe("FileHashCache [native]", () => {
 
       // Seed with user data
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write({
           userData: [Buffer.from("preserved data")],
           userValue0: 42,
@@ -758,7 +758,7 @@ describe("FileHashCache [native]", () => {
       // Open and write without specifying userData — should preserve old
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.status).toBe("changed");
         await s2.write();
       }
@@ -766,7 +766,7 @@ describe("FileHashCache [native]", () => {
       // Verify old user data was preserved
       {
         cache.invalidateAll();
-        await using s3 = await cache.open();
+        using s3 = await cache.open();
         expect(s3.status).toBe("upToDate");
         expect(s3.userValue0).toBe(42);
         expect(s3.userData.length).toBe(1);
@@ -784,7 +784,7 @@ describe("FileHashCache [native]", () => {
       const cache = makeCache(cp, files);
 
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         expect(s1.status).toBe("missing");
         await s1.write();
       }
@@ -792,7 +792,7 @@ describe("FileHashCache [native]", () => {
       // Verify cache was written
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.status).toBe("upToDate");
       }
     });
@@ -808,14 +808,14 @@ describe("FileHashCache [native]", () => {
 
       // Open but don't write
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         expect(s1.status).toBe("missing");
       }
 
       // Cache should not exist
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.status).toBe("missing");
       }
     });
@@ -827,7 +827,7 @@ describe("FileHashCache [native]", () => {
 
       // Seed
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write();
       }
 
@@ -839,14 +839,14 @@ describe("FileHashCache [native]", () => {
       // Open but don't write
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.status).toBe("changed");
       }
 
       // Cache should still report changed (old data not updated)
       {
         cache.invalidateAll();
-        await using s3 = await cache.open();
+        using s3 = await cache.open();
         expect(s3.status).toBe("changed");
       }
 
@@ -865,14 +865,14 @@ describe("FileHashCache [native]", () => {
       // Seed
       {
         const cache1 = makeCache(cp, files);
-        await using s1 = await cache1.open();
+        using s1 = await cache1.open();
         await s1.write();
       }
 
       // Reuse: files=null
       {
         const cache2 = makeCache(cp, null, { rootPath: FIXTURE_DIR });
-        await using s2 = await cache2.open();
+        using s2 = await cache2.open();
         expect(s2.status).toBe("upToDate");
       }
     });
@@ -884,7 +884,7 @@ describe("FileHashCache [native]", () => {
       // Seed with user data
       {
         const cache1 = makeCache(cp, files);
-        await using s1 = await cache1.open();
+        using s1 = await cache1.open();
         await s1.write({
           userData: [Buffer.from("reuse data")],
           userValue0: 99,
@@ -894,7 +894,7 @@ describe("FileHashCache [native]", () => {
       // Reuse
       {
         const cache2 = makeCache(cp, null, { rootPath: FIXTURE_DIR });
-        await using s2 = await cache2.open();
+        using s2 = await cache2.open();
         expect(s2.status).toBe("upToDate");
         expect(s2.userValue0).toBe(99);
         expect(s2.userData.length).toBe(1);
@@ -905,7 +905,7 @@ describe("FileHashCache [native]", () => {
       const cp = cachePath("reuse-noold");
 
       const cache = makeCache(cp, null, { rootPath: FIXTURE_DIR });
-      await using session = await cache.open();
+      using session = await cache.open();
       expect(session.status).toBe("missing");
     });
 
@@ -916,7 +916,7 @@ describe("FileHashCache [native]", () => {
       // Seed
       {
         const cache1 = makeCache(cp, files);
-        await using s1 = await cache1.open();
+        using s1 = await cache1.open();
         await s1.write();
       }
 
@@ -928,7 +928,7 @@ describe("FileHashCache [native]", () => {
       // Reuse — should detect change and re-write
       {
         const cache2 = makeCache(cp, null, { rootPath: FIXTURE_DIR });
-        await using s2 = await cache2.open();
+        using s2 = await cache2.open();
         expect(["changed", "stale"]).toContain(s2.status);
         await s2.write();
       }
@@ -936,7 +936,7 @@ describe("FileHashCache [native]", () => {
       // After re-write, should be up to date
       {
         const cache3 = makeCache(cp, null, { rootPath: FIXTURE_DIR });
-        await using s3 = await cache3.open();
+        using s3 = await cache3.open();
         expect(s3.status).toBe("upToDate");
       }
 
@@ -955,7 +955,7 @@ describe("FileHashCache [native]", () => {
 
       // Seed with user data
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write({
           userData: [Buffer.from("keep me"), Buffer.from("and me")],
           userValue0: 7,
@@ -970,14 +970,14 @@ describe("FileHashCache [native]", () => {
       // Write with changed userValue but userData: undefined → preserve old
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         await s2.write({ userValue0: 77 });
       }
 
       // Verify both new userValue and old user data preserved
       {
         cache.invalidateAll();
-        await using s3 = await cache.open();
+        using s3 = await cache.open();
         expect(s3.userValue0).toBe(77);
         expect(s3.userData.length).toBe(2);
         const item0 = s3.userData[0];
@@ -999,7 +999,7 @@ describe("FileHashCache [native]", () => {
       const files = [fixtureFile("a.txt")];
       const cache = makeCache(cp, files);
 
-      await using session = await cache.open();
+      using session = await cache.open();
       expect(session.status).toBe("missing");
     });
 
@@ -1009,13 +1009,13 @@ describe("FileHashCache [native]", () => {
       const cache = makeCache(cp, files);
 
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write();
       }
 
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.status).toBe("upToDate");
       }
     });
@@ -1026,13 +1026,13 @@ describe("FileHashCache [native]", () => {
 
       {
         const cache1 = makeCache(cp, files);
-        await using s1 = await cache1.open();
+        using s1 = await cache1.open();
         await s1.write();
       }
 
       {
         const cache2 = makeCache(cp, files, { version: 2 });
-        await using s2 = await cache2.open();
+        using s2 = await cache2.open();
         expect(s2.status).toBe("stale");
       }
     });
@@ -1044,14 +1044,14 @@ describe("FileHashCache [native]", () => {
 
       // Seed with a user value
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write({ userValue0: 42 });
       }
 
       // Read back
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.userValue0).toBe(42);
       }
     });
@@ -1067,19 +1067,19 @@ describe("FileHashCache [native]", () => {
 
       // Seed
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write();
       }
 
       // Multiple opens on same cache should all be upToDate
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.status).toBe("upToDate");
       }
       {
         cache.invalidateAll();
-        await using s3 = await cache.open();
+        using s3 = await cache.open();
         expect(s3.status).toBe("upToDate");
       }
     });
@@ -1096,7 +1096,7 @@ describe("FileHashCache [native]", () => {
       // Sequential open+write calls
       for (let i = 0; i < 3; i++) {
         cache.invalidateAll();
-        await using session = await cache.open();
+        using session = await cache.open();
         if (session.status !== "upToDate") {
           await session.write();
         }
@@ -1105,7 +1105,7 @@ describe("FileHashCache [native]", () => {
       // Verify final state
       {
         cache.invalidateAll();
-        await using session = await cache.open();
+        using session = await cache.open();
         expect(session.status).toBe("upToDate");
       }
     });
@@ -1121,7 +1121,7 @@ describe("FileHashCache [native]", () => {
 
       // First call — should create the cache
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         expect(s1.status).toBe("missing");
         await s1.write();
       }
@@ -1129,7 +1129,7 @@ describe("FileHashCache [native]", () => {
       // Cache should exist now
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.status).toBe("upToDate");
       }
     });
@@ -1144,7 +1144,7 @@ describe("FileHashCache [native]", () => {
       const cache = makeCache(cp, files);
 
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         expect(s1.status).toBe("missing");
         await s1.write({ userValue0: 123 });
       }
@@ -1152,7 +1152,7 @@ describe("FileHashCache [native]", () => {
       // Verify it was written
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.status).toBe("upToDate");
         expect(s2.userValue0).toBe(123);
       }
@@ -1164,13 +1164,13 @@ describe("FileHashCache [native]", () => {
       const cache = makeCache(cp, files);
 
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write();
       }
 
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.status).toBe("upToDate");
       }
     });
@@ -1185,13 +1185,13 @@ describe("FileHashCache [native]", () => {
       const cache = makeCache(cp, files);
 
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write();
       }
 
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.fileCount).toBe(2);
         expect(s2.files).toHaveLength(2);
         // Files are root-relative, sorted
@@ -1207,7 +1207,7 @@ describe("FileHashCache [native]", () => {
       const files = [fixtureFile("a.txt")];
       const cache = makeCache(cp, files);
 
-      await using session = await cache.open();
+      using session = await cache.open();
       expect(session.status).toBe("missing");
       // fileCount reflects the files being tracked, even for a missing cache
       expect(session.fileCount).toBe(1);
@@ -1226,21 +1226,21 @@ describe("FileHashCache [native]", () => {
 
       {
         const cache1 = makeCache(cp, files, { fingerprint: fp1 });
-        await using s1 = await cache1.open();
+        using s1 = await cache1.open();
         await s1.write({ fingerprint: fp2 });
       }
 
       // Cache should be readable with fp2
       {
         const cache2 = makeCache(cp, files, { fingerprint: fp2 });
-        await using s2 = await cache2.open();
+        using s2 = await cache2.open();
         expect(s2.status).toBe("upToDate");
       }
 
       // fp1 should be stale
       {
         const cache3 = makeCache(cp, files, { fingerprint: fp1 });
-        await using s3 = await cache3.open();
+        using s3 = await cache3.open();
         expect(s3.status).toBe("stale");
       }
     });
@@ -1257,7 +1257,7 @@ describe("FileHashCache [native]", () => {
 
       // Seed with user data
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write({
           userData: [Buffer.from("keep this")],
           userValue0: 42,
@@ -1267,7 +1267,7 @@ describe("FileHashCache [native]", () => {
       // Update file list, don't set userData → should preserve
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         await s2.write({
           files: files2,
           rootPath: FIXTURE_DIR,
@@ -1278,7 +1278,7 @@ describe("FileHashCache [native]", () => {
       // Verify both new files and old user data are present
       {
         const cache2 = makeCache(cp, files2);
-        await using s3 = await cache2.open();
+        using s3 = await cache2.open();
         expect(s3.status).toBe("upToDate");
         expect(s3.userValue0).toBe(42);
         expect(s3.userData.length).toBe(1);
@@ -1295,14 +1295,14 @@ describe("FileHashCache [native]", () => {
 
       // Seed with userValue0=10
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write({ userValue0: 10, userValue1: 20 });
       }
 
       // Change files and userValues in write
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         await s2.write({
           files: files2,
           rootPath: FIXTURE_DIR,
@@ -1314,7 +1314,7 @@ describe("FileHashCache [native]", () => {
       // Verify new values written
       {
         const cache2 = makeCache(cp, files2);
-        await using s3 = await cache2.open();
+        using s3 = await cache2.open();
         expect(s3.status).toBe("upToDate");
         expect(s3.userValue0).toBe(99);
         // userValue1 should be preserved from old cache (20)
@@ -1334,14 +1334,14 @@ describe("FileHashCache [native]", () => {
       // Seed with fp1
       {
         const cache1 = makeCache(cp, files1, { fingerprint: fp1 });
-        await using s1 = await cache1.open();
+        using s1 = await cache1.open();
         await s1.write();
       }
 
       // Change files and fingerprint in write
       {
         const cache2 = makeCache(cp, files1, { fingerprint: fp1 });
-        await using s2 = await cache2.open();
+        using s2 = await cache2.open();
         await s2.write({
           files: files2,
           rootPath: FIXTURE_DIR,
@@ -1352,14 +1352,14 @@ describe("FileHashCache [native]", () => {
       // fp2 should be up to date
       {
         const cache3 = makeCache(cp, files2, { fingerprint: fp2 });
-        await using s3 = await cache3.open();
+        using s3 = await cache3.open();
         expect(s3.status).toBe("upToDate");
       }
 
       // fp1 should be stale
       {
         const cache4 = makeCache(cp, files2, { fingerprint: fp1 });
-        await using s4 = await cache4.open();
+        using s4 = await cache4.open();
         expect(s4.status).toBe("stale");
       }
     });
@@ -1372,14 +1372,14 @@ describe("FileHashCache [native]", () => {
       // Seed with old user data
       {
         const cache1 = makeCache(cp, files1);
-        await using s1 = await cache1.open();
+        using s1 = await cache1.open();
         await s1.write({ userData: [Buffer.from("old data")] });
       }
 
       // Change files and replace user data
       {
         const cache2 = makeCache(cp, files1);
-        await using s2 = await cache2.open();
+        using s2 = await cache2.open();
         await s2.write({
           files: files2,
           rootPath: FIXTURE_DIR,
@@ -1390,7 +1390,7 @@ describe("FileHashCache [native]", () => {
       // Verify new user data written
       {
         const cache3 = makeCache(cp, files2);
-        await using s3 = await cache3.open();
+        using s3 = await cache3.open();
         expect(s3.status).toBe("upToDate");
         expect(s3.userData.length).toBe(2);
         const item0 = s3.userData[0];
@@ -1408,7 +1408,7 @@ describe("FileHashCache [native]", () => {
       // Seed with user data
       {
         const cache1 = makeCache(cp, files1);
-        await using s1 = await cache1.open();
+        using s1 = await cache1.open();
         await s1.write({
           userData: [Buffer.from("remove me")],
           userValue0: 55,
@@ -1418,7 +1418,7 @@ describe("FileHashCache [native]", () => {
       // Change files and clear user data
       {
         const cache2 = makeCache(cp, files1);
-        await using s2 = await cache2.open();
+        using s2 = await cache2.open();
         await s2.write({
           files: files2,
           rootPath: FIXTURE_DIR,
@@ -1429,7 +1429,7 @@ describe("FileHashCache [native]", () => {
       // Verify user data cleared but userValue preserved
       {
         const cache3 = makeCache(cp, files2);
-        await using s3 = await cache3.open();
+        using s3 = await cache3.open();
         expect(s3.status).toBe("upToDate");
         expect(s3.userData.length).toBe(0);
         expect(s3.userValue0).toBe(55);
@@ -1446,7 +1446,7 @@ describe("FileHashCache [native]", () => {
       // Seed
       {
         const cache1 = makeCache(cp, files1, { fingerprint: fp1 });
-        await using s1 = await cache1.open();
+        using s1 = await cache1.open();
         await s1.write({
           userData: [Buffer.from("old")],
           userValue0: 1,
@@ -1457,7 +1457,7 @@ describe("FileHashCache [native]", () => {
       // Change everything at once
       {
         const cache2 = makeCache(cp, files1, { fingerprint: fp1 });
-        await using s2 = await cache2.open();
+        using s2 = await cache2.open();
         await s2.write({
           files: files2,
           rootPath: FIXTURE_DIR,
@@ -1471,7 +1471,7 @@ describe("FileHashCache [native]", () => {
       // Verify all changes
       {
         const cache3 = makeCache(cp, files2, { fingerprint: fp2 });
-        await using s3 = await cache3.open();
+        using s3 = await cache3.open();
         expect(s3.status).toBe("upToDate");
         expect(s3.userValue0).toBe(100);
         // userValue1 preserved from old
@@ -1488,7 +1488,7 @@ describe("FileHashCache [native]", () => {
       // fp1 should be stale
       {
         const cache4 = makeCache(cp, files2, { fingerprint: fp1 });
-        await using s4 = await cache4.open();
+        using s4 = await cache4.open();
         expect(s4.status).toBe("stale");
       }
     });
@@ -1504,7 +1504,7 @@ describe("FileHashCache [native]", () => {
 
       // First: create cache
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         expect(s1.status).toBe("missing");
         await s1.write();
       }
@@ -1512,7 +1512,7 @@ describe("FileHashCache [native]", () => {
       // Second: open → upToDate (stat-match done), then write with same files
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.status).toBe("upToDate");
         await s2.write({ userValue0: 42 });
       }
@@ -1520,7 +1520,7 @@ describe("FileHashCache [native]", () => {
       // Third: verify the write didn't corrupt anything
       {
         cache.invalidateAll();
-        await using s3 = await cache.open();
+        using s3 = await cache.open();
         expect(s3.status).toBe("upToDate");
         expect(s3.userValue0).toBe(42);
         expect(s3.fileCount).toBe(2);
@@ -1534,7 +1534,7 @@ describe("FileHashCache [native]", () => {
 
       // Create cache
       {
-        await using s1 = await cache.open();
+        using s1 = await cache.open();
         await s1.write();
       }
 
@@ -1546,7 +1546,7 @@ describe("FileHashCache [native]", () => {
       // Open detects change, write should hash only the changed file
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.status).toBe("changed");
         await s2.write();
       }
@@ -1554,7 +1554,7 @@ describe("FileHashCache [native]", () => {
       // Verify cache is valid
       {
         cache.invalidateAll();
-        await using s3 = await cache.open();
+        using s3 = await cache.open();
         expect(s3.status).toBe("upToDate");
       }
 
@@ -1616,36 +1616,36 @@ describe("FileHashCache [native]", () => {
       await expect(session.write()).rejects.toThrow("already closed");
     });
 
-    it("await using releases the lock after write", async () => {
+    it("using releases the lock after write", async () => {
       const cp = cachePath("await-using-write");
       const files = [fixtureFile("a.txt"), fixtureFile("b.txt")];
       const cache = makeCache(cp, files);
       {
-        await using session = await cache.open();
+        using session = await cache.open();
         await session.write();
-        // write() already released — await using close() is a no-op
+        // write() already released — using close() is a no-op
       }
       // Verify cache is readable
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.status).toBe("upToDate");
       }
     });
 
-    it("await using releases the lock without write", async () => {
+    it("using releases the lock without write", async () => {
       const cp = cachePath("await-using-nowrite");
       const files = [fixtureFile("a.txt")];
       const cache = makeCache(cp, files);
       {
-        await using session = await cache.open();
+        using session = await cache.open();
         expect(session.status).toBe("missing");
-        // no write — await using should still release the lock
+        // no write — using should still release the lock
       }
       // Verify the lock is released: can open again
       {
         cache.invalidateAll();
-        await using s2 = await cache.open();
+        using s2 = await cache.open();
         expect(s2.status).toBe("missing");
       }
     });

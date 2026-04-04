@@ -11,17 +11,18 @@
 
 namespace fast_fs_hash {
 
-  /** Stamp cacheFileStat0/1 in a header from an open fd by fstat + xxHash128 of {ino, ctimeNs, mtimeNs, size}. */
-  inline void stampCacheFileStat(CacheHeader * hdr, int fd) noexcept {
+  /** Compute cache file stat hash from an open fd. Writes two f64 values to statOut. */
+  inline void stampCacheFileStat(double * statOut, int fd) noexcept {
     CacheEntry tmp{};
     if (FfshFile::fstat_into(fd, tmp)) {
       uint64_t fields[4] = {tmp.ino & INO_VALUE_MASK, tmp.ctimeNs, tmp.mtimeNs, tmp.size};
       Hash128 h;
       h.from_xxh128(XXH3_128bits(fields, sizeof(fields)));
-      memcpy(&hdr->cacheFileStat0, &h.bytes[0], 8);
-      memcpy(&hdr->cacheFileStat1, &h.bytes[8], 8);
+      memcpy(&statOut[0], &h.bytes[0], 8);
+      memcpy(&statOut[1], &h.bytes[8], 8);
     } else {
-      hdr->clearCacheFileStat();
+      statOut[0] = 0;
+      statOut[1] = 0;
     }
   }
 
@@ -49,18 +50,20 @@ namespace fast_fs_hash {
 
   /**
    * LZ4-compress and write a cache file body to a locked fd.
-   * Sets header magic/status, compresses body, writes header+body, truncates.
-   * Closes the fd when done (or on error). Returns true on success.
+   * Sets header magic, compresses body, writes header+body, truncates.
+   * Closes the fd when done (or on error).
+   * On success, writes cache file stat hash to statOut[0..1].
+   * Returns true on success.
    */
   inline bool compressAndWriteCache(
-    CacheHeader * hdr, const uint8_t * body, size_t bodyLen, FfshFile & file) noexcept {
+    CacheHeader * hdr, const uint8_t * body, size_t bodyLen, FfshFile & file, double * statOut) noexcept {
     if (bodyLen > CACHE_MAX_BODY_SIZE) [[unlikely]] {
       file.close();
       return false;
     }
 
     hdr->magic = CacheHeader::MAGIC;
-    hdr->status = 0;
+    hdr->reserved = 0;
 
     const int srcSize = static_cast<int>(bodyLen);
     const int maxCompressed = LZ4_compressBound(srcSize);
@@ -72,10 +75,6 @@ namespace fast_fs_hash {
     }
 
     memcpy(outBuf.ptr, hdr, CacheHeader::SIZE);
-    auto * diskHdr = headerOf(outBuf.ptr);
-    diskHdr->fileHandle = FFSH_FILE_HANDLE_INVALID;
-    diskHdr->cacheFileStat0 = 0;
-    diskHdr->cacheFileStat1 = 0;
 
     const int compressedSize = LZ4_compress_fast(
       reinterpret_cast<const char *>(body),
@@ -98,8 +97,8 @@ namespace fast_fs_hash {
     file.preallocate(actualFileSize);
     const bool ok = file.seek(0) && file.write_all(outBuf.ptr, actualFileSize) && file.truncate(actualFileSize);
 
-    if (ok) {
-      stampCacheFileStat(hdr, file.fd);
+    if (ok && statOut) {
+      stampCacheFileStat(statOut, file.fd);
     }
 
     file.close();
@@ -117,12 +116,12 @@ namespace fast_fs_hash {
    * (prevUdCount) and assembles a fresh body with the NEW udCount layout.
    *
    * @param buf          In-memory dataBuf (header + entries + paths).
-   * @param hdr          Header within buf. Updated in-place (udItemCount, udPayloadsLen, magic, status).
+   * @param hdr          Header within buf. Updated in-place (udItemCount, udPayloadsLen, magic).
    * @param fc           File count.
    * @param prevUdCount  The udItemCount used when the in-memory layout was built.
-   *                     CacheWriter: the old cache's udItemCount. CacheWriteNew: 0.
    * @param ud           Parsed user data to embed (may have different count than prevUdCount).
    * @param file         Locked fd — closed by this function regardless of success/failure.
+   * @param statOut      Output: cache file stat hash [stat0, stat1]. Written on success.
    * @return true on successful write.
    */
   inline bool assembleAndWriteCache(
@@ -131,7 +130,8 @@ namespace fast_fs_hash {
     uint32_t fc,
     uint32_t prevUdCount,
     const ParsedUserData & ud,
-    FfshFile & file) noexcept {
+    FfshFile & file,
+    double * statOut) noexcept {
     const size_t udCount = ud.count();
     const auto * udItems = ud.data();
     const bool hasUd = udCount > 0 && udCount <= CACHE_MAX_FILE_COUNT && udItems;
@@ -159,7 +159,7 @@ namespace fast_fs_hash {
     const size_t bodyTotal = entriesLen + dirSize + peSize + inMemPathsLen + udPayloadsLen;
     if (bodyTotal == 0) {
       uint8_t empty = 0;
-      return compressAndWriteCache(hdr, &empty, 0, file);
+      return compressAndWriteCache(hdr, &empty, 0, file, statOut);
     }
     OwnedBuf<> body = OwnedBuf<>::alloc(bodyTotal);
     if (!body) [[unlikely]] {
@@ -197,7 +197,7 @@ namespace fast_fs_hash {
       }
     }
 
-    return compressAndWriteCache(hdr, body.ptr, bodyTotal, file);
+    return compressAndWriteCache(hdr, body.ptr, bodyTotal, file, statOut);
   }
 
 }  // namespace fast_fs_hash

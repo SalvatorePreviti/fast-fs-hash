@@ -4,12 +4,10 @@
  * ### On-disk layout
  *
  * ```
- * [header: 96 bytes, uncompressed][LZ4 compressed body]
- *
- * The header is 96 bytes. Bytes 72–95 contain in-memory-only fields (status,
- * fileHandle, cacheFileStat0, cacheFileStat1) that are zeroed before writing to disk.
+ * [header: 80 bytes, uncompressed][LZ4 compressed body]
  * ```
  *
+ * The header is 80 bytes (pure on-disk format, no in-memory-only fields).
  * The header is always readable without decompression. The LZ4 body contains:
  * ```
  * [entries: fileCount × 48 bytes]
@@ -19,8 +17,10 @@
  * [user data payloads]
  * ```
  *
- * In-memory dataBuf layout is identical: [header:96][body].
- * Per-file state is encoded in the high 2 bits of each entry's inode field.
+ * ### CacheStateBuf
+ *
+ * Shared JS ↔ C++ per-instance communication buffer. Fixed 96-byte header
+ * followed by the null-terminated UTF-8 cache path.
  *
  * @module
  * @internal
@@ -29,8 +29,8 @@
 /** Binary format magic: bytes 'F','S','H',0x00. */
 export const MAGIC = 0x00485346;
 
-/** Fixed header size in bytes. */
-export const HEADER_SIZE = 96;
+/** Fixed on-disk header size in bytes. */
+export const HEADER_SIZE = 80;
 
 /** Header byte 4: User cache version (u32). */
 export const H_VERSION = 4;
@@ -62,20 +62,58 @@ export const H_PATHS_LEN = 64;
 /** Header byte 68: Total byte length of user data payloads (u32). */
 export const H_UD_PAYLOADS_LEN = 68;
 
-/** Header byte 72: status (u32, in-memory only, 0 on disk). */
-export const H_STATUS_BYTE = 72;
-
-/** Header byte 76: fileHandle (int32 LE fd, in-memory only, -1 on disk). */
-export const H_FILE_HANDLE = 76;
-
-/** Header byte 80: cacheFileStat0 (f64 LE, in-memory only, 0 on disk). */
-export const H_CACHE_STAT0 = 80;
-
-/** Header byte 88: cacheFileStat1 (f64 LE, in-memory only, 0 on disk). */
-export const H_CACHE_STAT1 = 88;
-
 /** Fixed byte size of each file entry (48 bytes, 16-byte aligned). */
 export const ENTRY_STRIDE = 48;
 
 /** Maximum total user data payload size (128 MiB, matches C++ CACHE_MAX_UD_PAYLOADS). */
 export const CACHE_MAX_USER_DATA_SIZE = 128 * 1024 * 1024;
+
+// ── CacheStateBuf offsets ───────────────────────────────────────────
+
+/** Fixed header size of the state buffer (excluding variable-length cachePath). */
+export const STATE_HEADER_SIZE = 96;
+
+/** State byte 0: fingerprint (16 bytes, JS→C++). */
+export const S_FINGERPRINT = 0;
+
+/** State byte 16: version (u32, JS→C++). */
+export const S_VERSION = 16;
+
+/** State byte 20: lockTimeoutMs (i32, JS→C++). */
+export const S_LOCK_TIMEOUT = 20;
+
+/** State byte 24: status (u32, C++→JS). */
+export const S_STATUS = 24;
+
+/** State byte 28: fileHandle (i32, C++↔JS, -1 = invalid). */
+export const S_FILE_HANDLE = 28;
+
+/** State byte 32: cacheFileStat0 (f64, C++→JS). */
+export const S_CACHE_STAT0 = 32;
+
+/** State byte 40: cacheFileStat1 (f64, C++→JS). */
+export const S_CACHE_STAT1 = 40;
+
+/** State byte 48: userValue0 (f64, JS→C++). */
+export const S_USER_VALUE0 = 48;
+
+/** State byte 56: userValue1 (f64, JS→C++). */
+export const S_USER_VALUE1 = 56;
+
+/** State byte 64: userValue2 (f64, JS→C++). */
+export const S_USER_VALUE2 = 64;
+
+/** State byte 72: userValue3 (f64, JS→C++). */
+export const S_USER_VALUE3 = 72;
+
+/** State byte 80: cancelFlag (u32, JS↔C++). */
+export const S_CANCEL_FLAG = 80;
+
+/** State byte 84: fileCount (u32, JS→C++). */
+export const S_FILE_COUNT = 84;
+
+/** State byte 88: cachePathLen (u32, JS→C++). */
+export const S_CACHE_PATH_LEN = 88;
+
+/** State byte 96+: null-terminated UTF-8 cachePath (immutable after construction). */
+export const S_CACHE_PATH = 96;

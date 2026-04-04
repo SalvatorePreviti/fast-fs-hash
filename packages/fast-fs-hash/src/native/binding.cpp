@@ -73,7 +73,7 @@ static Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("cacheWrite", Napi::Function::New(env, fast_fs_hash::bindCacheWrite));
   exports.Set("cacheWriteNew", Napi::Function::New(env, fast_fs_hash::bindCacheWriteNew));
 
-  // Cache close / query (handle is an int32 fd in dataBuf header)
+  // Cache close / query / cancel
   exports.Set("cacheClose", Napi::Function::New(env, fast_fs_hash::bindCacheClose));
   exports.Set("cacheIsLocked", Napi::Function::New(env, fast_fs_hash::bindCacheIsLocked));
   exports.Set("cacheWaitUnlocked", Napi::Function::New(env, fast_fs_hash::bindCacheWaitUnlocked));

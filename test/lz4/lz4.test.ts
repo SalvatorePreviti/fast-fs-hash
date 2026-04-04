@@ -9,6 +9,13 @@ import {
 } from "fast-fs-hash";
 import { describe, expect, it } from "vitest";
 
+/** Fast buffer equality check — avoids vitest's slow deep comparison on large buffers. */
+function expectBuffersEqual(actual: Buffer | Uint8Array, expected: Buffer | Uint8Array): void {
+  const a = Buffer.isBuffer(actual) ? actual : Buffer.from(actual);
+  expect(a.length).toBe(expected.length);
+  expect(a.equals(expected)).toBe(true);
+}
+
 describe("LZ4 block compression", () => {
   const testData = Buffer.from("Hello, LZ4 compression! This is a test string that should compress well. ".repeat(100));
 
@@ -33,7 +40,7 @@ describe("LZ4 block compression", () => {
       expect(compressed.length).toBeLessThan(testData.length);
 
       const decompressed = lz4DecompressBlock(compressed, testData.length);
-      expect(Buffer.from(decompressed)).toEqual(testData);
+      expectBuffersEqual(decompressed, testData);
     });
 
     it("handles empty input", () => {
@@ -48,7 +55,7 @@ describe("LZ4 block compression", () => {
       const input = Buffer.from([0x42]);
       const compressed = lz4CompressBlock(input);
       const decompressed = lz4DecompressBlock(compressed, 1);
-      expect(Buffer.from(decompressed)).toEqual(input);
+      expectBuffersEqual(decompressed, input);
     });
 
     it("handles incompressible data", () => {
@@ -58,7 +65,7 @@ describe("LZ4 block compression", () => {
       }
       const compressed = lz4CompressBlock(random);
       const decompressed = lz4DecompressBlock(compressed, random.length);
-      expect(Buffer.from(decompressed)).toEqual(random);
+      expectBuffersEqual(decompressed, random);
     });
 
     it("throws on corrupt compressed data", () => {
@@ -80,7 +87,7 @@ describe("LZ4 block compression", () => {
 
       const compressed = lz4CompressBlock(full, offset, length);
       const decompressed = lz4DecompressBlock(compressed, length);
-      expect(Buffer.from(decompressed)).toEqual(full.subarray(offset, offset + length));
+      expectBuffersEqual(decompressed, full.subarray(offset, offset + length));
     });
 
     it("decompresses from a subrange of compressed buffer", () => {
@@ -89,7 +96,7 @@ describe("LZ4 block compression", () => {
       compressed.copy(padded, 10);
 
       const decompressed = lz4DecompressBlock(padded, testData.length, 10, compressed.length);
-      expect(Buffer.from(decompressed)).toEqual(testData);
+      expectBuffersEqual(decompressed, testData);
     });
 
     it("throws on offset exceeding buffer", () => {
@@ -111,7 +118,7 @@ describe("LZ4 block compression", () => {
 
       const compressed = output.subarray(0, bytesWritten);
       const decompressed = lz4DecompressBlock(compressed, testData.length);
-      expect(Buffer.from(decompressed)).toEqual(testData);
+      expectBuffersEqual(decompressed, testData);
     });
 
     it("compresses with outputOffset", () => {
@@ -123,7 +130,7 @@ describe("LZ4 block compression", () => {
 
       const compressed = output.subarray(offset, offset + bytesWritten);
       const decompressed = lz4DecompressBlock(compressed, testData.length);
-      expect(Buffer.from(decompressed)).toEqual(testData);
+      expectBuffersEqual(decompressed, testData);
     });
 
     it("compresses with inputOffset + inputLength", () => {
@@ -134,7 +141,7 @@ describe("LZ4 block compression", () => {
       expect(bytesWritten).toBeGreaterThan(0);
 
       const decompressed = lz4DecompressBlock(output.subarray(0, bytesWritten), 190);
-      expect(Buffer.from(decompressed)).toEqual(sub);
+      expectBuffersEqual(decompressed, sub);
     });
 
     it("decompresses into pre-allocated buffer", () => {
@@ -142,7 +149,7 @@ describe("LZ4 block compression", () => {
       const output = Buffer.alloc(testData.length);
       const bytesWritten = lz4DecompressBlockTo(compressed, testData.length, output);
       expect(bytesWritten).toBe(testData.length);
-      expect(output).toEqual(testData);
+      expectBuffersEqual(output, testData);
     });
 
     it("decompresses with outputOffset", () => {
@@ -151,7 +158,7 @@ describe("LZ4 block compression", () => {
       const output = Buffer.alloc(offset + testData.length);
       const bytesWritten = lz4DecompressBlockTo(compressed, testData.length, output, offset);
       expect(bytesWritten).toBe(testData.length);
-      expect(output.subarray(offset, offset + testData.length)).toEqual(testData);
+      expectBuffersEqual(output.subarray(offset, offset + testData.length), testData);
     });
 
     it("throws on output buffer too small", () => {
@@ -177,13 +184,13 @@ describe("LZ4 block compression", () => {
       expect(compressed.length).toBeGreaterThan(0);
 
       const decompressed = lz4DecompressBlock(compressed, testData.length);
-      expect(Buffer.from(decompressed)).toEqual(testData);
+      expectBuffersEqual(decompressed, testData);
     });
 
     it("lz4DecompressBlockAsync round-trips", async () => {
       const compressed = lz4CompressBlock(testData);
       const decompressed = await lz4DecompressBlockAsync(compressed, testData.length);
-      expect(Buffer.from(decompressed)).toEqual(testData);
+      expectBuffersEqual(decompressed, testData);
     });
 
     it("async handles empty input", async () => {
@@ -194,14 +201,14 @@ describe("LZ4 block compression", () => {
     it("full async round-trip", async () => {
       const compressed = await lz4CompressBlockAsync(testData);
       const decompressed = await lz4DecompressBlockAsync(compressed, testData.length);
-      expect(Buffer.from(decompressed)).toEqual(testData);
+      expectBuffersEqual(decompressed, testData);
     });
 
     it("async with offset/length range", async () => {
       const sub = testData.subarray(100, 500);
       const compressed = await lz4CompressBlockAsync(testData, 100, 400);
       const decompressed = lz4DecompressBlock(compressed, 400);
-      expect(Buffer.from(decompressed)).toEqual(sub);
+      expectBuffersEqual(decompressed, sub);
     });
   });
 });

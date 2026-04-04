@@ -32,7 +32,7 @@ describe("FileHashCache — 1 file changed", async () => {
   const warmupCp = cp(cacheDir, "warmup");
   {
     const cache = new FileHashCache({ cachePath: warmupCp, files, rootPath: RAW_DATA_DIR });
-    await using session = await cache.open();
+    using session = await cache.open();
     await session.write();
   }
 
@@ -42,7 +42,7 @@ describe("FileHashCache — 1 file changed", async () => {
   // Seed the cache
   {
     const cache = new FileHashCache({ cachePath: benchCp, files, rootPath: RAW_DATA_DIR });
-    await using session = await cache.open();
+    using session = await cache.open();
     await session.write();
   }
 
@@ -57,7 +57,7 @@ describe("FileHashCache — 1 file changed", async () => {
     async () => {
       copyFileSync(stalePath, benchCp);
       benchCache.invalidateAll();
-      await using session = await benchCache.open();
+      using session = await benchCache.open();
       if (session.status === "upToDate") {
         throw new Error("should not be upToDate");
       }
