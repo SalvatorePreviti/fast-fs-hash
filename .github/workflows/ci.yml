@@ -178,6 +178,10 @@ jobs:
           node-version: "22"
           architecture: x64
 
+      - name: Reinstall deps for x64 Node
+        if: ${{ matrix.can-test-rosetta }}
+        run: npm ci
+
       - name: Verify Rosetta 2 node
         if: ${{ matrix.can-test-rosetta }}
         run: |
