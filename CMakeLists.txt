@@ -52,8 +52,14 @@ include_directories("${CMAKE_CURRENT_SOURCE_DIR}/deps/lz4")
 # CMAKE_GENERATOR_PLATFORM is set to the -A value and IS the correct
 # target architecture for MSVC.  On Makefile/Ninja generators (Linux/Mac)
 # it is empty and CMAKE_SYSTEM_PROCESSOR is correct.
+#
+# On macOS, cmake-js --arch x64 sets CMAKE_OSX_ARCHITECTURES=x86_64
+# but leaves CMAKE_SYSTEM_PROCESSOR as the host arch (arm64).
+# We check CMAKE_OSX_ARCHITECTURES first for macOS cross-compilation.
 if(CMAKE_GENERATOR_PLATFORM)
     set(FSH_TARGET_ARCH "${CMAKE_GENERATOR_PLATFORM}")
+elseif(CMAKE_OSX_ARCHITECTURES)
+    set(FSH_TARGET_ARCH "${CMAKE_OSX_ARCHITECTURES}")
 else()
     set(FSH_TARGET_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
 endif()
