@@ -401,8 +401,10 @@ namespace fast_fs_hash {
             const uint64_t oldIno = entry.ino & INO_VALUE_MASK;
             const uint64_t oldMtime = entry.mtimeNs;
             const uint64_t oldCtime = entry.ctimeNs;
+            const uint64_t oldSize = entry.size;
             const bool statOk = resolver.stat_into(entry);
-            if (statOk && entry.ino == oldIno && entry.mtimeNs == oldMtime && entry.ctimeNs == oldCtime) [[likely]] {
+            if (statOk && entry.ino == oldIno && entry.mtimeNs == oldMtime && entry.ctimeNs == oldCtime &&
+                entry.size == oldSize) [[likely]] {
               continue; // stat unchanged → content unchanged
             }
             if (!statOk) [[unlikely]] {

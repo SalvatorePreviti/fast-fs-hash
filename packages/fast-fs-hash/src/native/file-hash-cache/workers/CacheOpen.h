@@ -184,7 +184,9 @@ namespace fast_fs_hash {
       const size_t len = this->dataBuf_.len;
       uint8_t * ptr = this->dataBuf_.release();
       if (ptr) [[likely]] {
-        return Napi::Buffer<uint8_t>::New(napiEnv, ptr, len, [](Napi::Env, uint8_t * p) { free(p); });
+        return Napi::Buffer<uint8_t>::New(napiEnv, ptr, len, [](Napi::Env, uint8_t * p) {
+          free(p);
+        });
       }
       auto buf = Napi::Buffer<uint8_t>::New(napiEnv, CacheHeader::SIZE);
       memset(buf.Data(), 0, CacheHeader::SIZE);
@@ -527,7 +529,8 @@ namespace fast_fs_hash {
               goto done;
             }
 
-            if (entry.ino == oldIno && entry.mtimeNs == oldMtime && entry.ctimeNs == oldCtime) [[likely]] {
+            if (entry.ino == oldIno && entry.mtimeNs == oldMtime && entry.ctimeNs == oldCtime && entry.size == oldSize)
+              [[likely]] {
               entry.ino |= CACHE_S_DONE;
               continue;
             }

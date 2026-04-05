@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { FileHashCache } from "fast-fs-hash";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -14,6 +14,14 @@ function cp(label = "test"): string {
 
 function fx(name: string): string {
   return path.join(FIXTURE_DIR, name);
+}
+
+/** Write file with an explicit mtime so stat changes are guaranteed on Windows (timer resolution ~15.6ms). */
+let epochCounter = 1700200000;
+function writeWithMtime(filePath: string, content: string): void {
+  writeFileSync(filePath, content);
+  const t = new Date(++epochCounter * 1000);
+  utimesSync(filePath, t, t);
 }
 
 beforeAll(() => {
@@ -161,7 +169,7 @@ describe("watch mode simulation", () => {
     }
 
     // Simulate file change
-    writeFileSync(fx("b.txt"), "bbb modified\n");
+    writeWithMtime(fx("b.txt"), "bbb modified\n");
 
     // Invalidate with absolute path
     cache.invalidate([fx("b.txt")]);
@@ -178,7 +186,7 @@ describe("watch mode simulation", () => {
     }
 
     // Restore
-    writeFileSync(fx("b.txt"), "bbb\n");
+    writeWithMtime(fx("b.txt"), "bbb\n");
     cache.invalidate([fx("b.txt")]);
     {
       using s = await cache.open();
@@ -198,7 +206,7 @@ describe("watch mode simulation", () => {
     }
 
     // Modify and invalidate with relative path
-    writeFileSync(fx("a.txt"), "aaa watch\n");
+    writeWithMtime(fx("a.txt"), "aaa watch\n");
     cache.invalidate(["a.txt"]);
     {
       using s = await cache.open();
@@ -207,7 +215,7 @@ describe("watch mode simulation", () => {
     }
 
     // Restore
-    writeFileSync(fx("a.txt"), "aaa\n");
+    writeWithMtime(fx("a.txt"), "aaa\n");
     cache.invalidate(["a.txt"]);
     {
       using s = await cache.open();

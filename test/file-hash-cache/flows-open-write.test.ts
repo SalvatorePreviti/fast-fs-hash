@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { FileHashCache } from "fast-fs-hash";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -14,6 +14,14 @@ function cp(label = "test"): string {
 
 function fx(name: string): string {
   return path.join(FIXTURE_DIR, name);
+}
+
+/** Write file with an explicit mtime so stat changes are guaranteed on Windows (timer resolution ~15.6ms). */
+let epochCounter = 1700100000;
+function writeWithMtime(filePath: string, content: string): void {
+  writeFileSync(filePath, content);
+  const t = new Date(++epochCounter * 1000);
+  utimesSync(filePath, t, t);
 }
 
 beforeAll(() => {
@@ -72,7 +80,7 @@ describe("open + write with files in constructor", () => {
     }
 
     // Modify a file
-    writeFileSync(fx("a.txt"), "aaa modified\n");
+    writeWithMtime(fx("a.txt"), "aaa modified\n");
 
     // Re-open: changed
     {
@@ -83,7 +91,7 @@ describe("open + write with files in constructor", () => {
     }
 
     // Restore
-    writeFileSync(fx("a.txt"), "aaa\n");
+    writeWithMtime(fx("a.txt"), "aaa\n");
 
     // Re-open after write: upToDate (with modified content)
     {
@@ -181,7 +189,7 @@ describe("close without write", () => {
     }
 
     // Modify file
-    writeFileSync(fx("a.txt"), "aaa changed again\n");
+    writeWithMtime(fx("a.txt"), "aaa changed again\n");
 
     // Open (detects change) but close WITHOUT writing
     {
@@ -200,7 +208,7 @@ describe("close without write", () => {
     }
 
     // Restore
-    writeFileSync(fx("a.txt"), "aaa\n");
+    writeWithMtime(fx("a.txt"), "aaa\n");
 
     // Now it should see the restore as a change
     {

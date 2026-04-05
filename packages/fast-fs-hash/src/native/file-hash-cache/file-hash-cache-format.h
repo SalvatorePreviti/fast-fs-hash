@@ -59,7 +59,7 @@
  *    80      4    cancelFlag (u32, JS↔C++, volatile)
  *    84      4    fileCount (u32, JS→C++)
  *    88      4    cachePathLen (u32, JS→C++)
- *    92      4    reserved (zero)
+ *    92      4    flags (u32, JS→C++, bit 0 = resolveOnly)
  *    96      N+1  cachePath (UTF-8, null-terminated, JS→C++)
  */
 
