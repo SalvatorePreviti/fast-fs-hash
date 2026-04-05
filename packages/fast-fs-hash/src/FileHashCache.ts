@@ -376,8 +376,8 @@ export class FileHashCache {
   }
 
   /**
-   * Whether an async operation (open, write, overwrite) is currently running.
-   * When `true`, new calls to these methods will wait for the current operation to complete.
+   * `true` while a session is active (from `open()` until `session.close()`).
+   * New calls to `open()` or `overwrite()` will wait for the current session to close.
    */
   public get busy(): boolean {
     return this.#mutex !== null;
@@ -656,31 +656,6 @@ export class FileHashCache {
   }
 
   /**
-   * Convenience: open, and if not up-to-date, write the cache.
-   *
-   * @param options Optional write options.
-   * @returns The session (already written and disposed if changes were detected).
-   */
-  public async write(options?: FileHashCacheWriteOptions | null): Promise<FileHashCacheSession> {
-    await this.#acquire();
-    let session: FileHashCacheSession;
-    try {
-      session = await this.#doOpen(options?.signal);
-    } catch (e) {
-      this.#release();
-      throw e;
-    }
-    try {
-      if (session.needsWrite) {
-        await session.write(options);
-      }
-    } finally {
-      session.close();
-    }
-    return session;
-  }
-
-  /**
    * Write a brand-new cache file without reading the old one.
    *
    * @param options Optional write options (version, fingerprint, files, payloads, signal, etc.).
@@ -871,7 +846,7 @@ export class FileHashCacheSession {
   public readonly userValue3: number;
 
   readonly #cache: FileHashCache;
-  /** 0 = open, 1 = written, 2 = closed */
+  /** 0 = open, 1 = writing, 2 = closed */
   #state: number;
   readonly #dataBuf: Buffer;
   readonly #stateBuf: Buffer;
@@ -914,10 +889,14 @@ export class FileHashCacheSession {
     return this.#state >= 2;
   }
 
+  /** `true` while {@link write} is in progress (async write running on the thread pool). */
+  public get busy(): boolean {
+    return this.#state === 1;
+  }
+
   /** `true` if the session holds the lock and the status indicates a write is needed. */
   public get needsWrite(): boolean {
-    const s = this.status;
-    return this.#state < 2 && s !== "upToDate" && s !== "lockFailed";
+    return this.#state === 0 && this.status !== "upToDate" && this.status !== "lockFailed";
   }
 
   /** Number of tracked files (from disk, or from the constructor when status is `'missing'`). */
@@ -960,6 +939,8 @@ export class FileHashCacheSession {
     if (this.#state >= 2) {
       return;
     }
+    // Re-invalidate if session was closed without a successful write.
+    // State 0 = never written. State 1 = write was attempted (success already called _recordWriteSuccess).
     const needsInvalidate = this.#state === 0;
     this.#state = 2;
     const cache = this.#cache;
@@ -981,6 +962,9 @@ export class FileHashCacheSession {
   /**
    * Write the cache file and release the lock.
    *
+   * Can only be called once per session. After write completes (success or failure),
+   * the session is disposed and the lock is released.
+   *
    * Omitted user-value fields preserve the values read from disk.
    * Config overrides (version, fingerprint, rootPath, files) are applied
    * to the parent {@link FileHashCache} before writing.
@@ -989,9 +973,10 @@ export class FileHashCacheSession {
    * @returns `true` if the write succeeded, `false` on lock failure.
    */
   public async write(options?: FileHashCacheWriteOptions | null): Promise<boolean> {
-    if (this.#state >= 2) {
-      throw new Error("FileHashCacheSession: already closed");
+    if (this.#state !== 0) {
+      throw new Error("FileHashCacheSession: " + (this.#state >= 2 ? "already closed" : "write already in progress"));
     }
+    this.#state = 1;
 
     const cache = this.#cache;
     const signal = options?.signal;
@@ -1064,7 +1049,6 @@ export class FileHashCacheSession {
     try {
       const result = await cacheWrite(sb, dataBuf, encoded, root, ud);
       if (result === 0) {
-        this.#state = 1;
         cache._recordWriteSuccess();
       }
       return result === 0;

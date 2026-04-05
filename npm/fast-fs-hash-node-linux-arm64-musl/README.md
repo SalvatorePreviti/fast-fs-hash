@@ -123,141 +123,33 @@ changed stat are re-hashed. This makes cache validation **O(n × stat)** instead
 
 ### FileHashCache API
 
-Every `open()` acquires an exclusive OS-level lock on the cache file. The lock is held
-until `close()` is called (or the `using` block exits).
+A long-lived cache that tracks file content hashes with exclusive OS-level locking.
+Create the instance once, then call `open()` on each build cycle. The file list can
+change between runs — `write({ files })` remaps matched entries from the old cache,
+preserving hashes for unchanged files.
 
-```ts
-using ctx = await FileHashCache.open(cachePath, rootPath?, files?, version?, fingerprint?, lockTimeoutMs?, signal?);
-// ctx.status: 'upToDate' | 'changed' | 'stale' | 'missing' | 'statsDirty' | 'lockFailed'
+### Example: Build cache with dynamic file list
 
-await ctx.write(options?);
-// options: { files?, rootPath?, userValue0..3?, fingerprint?, userData?, signal? }
-// write() releases the lock — ctx is now disposed
-```
-
-- **`open()`** locks the cache file, reads from disk, validates version/fingerprint, and stat-matches entries.
-- **`write()`** hashes any unresolved entries, LZ4-compresses, writes directly to the locked fd, then releases the lock.
-- **`close()`** releases the lock (no-op if `write()` already released it). Also called automatically by `using` / `using`.
-
-**Cancellation via AbortSignal:**
-
-All async operations accept an optional `AbortSignal` to cancel the lock wait and/or hash phase:
-
-```ts
-const controller = new AbortController();
-setTimeout(() => controller.abort(), 1000);
-
-const cache = await FileHashCache.open(
-  path,
-  root,
-  files,
-  1,
-  null,
-  -1,
-  controller.signal,
-);
-// If aborted before the lock is acquired → status === 'lockFailed'
-```
-
-The file write itself is never cancelled — once hashing completes, the write always runs to
-completion to avoid corrupting the cache file. Cancellation only affects lock acquisition and
-the stat/hash phase.
-
-The file list can change between runs — `write({ files: newFiles })` remaps matched entries
-from the old cache, preserving hashes for unchanged files.
-
-**Lock properties:**
-
-- **Cross-process**: prevents concurrent writers from any process
-- **Crash-safe**: automatically released when the process dies (OS-level `fcntl`/`LockFileEx`)
-- **Worker-thread-safe**: automatically released when a worker thread is terminated
-- **Zero overhead on the happy path**: lock + open + stat-match in a single native async call
-
-**Note:** The file lock is released on the native pool thread after `write()` completes.
-When the `write()` promise resolves, the JS-side instance is disposed, but other processes
-calling `isLocked()` may briefly still observe the lock before the OS fully releases it.
-
-**Platform implementations:**
-
-- **POSIX (Linux, macOS, FreeBSD)**: `fcntl F_SETLK` / `F_SETLKW` byte-range lock on the cache file
-- **Windows**: `LockFileEx` exclusive lock on the cache file
-
-**Timeout control** (`lockTimeoutMs` parameter):
-
-- `-1` (default): block until the lock is available
-- `0`: fail immediately if locked
-- `>0`: wait up to N milliseconds
-
-When the lock cannot be acquired (timeout, non-blocking, or cancelled via `signal`), `open()`
-returns an instance with `status === 'lockFailed'`. You can still call `write()` on it — it
-transparently falls back to `overwrite()` with a fresh lock attempt.
-
-```ts
-// Non-blocking try
-const cache = await FileHashCache.open(path, root, files, 1, null, 0);
-try {
-  // use cache here
-} finally {
-  cache.close();
-}
-
-// Check if another process holds the lock (non-blocking)
-FileHashCache.isLocked(path); // → boolean
-
-// Wait until another process releases the lock
-await FileHashCache.waitUnlocked(path, 5000); // → true if unlocked, false on timeout
-await FileHashCache.waitUnlocked(path, -1); // block until unlocked
-await FileHashCache.waitUnlocked(path, 0); // non-blocking check
-await FileHashCache.waitUnlocked(path, -1, controller.signal); // cancellable wait
-```
-
-**Static methods:**
-
-| Method                                             | Description                                                                                                                                                                                                        |
-| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `isLocked(cachePath)`                              | Non-blocking check: returns `true` if another process holds the lock. Uses `fcntl F_GETLK` (POSIX) or `LockFileEx` (Windows). Only detects cross-process locks.                                                    |
-| `waitUnlocked(cachePath, lockTimeoutMs?, signal?)` | Wait until the lock is released. `-1` = block forever, `0` = non-blocking, `>0` = timeout ms. For infinite waits, blocks in the kernel with zero CPU. Returns `true` if unlocked, `false` on timeout/cancellation. |
-| `overwrite(options?)`                              | Write a brand-new cache without reading the old one. Options include `signal` for cancellation. Useful when you know a full rebuild is needed.                                                                     |
-
-### Example: Simple build cache
-
-```ts
-import { FileHashCache } from "fast-fs-hash";
-import { globSync } from "node:fs";
-
-const files = globSync("src/**/*.ts");
-using ctx = await FileHashCache.open(".cache/build.fsh", ".", files, 1);
-
-if (ctx.status === "upToDate") {
-  console.log("Build cache is fresh — skipping.");
-} else {
-  console.log("Files changed — rebuilding...");
-  await runBuild();
-  await ctx.write();
-  // write() released the lock
-}
-// `using` calls close() (no-op if write() already released)
-```
-
-### Example: Dynamic file list + user data
-
-When the full file list is only known after a build step, open with `null` files
-(reuses the list from the previous cache), then pass the actual files to `write()`:
+The typical usage: the file list is only known after a build step. Open without files
+(reuses the list from the previous cache on disk), then pass the actual files to `write()`.
+Use `userData` to store arbitrary build metadata alongside the cache.
 
 ```ts
 import { FileHashCache } from "fast-fs-hash";
 
-export async function getBuildOutput() {
-  using ctx = await FileHashCache.open(".cache/tsc.fsh", ".", null, 2);
+const cache = new FileHashCache({ cachePath: ".cache/build.fsh", rootPath: ".", version: 1 });
 
-  if (ctx.status === "upToDate" && ctx.userData.length > 0) {
-    return JSON.parse(ctx.userData[0].toString());
+export async function build() {
+  using session = await cache.open();
+
+  if (session.status === "upToDate" && session.userData.length > 0) {
+    return JSON.parse(session.userData[0].toString()); // cached result
   }
 
-  const result = runBuild();
+  const result = await runBuild();
   const outputFiles = result.getSourceFiles().map((f) => f.fileName);
 
-  await ctx.write({
+  await session.write({
     files: outputFiles,
     userData: [Buffer.from(JSON.stringify(result.output))],
   });
@@ -265,6 +157,65 @@ export async function getBuildOutput() {
   return result.output;
 }
 ```
+
+### Example: Simple build cache with known files
+
+When the file list is known upfront, pass it to the constructor:
+
+```ts
+import { FileHashCache } from "fast-fs-hash";
+import { globSync } from "node:fs";
+
+const files = globSync("src/**/*.ts");
+const cache = new FileHashCache({ cachePath: ".cache/build.fsh", rootPath: ".", files, version: 1 });
+
+using session = await cache.open();
+
+if (session.status === "upToDate") {
+  console.log("Build cache is fresh — skipping.");
+} else {
+  console.log("Files changed — rebuilding...");
+  await runBuild();
+  await session.write();
+}
+```
+
+### API Reference
+
+**Instance methods:**
+
+- **`open(signal?)`** — acquires an exclusive lock, reads from disk, validates version/fingerprint, stat-matches entries. Returns a `FileHashCacheSession`.
+- **`overwrite(options?)`** — writes a brand-new cache without reading the old one.
+- **`isLocked()`** — non-blocking check if the cache file is locked.
+- **`waitUnlocked(lockTimeoutMs?, signal?)`** — wait for the lock to be released.
+- **`invalidate(paths)`** — mark specific files as dirty for the next open (watch mode).
+- **`invalidateAll()`** — mark all files as dirty.
+
+**Session methods:**
+
+- **`write(options?)`** — hashes unresolved entries, compresses, writes to disk, releases lock.
+- **`close()`** — releases the lock. Also called automatically by `using`.
+
+**Session properties:**
+
+- `status` — `'upToDate'` | `'changed'` | `'stale'` | `'missing'` | `'statsDirty'` | `'lockFailed'`
+- `needsWrite` — `true` if the session holds the lock and changes were detected
+- `files`, `fileCount` — tracked file list (absolute paths)
+- `userValue0..3` — four f64 user values read from disk
+- `userData` — array of binary payloads read from disk
+
+**Static methods:**
+
+- `FileHashCache.isLocked(cachePath)` — check if locked by another process
+- `FileHashCache.waitUnlocked(cachePath, lockTimeoutMs?, signal?)` — wait for unlock
+
+**Lock behavior:**
+
+- Cross-process exclusive lock via `fcntl` (POSIX) / `LockFileEx` (Windows)
+- Crash-safe: automatically released when the process dies
+- `lockTimeoutMs`: `-1` = block forever (default), `0` = non-blocking, `>0` = timeout ms
+- When lock fails: `status === 'lockFailed'`. Calling `write()` falls back to `overwrite()`.
+- Cancellable via `AbortSignal` on `open()`, `overwrite()`, and `waitUnlocked()`
 
 ---
 

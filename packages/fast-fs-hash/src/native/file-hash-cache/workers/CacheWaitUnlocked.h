@@ -17,13 +17,13 @@ namespace fast_fs_hash {
     CacheWaitUnlocked(
       Napi::Env env,
       Napi::Promise::Deferred deferred,
-      std::string cachePath,
+      const char * cachePath,
       int timeoutMs,
       const volatile uint8_t * cancelByte = nullptr,
       Napi::ObjectReference && cancelRef = {}) :
       AddonWorker(env, deferred),
       timeoutMs_(timeoutMs),
-      cachePath_(std::move(cachePath)),
+      cachePath_(cachePath),
       cancelRef_(std::move(cancelRef)) {
       this->cancel_.cancelByte_ = cancelByte;
       AddonData * d = this->addon;
@@ -45,7 +45,7 @@ namespace fast_fs_hash {
         this->signal();
         return;
       }
-      this->result_ = FfshFile::wait_unlocked(this->cachePath_.c_str(), this->timeoutMs_, &this->cancel_);
+      this->result_ = FfshFile::wait_unlocked(this->cachePath_, this->timeoutMs_, &this->cancel_);
       this->signal();
     }
 
@@ -57,7 +57,7 @@ namespace fast_fs_hash {
     // ── Pool-thread fields ──────────────────────────────────────────────
     int timeoutMs_;
     bool result_ = false;
-    std::string cachePath_;
+    const char * cachePath_;  // Points into stateBuf (pinned by cancelRef_)
     FfshFile::LockCancel cancel_;
 
     // ── JS-thread-only fields ───────────────────────────────────────────

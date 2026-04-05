@@ -56,7 +56,7 @@ namespace fast_fs_hash {
     const uint8_t * fingerprint = state->hasFingerprint() ? state->fingerprint.bytes : nullptr;
     const int timeoutMs = state->lockTimeoutMs;
     const uint32_t fileCount = state->fileCount;
-    std::string cachePath(state->cachePath(), state->cachePathLen);
+    const char * cachePath = state->cachePath();
 
     // Optional dirty paths buffer (arg 3) and dirty count (arg 4)
     const uint8_t * dirtyPaths = nullptr;
@@ -80,7 +80,7 @@ namespace fast_fs_hash {
     auto * worker = new CacheOpen(
       env, deferred, state, std::move(stateRef),
       pathsBuf.Data(), pathsBuf.ByteLength(), std::move(paths_ref),
-      fileCount, std::move(cachePath), std::move(rootPath),
+      fileCount, cachePath, std::move(rootPath),
       version, fingerprint, timeoutMs,
       dirtyPaths, dirtyLen, dirtyCount, hasDirtyHint, std::move(dirtyRef));
     worker->Start();
@@ -128,9 +128,7 @@ namespace fast_fs_hash {
       return env.Undefined();
     }
 
-    // Read config from stateBuf
     const uint32_t fileCount = state->fileCount;
-    std::string cachePath(state->cachePath(), state->cachePathLen);
 
     // Extract file handle from stateBuf and invalidate it
     const int32_t fileHandle = state->fileHandle;
@@ -145,7 +143,7 @@ namespace fast_fs_hash {
       env, deferred, state, std::move(stateRef),
       dataPtr, dataLen, std::move(data_ref),
       encoded_paths, encoded_len, std::move(paths_ref),
-      fileCount, std::move(cachePath), std::move(rootPath),
+      fileCount, std::move(rootPath),
       std::move(ud), std::move(lockedFile));
     worker->Queue();
     return deferred.Promise();
@@ -184,12 +182,12 @@ namespace fast_fs_hash {
     const uint32_t version = state->version;
     const uint8_t * fingerprint = state->hasFingerprint() ? state->fingerprint.bytes : nullptr;
     const int timeoutMs = state->lockTimeoutMs;
-    std::string cachePath(state->cachePath(), state->cachePathLen);
+    const char * cachePath = state->cachePath();
 
     auto * worker = new CacheWriteNew(
       env, deferred, state, std::move(stateRef),
       pathsBuf.Data(), pathsBuf.ByteLength(), std::move(paths_ref),
-      fileCount, std::move(cachePath), std::move(rootPath),
+      fileCount, cachePath, std::move(rootPath),
       version, fingerprint,
       state->userValue0, state->userValue1, state->userValue2, state->userValue3,
       std::move(ud), timeoutMs);
@@ -259,10 +257,8 @@ namespace fast_fs_hash {
       napi_get_value_int32(env, info[1], &timeoutMs);
     }
 
-    std::string cachePath(state->cachePath(), state->cachePathLen);
-
     auto * worker = new CacheWaitUnlocked(
-      env, deferred, std::move(cachePath), timeoutMs,
+      env, deferred, state->cachePath(), timeoutMs,
       state->cancelByte(), std::move(stateRef));
     worker->Queue();
     return deferred.Promise();

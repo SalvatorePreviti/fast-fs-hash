@@ -30,7 +30,7 @@ namespace fast_fs_hash {
       size_t encodedLen,
       Napi::ObjectReference && pathsRef,
       uint32_t fileCount,
-      std::string cachePath,
+      const char * cachePath,
       std::string rootPath,
       uint32_t version,
       const uint8_t * fingerprint,
@@ -52,7 +52,7 @@ namespace fast_fs_hash {
       dirtyLen_(dirtyLen),
       dirtyCount_(dirtyCount),
       hasDirtyHint_(hasDirtyHint),
-      cachePath_(std::move(cachePath)),
+      cachePath_(cachePath),
       rootPath_(std::move(rootPath)),
       pathsRef_(std::move(pathsRef)),
       stateRef_(std::move(stateRef)),
@@ -84,7 +84,7 @@ namespace fast_fs_hash {
         this->signal();
         return;
       }
-      this->lockedFile_ = FfshFile::open_locked(this->cachePath_.c_str(), this->timeoutMs_, &this->cancel_);
+      this->lockedFile_ = FfshFile::open_locked(this->cachePath_, this->timeoutMs_, &this->cancel_);
       if (!this->lockedFile_) [[unlikely]] {
         this->lockFailed_ = true;
         this->signal();
@@ -141,7 +141,7 @@ namespace fast_fs_hash {
     uint32_t dirtyCount_;
     bool hasDirtyHint_;
 
-    std::string cachePath_;
+    const char * cachePath_;  // Points into stateBuf (pinned by stateRef_)
     std::string rootPath_;
 
     FfshFile::LockCancel cancel_;

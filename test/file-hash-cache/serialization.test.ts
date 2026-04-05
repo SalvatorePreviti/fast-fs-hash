@@ -183,33 +183,33 @@ describe("write() serialization", () => {
     s2.close();
   });
 
-  it("convenience write() serializes with open()", async () => {
+  it("multiple open+write serializes with open()", async () => {
     const cache = new FileHashCache({ cachePath: cp(), files: [fx("a.txt")], rootPath: FIXTURE_DIR });
     const order: string[] = [];
 
     // Write initial cache
-    const s1 = await cache.write();
-    order.push("write1");
+    {
+      using s = await cache.open();
+      await s.write();
+      order.push("write1");
+    }
 
-    // Queue convenience write and open concurrently
-    const p1 = cache.write().then((s) => {
-      order.push("write2");
-      return s;
+    // Queue overwrite and open concurrently — they serialize via mutex
+    const p1 = cache.overwrite().then((ok) => {
+      order.push("overwrite");
+      return ok;
     });
     const p2 = cache.open().then((s) => {
-      order.push("open3");
+      order.push("open2");
       return s;
     });
 
-    const s2 = await p1;
-    const s3 = await p2;
+    await p1;
+    const s2 = await p2;
 
-    // write2 should complete before open3 starts (serialized)
-    expect(order).toEqual(["write1", "write2", "open3"]);
+    expect(order).toEqual(["write1", "overwrite", "open2"]);
 
-    s1.close();
     s2.close();
-    s3.close();
   });
 });
 

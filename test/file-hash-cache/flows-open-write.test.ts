@@ -304,30 +304,34 @@ describe("overwrite", () => {
 
 // ── cache.write convenience ──────────────────────────────────────────
 
-describe("cache.write convenience", () => {
-  it("opens and writes if needed", async () => {
+describe("open + write + close pattern", () => {
+  it("opens, writes if needed, closes", async () => {
     const files = [fx("a.txt"), fx("b.txt")];
     const cache = new FileHashCache({ cachePath: cp(), files, rootPath: FIXTURE_DIR });
 
-    // First call: missing -> writes
-    const s1 = await cache.write();
-    expect(s1.status).toBe("missing");
-    expect(s1.disposed).toBe(true);
+    {
+      using s = await cache.open();
+      expect(s.status).toBe("missing");
+      await s.write();
+      expect(s.disposed).toBe(true);
+    }
 
-    // Second call: upToDate -> no write, session still disposed
-    cache.invalidateAll();
-    const s2 = await cache.write();
-    expect(s2.status).toBe("upToDate");
-    // upToDate session was not written, but it's returned — caller should close
-    s2.close();
+    {
+      cache.invalidateAll();
+      using s = await cache.open();
+      expect(s.status).toBe("upToDate");
+    }
   });
 
-  it("cache.write passes payloads through", async () => {
+  it("write passes payloads through", async () => {
     const cacheFile = cp();
     const files = [fx("a.txt")];
     const cache = new FileHashCache({ cachePath: cacheFile, files, rootPath: FIXTURE_DIR });
 
-    await cache.write({ userValue0: 55 });
+    {
+      using s = await cache.open();
+      await s.write({ userValue0: 55 });
+    }
 
     {
       cache.invalidateAll();

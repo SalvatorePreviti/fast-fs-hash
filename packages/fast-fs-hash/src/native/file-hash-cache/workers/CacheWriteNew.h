@@ -29,7 +29,7 @@ namespace fast_fs_hash {
       size_t encodedLen,
       Napi::ObjectReference && pathsRef,
       uint32_t fileCount,
-      std::string cachePath,
+      const char * cachePath,
       std::string rootPath,
       uint32_t version,
       const uint8_t * fingerprint,
@@ -51,7 +51,7 @@ namespace fast_fs_hash {
       userValue1_(userValue1),
       userValue2_(userValue2),
       userValue3_(userValue3),
-      cachePath_(std::move(cachePath)),
+      cachePath_(cachePath),
       rootPath_(std::move(rootPath)),
       ud_(std::move(ud)),
       pathsRef_(std::move(pathsRef)),
@@ -82,7 +82,7 @@ namespace fast_fs_hash {
         this->signal();
         return;
       }
-      this->lockedFile_ = FfshFile::open_locked(this->cachePath_.c_str(), this->timeoutMs_, &this->cancel_);
+      this->lockedFile_ = FfshFile::open_locked(this->cachePath_, this->timeoutMs_, &this->cancel_);
       if (!this->lockedFile_) [[unlikely]] {
         this->signal();
         return;
@@ -114,7 +114,7 @@ namespace fast_fs_hash {
     double userValue2_;
     double userValue3_;
 
-    std::string cachePath_;
+    const char * cachePath_;  // Points into stateBuf (pinned by stateRef_)
     std::string rootPath_;
 
     ParsedUserData ud_;

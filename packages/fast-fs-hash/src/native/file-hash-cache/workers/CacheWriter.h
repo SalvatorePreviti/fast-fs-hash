@@ -33,7 +33,6 @@ namespace fast_fs_hash {
       size_t encodedLen,
       Napi::ObjectReference && pathsRef,
       uint32_t fileCount,
-      std::string cachePath,
       std::string rootPath,
       ParsedUserData && ud,
       FfshFile && lockedFile) :
@@ -45,7 +44,6 @@ namespace fast_fs_hash {
       encodedLen_(encodedLen),
       fileCount_(fileCount),
       lockedFile_(std::move(lockedFile)),
-      cachePath_(std::move(cachePath)),
       rootPath_(std::move(rootPath)),
       ud_(std::move(ud)),
       dataRef_(std::move(dataRef)),
@@ -115,7 +113,6 @@ namespace fast_fs_hash {
 
     FfshFile lockedFile_;
 
-    std::string cachePath_;
     std::string rootPath_;
 
     ParsedUserData ud_;
