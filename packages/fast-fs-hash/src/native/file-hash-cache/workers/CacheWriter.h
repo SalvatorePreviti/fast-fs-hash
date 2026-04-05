@@ -35,8 +35,10 @@ namespace fast_fs_hash {
       uint32_t fileCount,
       std::string rootPath,
       ParsedUserData && ud,
-      FfshFile && lockedFile) :
+      FfshFile && lockedFile,
+      bool resolveOnly = false) :
       AddonWorker(env, deferred),
+      resolveOnly_(resolveOnly),
       state_(state),
       dataBuf_(dataBuf),
       dataLen_(dataLen),
@@ -95,6 +97,11 @@ namespace fast_fs_hash {
 
     void OnOK() override {
       auto e = Napi::Env(this->env);
+      if (this->resolveOnly_) {
+        // Resolve-only: entries are resolved in dataBuf, no disk write. Always succeeds.
+        this->deferred.Resolve(Napi::Number::New(e, 0));
+        return;
+      }
       if (this->writeSuccess_) {
         this->state_->cacheFileStat0 = this->resultStat_[0];
         this->state_->cacheFileStat1 = this->resultStat_[1];
@@ -103,6 +110,7 @@ namespace fast_fs_hash {
     }
 
    private:
+    bool resolveOnly_;
     CacheStateBuf * state_;
 
     uint8_t * dataBuf_;
@@ -223,8 +231,10 @@ namespace fast_fs_hash {
       }
 
       if (workNeeded == 0) {
-        this->writeFile_(dbuf, hdr, fc);
-        this->signalAndClose_();
+        if (!this->resolveOnly_) {
+          this->writeFile_(dbuf, hdr, fc);
+        }
+        this->resolveOnly_ ? this->signal() : this->signalAndClose_();
         return;
       }
 
@@ -248,6 +258,10 @@ namespace fast_fs_hash {
     }
 
     static void onHashDone_(CacheWriter * self) {
+      if (self->resolveOnly_) {
+        self->signal();  // Resolve only — entries resolved in dataBuf, no disk write, keep fd open
+        return;
+      }
       if (!self->cancel_.is_fired() && !self->addon->pool.is_shutdown()) [[likely]] {
         uint8_t * buf = self->dataBuf_;
         self->writeFile_(buf, headerOf(buf), self->writerFc_);
@@ -389,27 +403,39 @@ namespace fast_fs_hash {
             const uint64_t oldCtime = entry.ctimeNs;
             const bool statOk = resolver.stat_into(entry);
             if (statOk && entry.ino == oldIno && entry.mtimeNs == oldMtime && entry.ctimeNs == oldCtime) [[likely]] {
-              continue;
+              continue; // stat unchanged → content unchanged
             }
             if (!statOk) [[unlikely]] {
               entry.contentHash.set_zero();
+              entry.ino |= INO_CHANGED_BIT;
               continue;
             }
+            const Hash128 oldHash = entry.contentHash;
             resolver.hash_file(entry.contentHash, readBuf, readBufSize);
+            if (entry.contentHash != oldHash) {
+              entry.ino |= INO_CHANGED_BIT;
+            }
             continue;
           }
 
           if (state == CACHE_S_STAT_DONE) {
+            const Hash128 oldHash = entry.contentHash;
             if (entry.size == 0) {
               entry.contentHash.from_xxh128(XXH3_128bits(nullptr, 0));
             } else {
               resolver.hash_file(entry.contentHash, readBuf, readBufSize);
             }
+            if (entry.contentHash != oldHash) {
+              entry.ino |= INO_CHANGED_BIT;
+            }
             continue;
           }
 
-          if (!resolver.stat_and_hash_file(entry, entry.contentHash, readBuf, readBufSize)) [[unlikely]] {
-            continue;
+          // New entry (NOT_CHECKED) — always changed
+          if (resolver.stat_and_hash_file(entry, entry.contentHash, readBuf, readBufSize)) {
+            entry.ino |= INO_CHANGED_BIT;
+          } else {
+            entry.ino |= INO_CHANGED_BIT; // stat failed → mark changed too
           }
         }
       }

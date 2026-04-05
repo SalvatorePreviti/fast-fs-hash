@@ -14,26 +14,15 @@
  * @module
  */
 
+import { FileHashCacheSession } from "./FileHashCacheSession";
 import {
-  ENTRY_STRIDE,
   H_FILE_COUNT,
-  H_FINGERPRINT_BYTE,
-  H_PATHS_LEN,
-  H_UD_ITEM_COUNT,
-  H_UD_PAYLOADS_LEN,
-  H_USER_VALUE0_BYTE,
-  H_USER_VALUE1_BYTE,
-  H_USER_VALUE2_BYTE,
-  H_USER_VALUE3_BYTE,
-  HEADER_SIZE,
   S_CACHE_PATH,
   S_CACHE_PATH_LEN,
-  S_CANCEL_FLAG,
   S_FILE_COUNT,
   S_FILE_HANDLE,
   S_FINGERPRINT,
   S_LOCK_TIMEOUT,
-  S_STATUS,
   S_USER_VALUE0,
   S_USER_VALUE1,
   S_USER_VALUE2,
@@ -41,10 +30,25 @@ import {
   S_VERSION,
   STATE_HEADER_SIZE,
 } from "./file-hash-cache-format";
+import {
+  _emptyBuf,
+  cacheIsLocked,
+  cacheOpen,
+  cacheStatHash,
+  cacheWaitUnlocked,
+  cacheWriteNew,
+  decodeEncodedPaths,
+  extractEncodedPaths,
+  setupCancel,
+  teardownCancel,
+  toAbsolutePaths,
+} from "./file-hash-cache-internal";
 import { resolveDir, resolveRoot } from "./file-hash-cache-utils";
 import { bufferAlloc } from "./functions";
-import { binding } from "./init-native";
 import { encodeNormalizedPaths, normalizeFilePaths, pathResolve, toRelativePath } from "./utils";
+
+export type { FileHashCacheEntries, FileHashCacheEntry } from "./FileHashCacheEntries";
+export { FileHashCacheSession } from "./FileHashCacheSession";
 
 /**
  * Cache status.
@@ -112,159 +116,6 @@ export interface FileHashCacheWriteOptions {
 
 /** @deprecated Use {@link FileHashCacheWriteOptions} instead. */
 export type FileHashCachePayloads = FileHashCacheWriteOptions;
-
-const STATUS_MAP: readonly CacheStatus[] = ["upToDate", "changed", "stale", "missing", "statsDirty", "lockFailed"];
-
-const {
-  cacheOpen,
-  cacheWrite,
-  cacheWriteNew,
-  cacheIsLocked,
-  cacheWaitUnlocked,
-  cacheClose,
-  cacheStatHash,
-  cacheFireCancel,
-} = binding;
-
-let _emptyBuf: Buffer;
-let _onceTrue: AddEventListenerOptions;
-
-// ── dataBuf helpers ─────────────────────────────────────────────────
-
-/** Decode relative file paths from a dataBuf. */
-function decodeFilePathsFromBuf(buf: Buffer): string[] {
-  const fc = buf.readUInt32LE(H_FILE_COUNT);
-  const pathsLen = buf.readUInt32LE(H_PATHS_LEN);
-  if (fc <= 0 || pathsLen <= 0) {
-    return [];
-  }
-  const udItemCount = buf.readUInt32LE(H_UD_ITEM_COUNT);
-  const pathEndsStart = HEADER_SIZE + fc * ENTRY_STRIDE + udItemCount * 4;
-  const pathsStart = pathEndsStart + fc * 4;
-  const result: string[] = new Array(fc);
-  let prevEnd = 0;
-  for (let i = 0; i < fc; i++) {
-    const end = buf.readUInt32LE(pathEndsStart + i * 4);
-    const clampedEnd = end > pathsLen ? pathsLen : end;
-    result[i] = buf.toString("utf8", pathsStart + prevEnd, pathsStart + clampedEnd);
-    prevEnd = clampedEnd;
-  }
-  return result;
-}
-
-/** Convert an array of relative paths to absolute by prepending rootPath. */
-function toAbsolutePaths(rootPath: string, relativePaths: readonly string[]): string[] {
-  const n = relativePaths.length;
-  const result = new Array<string>(n);
-  for (let i = 0; i < n; i++) {
-    result[i] = rootPath + relativePaths[i];
-  }
-  return result;
-}
-
-/**
- * Extract NUL-separated encoded paths directly from a dataBuf (raw byte copy).
- * Produces the same format as encodeNormalizedPaths(): "path0\0path1\0...pathN\0".
- */
-function extractEncodedPaths(buf: Buffer, fc: number): Buffer {
-  const pathsLen = buf.readUInt32LE(H_PATHS_LEN);
-  if (fc <= 0 || pathsLen <= 0) {
-    return (_emptyBuf ??= bufferAlloc(0));
-  }
-  const udItemCount = buf.readUInt32LE(H_UD_ITEM_COUNT);
-  const pathEndsStart = HEADER_SIZE + fc * ENTRY_STRIDE + udItemCount * 4;
-  const pathsStart = pathEndsStart + fc * 4;
-  const encoded = Buffer.allocUnsafe(pathsLen + fc);
-  let prevEnd = 0;
-  let w = 0;
-  for (let i = 0; i < fc; i++) {
-    const end = buf.readUInt32LE(pathEndsStart + i * 4);
-    const clampedEnd = end > pathsLen ? pathsLen : end;
-    const segLen = clampedEnd - prevEnd;
-    if (segLen > 0) {
-      buf.copy(encoded, w, pathsStart + prevEnd, pathsStart + clampedEnd);
-      w += segLen;
-    }
-    encoded[w++] = 0;
-    prevEnd = clampedEnd;
-  }
-  return w === encoded.length ? encoded : encoded.subarray(0, w);
-}
-
-/** Decode file path strings from NUL-separated encoded paths buffer. */
-function decodeEncodedPaths(encoded: Buffer, fc: number): string[] {
-  if (fc <= 0 || encoded.length === 0) {
-    return [];
-  }
-  const result: string[] = new Array(fc);
-  let start = 0;
-  for (let i = 0; i < fc; i++) {
-    let end = start;
-    while (end < encoded.length && encoded[end] !== 0) {
-      end++;
-    }
-    result[i] = encoded.toString("utf8", start, end);
-    start = end + 1;
-  }
-  return result;
-}
-
-/** Read user-data payload buffers from a dataBuf. Returns zero-copy slices. */
-function readPayloadData(dataBuf: Buffer): readonly Buffer[] {
-  const fc = dataBuf.readUInt32LE(H_FILE_COUNT);
-  const pathsLen = dataBuf.readUInt32LE(H_PATHS_LEN);
-  const udPayloadsLen = dataBuf.readUInt32LE(H_UD_PAYLOADS_LEN);
-  const udItemCount = dataBuf.readUInt32LE(H_UD_ITEM_COUNT);
-  if (udItemCount <= 0) {
-    return [];
-  }
-  const udDirStart = HEADER_SIZE + fc * ENTRY_STRIDE;
-  const pathEndsStart = udDirStart + udItemCount * 4;
-  const udPayloadsStart = pathEndsStart + fc * 4 + pathsLen;
-  if (udPayloadsStart + udPayloadsLen > dataBuf.length) {
-    return [];
-  }
-  const result: Buffer[] = new Array(udItemCount);
-  let prevEnd = 0;
-  for (let i = 0; i < udItemCount; i++) {
-    const end = dataBuf.readUInt32LE(udDirStart + i * 4);
-    const size = end - prevEnd;
-    if (size <= 0) {
-      result[i] = _emptyBuf ??= bufferAlloc(0);
-    } else {
-      result[i] = dataBuf.subarray(udPayloadsStart + prevEnd, udPayloadsStart + end);
-    }
-    prevEnd = end;
-  }
-  return result;
-}
-
-// ── Cancel helpers ──────────────────────────────────────────────────
-
-/** Write cancel flag + attach abort listener. Returns the listener for cleanup (or null). */
-function setupCancel(stateBuf: Buffer, signal: AbortSignal | null | undefined): (() => void) | null {
-  stateBuf.writeUInt32LE(0, S_CANCEL_FLAG);
-  if (!signal) {
-    return null;
-  }
-  if (signal.aborted) {
-    stateBuf.writeUInt32LE(1, S_CANCEL_FLAG);
-    return null;
-  }
-  const cb = () => {
-    stateBuf.writeUInt32LE(1, S_CANCEL_FLAG);
-    cacheFireCancel(stateBuf);
-  };
-  signal.addEventListener("abort", cb, (_onceTrue ??= { once: true }));
-  return cb;
-}
-
-/** Remove abort listener after an async op completes. */
-function teardownCancel(signal: AbortSignal | null | undefined, cb: (() => void) | null): void {
-  if (cb && signal) {
-    signal.removeEventListener("abort", cb);
-  }
-}
 
 // ── FileHashCache ────────────────────────────────────────────────────
 
@@ -361,7 +212,7 @@ export class FileHashCache {
         resolvedCachePath = pathResolve(root, cachePath);
       }
       this.#absoluteFiles = null;
-      this.#encodedPaths = _emptyBuf ??= bufferAlloc(0);
+      this.#encodedPaths = _emptyBuf ?? bufferAlloc(0);
       this.#fileCount = 0;
     }
 
@@ -463,7 +314,7 @@ export class FileHashCache {
       this.#fileCount = normalized.length;
     } else {
       this.#absoluteFiles = null;
-      this.#encodedPaths = _emptyBuf ??= bufferAlloc(0);
+      this.#encodedPaths = _emptyBuf ?? bufferAlloc(0);
       this.#fileCount = 0;
     }
     this.#dirtyAll = true;
@@ -614,7 +465,7 @@ export class FileHashCache {
         dirtyBuf = encodeNormalizedPaths(dirtyArray);
         dirtyCount = dirtyArray.length;
       } else if (!dp) {
-        dirtyBuf = _emptyBuf ??= bufferAlloc(0);
+        dirtyBuf = _emptyBuf ?? bufferAlloc(0);
       }
     }
 
@@ -807,254 +658,6 @@ export class FileHashCache {
       return await cacheWaitUnlocked(sb, lockTimeoutMs);
     } finally {
       teardownCancel(signal, cancelCb);
-    }
-  }
-}
-
-// ── FileHashCacheSession ─────────────────────────────────────────────
-
-/**
- * A file hash cache session holding an exclusive OS-level lock.
- *
- * Created by {@link FileHashCache.open}. Exposes what was read from disk
- * as read-only properties. Pass payload values to {@link write}
- * to override them; omitted fields preserve the old values.
- *
- * The lock is released by {@link write} (after writing), by {@link close},
- * or by the `using` disposable pattern.
- */
-export class FileHashCacheSession {
-  /** Cache status determined at open time. */
-  public readonly status: CacheStatus;
-
-  /** Cache version (u32) that was active when this session was opened. */
-  public readonly version: number;
-
-  /** Root path that was active when this session was opened. */
-  public readonly rootPath: string;
-
-  /** User f64 value (slot 0) read from disk. `0` when status is `'missing'`. */
-  public readonly userValue0: number;
-
-  /** User f64 value (slot 1) read from disk. `0` when status is `'missing'`. */
-  public readonly userValue1: number;
-
-  /** User f64 value (slot 2) read from disk. `0` when status is `'missing'`. */
-  public readonly userValue2: number;
-
-  /** User f64 value (slot 3) read from disk. `0` when status is `'missing'`. */
-  public readonly userValue3: number;
-
-  readonly #cache: FileHashCache;
-  /** 0 = open, 1 = writing, 2 = closed */
-  #state: number;
-  readonly #dataBuf: Buffer;
-  readonly #stateBuf: Buffer;
-  readonly #lockTimeoutMs: number;
-  #files: readonly string[] | null;
-  #userData: readonly Buffer[] | null;
-
-  /** @internal */
-  public constructor(
-    cache: FileHashCache,
-    dataBuf: Buffer,
-    stateBuf: Buffer,
-    openRootPath: string,
-    lockTimeoutMs: number
-  ) {
-    this.#cache = cache;
-    this.#state = 0;
-    this.#dataBuf = dataBuf;
-    this.#stateBuf = stateBuf;
-    this.#lockTimeoutMs = lockTimeoutMs;
-    this.#files = null;
-    this.#userData = null;
-
-    this.status = STATUS_MAP[stateBuf.readUInt32LE(S_STATUS)] ?? "missing";
-    this.version = cache.version;
-    this.rootPath = openRootPath;
-    this.userValue0 = dataBuf.readDoubleLE(H_USER_VALUE0_BYTE);
-    this.userValue1 = dataBuf.readDoubleLE(H_USER_VALUE1_BYTE);
-    this.userValue2 = dataBuf.readDoubleLE(H_USER_VALUE2_BYTE);
-    this.userValue3 = dataBuf.readDoubleLE(H_USER_VALUE3_BYTE);
-  }
-
-  /** The parent {@link FileHashCache} that created this session. */
-  public get cache(): FileHashCache {
-    return this.#cache;
-  }
-
-  /** `true` once {@link close} or {@link write} has released the lock. */
-  public get disposed(): boolean {
-    return this.#state >= 2;
-  }
-
-  /** `true` while {@link write} is in progress (async write running on the thread pool). */
-  public get busy(): boolean {
-    return this.#state === 1;
-  }
-
-  /** `true` if the session holds the lock and the status indicates a write is needed. */
-  public get needsWrite(): boolean {
-    return this.#state === 0 && this.status !== "upToDate" && this.status !== "lockFailed";
-  }
-
-  /** Number of tracked files (from disk, or from the constructor when status is `'missing'`). */
-  public get fileCount(): number {
-    return this.#cache.fileCount;
-  }
-
-  /** Opaque binary payloads read from disk. Empty array if none. Lazily decoded, zero-copy. */
-  public get userData(): readonly Buffer[] {
-    let d = this.#userData;
-    if (!d) {
-      d = readPayloadData(this.#dataBuf);
-      this.#userData = d;
-    }
-    return d;
-  }
-
-  /**
-   * File list as absolute paths. When status is `'missing'`, reflects the files
-   * passed to the constructor. Lazily decoded from the on-disk representation.
-   */
-  public get files(): readonly string[] {
-    let f = this.#files;
-    if (!f) {
-      f = this.#cache.files ?? [];
-      if (f.length === 0) {
-        const rel = decodeFilePathsFromBuf(this.#dataBuf);
-        if (rel.length > 0) {
-          const rp = this.rootPath;
-          f = rp ? toAbsolutePaths(rp, rel) : rel;
-        }
-      }
-      this.#files = f;
-    }
-    return f;
-  }
-
-  /** Release the exclusive lock and mark this session as disposed. Safe to call multiple times. */
-  public close(): void {
-    if (this.#state >= 2) {
-      return;
-    }
-    // Re-invalidate if session was closed without a successful write.
-    // State 0 = never written. State 1 = write was attempted (success already called _recordWriteSuccess).
-    const needsInvalidate = this.#state === 0;
-    this.#state = 2;
-    const cache = this.#cache;
-    if (needsInvalidate) {
-      const s = this.status;
-      if (s !== "upToDate" && s !== "lockFailed") {
-        cache.invalidateAll();
-      }
-    }
-    cache._clearSession(this);
-    cacheClose(this.#stateBuf);
-  }
-
-  /** Disposable — `using session = await cache.open()` calls {@link close}. */
-  public [Symbol.dispose](): void {
-    this.close();
-  }
-
-  /**
-   * Write the cache file and release the lock.
-   *
-   * Can only be called once per session. After write completes (success or failure),
-   * the session is disposed and the lock is released.
-   *
-   * Omitted user-value fields preserve the values read from disk.
-   * Config overrides (version, fingerprint, rootPath, files) are applied
-   * to the parent {@link FileHashCache} before writing.
-   *
-   * @param options Optional write options.
-   * @returns `true` if the write succeeded, `false` on lock failure.
-   */
-  public async write(options?: FileHashCacheWriteOptions | null): Promise<boolean> {
-    if (this.#state !== 0) {
-      throw new Error("FileHashCacheSession: " + (this.#state >= 2 ? "already closed" : "write already in progress"));
-    }
-    this.#state = 1;
-
-    const cache = this.#cache;
-    const signal = options?.signal;
-
-    if (options) {
-      cache._applyOptions(options);
-    }
-
-    const p0 = options?.userValue0 ?? this.userValue0;
-    const p1 = options?.userValue1 ?? this.userValue1;
-    const p2 = options?.userValue2 ?? this.userValue2;
-    const p3 = options?.userValue3 ?? this.userValue3;
-    const ud =
-      options?.userData !== undefined ? (options.userData ?? null) : this.userData.length > 0 ? this.userData : null;
-    const encoded = cache._encodedPaths;
-    const fc = cache.fileCount;
-    const root = cache.rootPath;
-    const sb = this.#stateBuf;
-    const fp = cache.fingerprint;
-
-    if (this.status === "lockFailed") {
-      this.close();
-      sb.writeUInt32LE(cache.version, S_VERSION);
-      sb.writeInt32LE(options?.lockTimeoutMs ?? this.#lockTimeoutMs, S_LOCK_TIMEOUT);
-      sb.writeUInt32LE(fc, S_FILE_COUNT);
-      if (fp) {
-        if (!(fp instanceof Uint8Array) || fp.length !== 16) {
-          throw new TypeError("FileHashCache: fingerprint must be a Uint8Array of exactly 16 bytes");
-        }
-        sb.set(fp, S_FINGERPRINT);
-      } else {
-        sb.fill(0, S_FINGERPRINT, S_FINGERPRINT + 16);
-      }
-      sb.writeDoubleLE(p0, S_USER_VALUE0);
-      sb.writeDoubleLE(p1, S_USER_VALUE1);
-      sb.writeDoubleLE(p2, S_USER_VALUE2);
-      sb.writeDoubleLE(p3, S_USER_VALUE3);
-
-      const cancelCb = setupCancel(sb, signal);
-      let result: number;
-      try {
-        result = await cacheWriteNew(sb, encoded, root, ud);
-      } finally {
-        teardownCancel(signal, cancelCb);
-      }
-      if (result === 0) {
-        cache._recordWriteSuccess();
-      }
-      return result === 0;
-    }
-
-    const dataBuf = this.#dataBuf;
-
-    dataBuf.writeDoubleLE(p0, H_USER_VALUE0_BYTE);
-    dataBuf.writeDoubleLE(p1, H_USER_VALUE1_BYTE);
-    dataBuf.writeDoubleLE(p2, H_USER_VALUE2_BYTE);
-    dataBuf.writeDoubleLE(p3, H_USER_VALUE3_BYTE);
-
-    if (fp) {
-      if (!(fp instanceof Uint8Array) || fp.length !== 16) {
-        throw new TypeError("FileHashCache: fingerprint must be a Uint8Array of exactly 16 bytes");
-      }
-      dataBuf.set(fp, H_FINGERPRINT_BYTE);
-    } else {
-      dataBuf.fill(0, H_FINGERPRINT_BYTE, H_FINGERPRINT_BYTE + 16);
-    }
-
-    sb.writeUInt32LE(fc, S_FILE_COUNT);
-    const cancelCb = setupCancel(sb, signal);
-    try {
-      const result = await cacheWrite(sb, dataBuf, encoded, root, ud);
-      if (result === 0) {
-        cache._recordWriteSuccess();
-      }
-      return result === 0;
-    } finally {
-      teardownCancel(signal, cancelCb);
-      this.close();
     }
   }
 }

@@ -129,14 +129,17 @@ namespace fast_fs_hash {
     }
 
     const uint32_t fileCount = state->fileCount;
+    const bool resolveOnly = (state->flags & 1) != 0;
 
-    // Extract file handle from stateBuf and invalidate it
-    const int32_t fileHandle = state->fileHandle;
-    state->fileHandle = FFSH_FILE_HANDLE_INVALID;
     FfshFile lockedFile;
-    auto * addon = AddonData::get(env);
-    if (addon) [[likely]] {
-      lockedFile = addon->takeHeldFile(fileHandle);
+    if (!resolveOnly) {
+      // Normal write: take ownership of the locked fd from AddonData
+      const int32_t fileHandle = state->fileHandle;
+      state->fileHandle = FFSH_FILE_HANDLE_INVALID;
+      auto * addon = AddonData::get(env);
+      if (addon) [[likely]] {
+        lockedFile = addon->takeHeldFile(fileHandle);
+      }
     }
 
     auto * worker = new CacheWriter(
@@ -144,7 +147,7 @@ namespace fast_fs_hash {
       dataPtr, dataLen, std::move(data_ref),
       encoded_paths, encoded_len, std::move(paths_ref),
       fileCount, std::move(rootPath),
-      std::move(ud), std::move(lockedFile));
+      std::move(ud), std::move(lockedFile), resolveOnly);
     worker->Queue();
     return deferred.Promise();
   }

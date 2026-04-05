@@ -115,5 +115,8 @@ export const S_FILE_COUNT = 84;
 /** State byte 88: cachePathLen (u32, JS→C++). */
 export const S_CACHE_PATH_LEN = 88;
 
+/** State byte 92: flags (u32, JS→C++). Bit 0 = resolveOnly. */
+export const S_FLAGS = 92;
+
 /** State byte 96+: null-terminated UTF-8 cachePath (immutable after construction). */
 export const S_CACHE_PATH = 96;

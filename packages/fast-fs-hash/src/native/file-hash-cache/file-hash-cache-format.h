@@ -176,7 +176,7 @@ namespace fast_fs_hash {
     uint32_t cancelFlag;  // 80: 0=running, 1=cancelled (JS↔C++, volatile read)
     uint32_t fileCount;  // 84: number of file entries (JS→C++)
     uint32_t cachePathLen;  // 88: byte length of cachePath (excluding null)
-    uint32_t reserved;  // 92: reserved (zero)
+    uint32_t flags;  // 92: bit 0 = resolveOnly (1 = resolve entries without writing to disk)
     // Byte 96+: null-terminated UTF-8 cachePath (immutable after construction)
 
     static constexpr size_t HEADER_SIZE = 96;
@@ -211,7 +211,7 @@ namespace fast_fs_hash {
   static_assert(offsetof(CacheStateBuf, cancelFlag) == 80);
   static_assert(offsetof(CacheStateBuf, fileCount) == 84);
   static_assert(offsetof(CacheStateBuf, cachePathLen) == 88);
-  static_assert(offsetof(CacheStateBuf, reserved) == 92);
+  static_assert(offsetof(CacheStateBuf, flags) == 92);
   static_assert(CacheStateBuf::HEADER_SIZE == 96);
 
   enum class CacheStatus : uint32_t {

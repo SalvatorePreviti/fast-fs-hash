@@ -20,7 +20,8 @@ namespace fast_fs_hash {
    */
   static constexpr unsigned INO_STATE_SHIFT = 62;
   static constexpr uint64_t INO_STATE_MASK = 3ULL << INO_STATE_SHIFT;
-  static constexpr uint64_t INO_VALUE_MASK = ~INO_STATE_MASK;
+  static constexpr uint64_t INO_CHANGED_BIT = 1ULL << 61;  // content changed from cached version
+  static constexpr uint64_t INO_VALUE_MASK = ~(INO_STATE_MASK | INO_CHANGED_BIT);
 
   static constexpr uint64_t CACHE_S_NOT_CHECKED = 0;
   static constexpr uint64_t CACHE_S_DONE = 1ULL << INO_STATE_SHIFT;

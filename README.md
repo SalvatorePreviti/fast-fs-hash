@@ -93,11 +93,11 @@ changed stat are re-hashed. This makes cache validation **O(n × stat)** instead
 
 | Scenario           | Mean                | Hz         | Files/s           | Throughput |
 | ------------------ | ------------------- | ---------- | ----------------- | ---------- |
-| no change          | 0.5 ms (512.4 µs)   | 1 951 op/s | 1 375 768 files/s | —          |
-| 1 file changed     | 0.9 ms (883.2 µs)   | 1 132 op/s | 798 252 files/s   | —          |
-| many files changed | 2.3 ms (2 340.4 µs) | 427 op/s   | 301 225 files/s   | 10.6 GB/s  |
-| no existing cache  | 7.7 ms (7 735.3 µs) | 129 op/s   | 91 140 files/s    | 3.2 GB/s   |
-| overwrite          | 7.4 ms (7 373.1 µs) | 136 op/s   | 95 617 files/s    | 3.4 GB/s   |
+| no change          | 0.5 ms (508.2 µs)   | 1 968 op/s | 1 387 280 files/s | —          |
+| 1 file changed     | 0.9 ms (912.1 µs)   | 1 096 op/s | 772 932 files/s   | —          |
+| many files changed | 2.4 ms (2 388.7 µs) | 419 op/s   | 295 139 files/s   | 10.3 GB/s  |
+| no existing cache  | 7.7 ms (7 697.1 µs) | 130 op/s   | 91 593 files/s    | 3.2 GB/s   |
+| overwrite          | 7.3 ms (7 263.0 µs) | 138 op/s   | 97 067 files/s    | 3.4 GB/s   |
 
 <!-- FHC_BENCHMARKS:END -->
 
@@ -125,7 +125,11 @@ Use `userData` to store arbitrary build metadata alongside the cache.
 ```ts
 import { FileHashCache } from "fast-fs-hash";
 
-const cache = new FileHashCache({ cachePath: ".cache/build.fsh", rootPath: ".", version: 1 });
+const cache = new FileHashCache({
+  cachePath: ".cache/build.fsh",
+  rootPath: ".",
+  version: 1,
+});
 
 export async function build() {
   using session = await cache.open();
@@ -155,7 +159,12 @@ import { FileHashCache } from "fast-fs-hash";
 import { globSync } from "node:fs";
 
 const files = globSync("src/**/*.ts");
-const cache = new FileHashCache({ cachePath: ".cache/build.fsh", rootPath: ".", files, version: 1 });
+const cache = new FileHashCache({
+  cachePath: ".cache/build.fsh",
+  rootPath: ".",
+  files,
+  version: 1,
+});
 
 using session = await cache.open();
 
@@ -181,13 +190,17 @@ if (session.status === "upToDate") {
 
 **Session methods:**
 
-- **`write(options?)`** — hashes unresolved entries, compresses, writes to disk, releases lock.
-- **`close()`** — releases the lock. Also called automatically by `using`.
+- **`write(options?)`** — hashes unresolved entries, compresses, writes to disk, releases lock. Can only be called once.
+- **`resolve(signal?)`** — completes stat + hash for ALL files and returns a `FileHashCacheEntries` snapshot. Can be called before `write()`. See below.
+- **`wouldNeedWrite(options?)`** — sync check: returns `true` if `write(options)` would produce changes.
+- **`close()`** — releases the lock. Also called automatically by `using`. If called during `resolve()` or `write()`, cancels the in-progress operation.
 
 **Session properties:**
 
 - `status` — `'upToDate'` | `'changed'` | `'stale'` | `'missing'` | `'statsDirty'` | `'lockFailed'`
 - `needsWrite` — `true` if the session holds the lock and changes were detected
+- `busy` — `true` while `resolve()` or `write()` is running
+- `disposed` — `true` after `close()` or `write()` has released the lock
 - `files`, `fileCount` — tracked file list (absolute paths)
 - `userValue0..3` — four f64 user values read from disk
 - `userData` — array of binary payloads read from disk
@@ -205,6 +218,44 @@ if (session.status === "upToDate") {
 - When lock fails: `status === 'lockFailed'`. Calling `write()` falls back to `overwrite()`.
 - Cancellable via `AbortSignal` on `open()`, `overwrite()`, and `waitUnlocked()`
 
+### Inspecting per-file changes with `resolve()`
+
+After `open()`, the session knows the aggregate status but not which specific files
+changed. Call `resolve()` to complete stat + hash for every file and get per-file metadata.
+
+**Note:** `resolve()` stats and hashes every unresolved file on the thread pool. This has
+a cost proportional to the number of changed files. Use it only when you need per-file
+information — for simple "changed → rebuild all" workflows, just check `session.status`.
+
+```ts
+using session = await cache.open();
+
+if (session.status !== "upToDate") {
+  const entries = await session.resolve();
+
+  for (const entry of entries) {
+    if (entry.changed) {
+      console.log(`Changed: ${entry.path} (${entry.size} bytes, hash: ${entry.contentHashHex})`);
+    }
+  }
+
+  await session.write();
+}
+```
+
+Each `FileHashCacheEntry` provides:
+
+- `path` — absolute file path
+- `size` — file size in bytes
+- `mtimeMs` — modification time in ms
+- `ctimeMs` — change time in ms
+- `changed` — `true` if content differs from the cached version (or is a new file)
+- `contentHash` — 16-byte xxHash3-128 as a Buffer (zero-copy view)
+- `contentHashHex` — 32-char hex string (lazy, computed on first access)
+
+`FileHashCacheEntries` supports `get(index)`, `find(path)`, and iteration.
+The result is cached — subsequent calls to `resolve()` return the same snapshot.
+
 ---
 
 ## xxHash128 — Direct hashing
@@ -221,22 +272,22 @@ hood, but they are fully usable on their own.
 
 | Scenario             | Mean              | Hz          | Throughput | Relative        |
 | -------------------- | ----------------- | ----------- | ---------- | --------------- |
-| native               | 0.04 ms (44.1 µs) | 22 689 op/s | 4.5 GB/s   | **6.5× faster** |
-| Node.js crypto (md5) | 0.3 ms (286.3 µs) | 3 492 op/s  | 689 MB/s   | baseline        |
+| native               | 0.04 ms (43.1 µs) | 23 179 op/s | 4.6 GB/s   | **6.5× faster** |
+| Node.js crypto (md5) | 0.3 ms (281.6 µs) | 3 551 op/s  | 701 MB/s   | baseline        |
 
 **medium file (~49.9 KB):**
 
 | Scenario             | Mean              | Hz          | Throughput | Relative        |
 | -------------------- | ----------------- | ----------- | ---------- | --------------- |
-| native               | 0.03 ms (28.3 µs) | 35 362 op/s | 1.8 GB/s   | **4.2× faster** |
-| Node.js crypto (md5) | 0.1 ms (118.5 µs) | 8 440 op/s  | 421 MB/s   | baseline        |
+| native               | 0.03 ms (28.7 µs) | 34 887 op/s | 1.7 GB/s   | **4.6× faster** |
+| Node.js crypto (md5) | 0.1 ms (133.1 µs) | 7 512 op/s  | 375 MB/s   | baseline        |
 
 **small file (~1.0 KB):**
 
-| Scenario             | Mean              | Hz          | Relative         |
-| -------------------- | ----------------- | ----------- | ---------------- |
-| Node.js crypto (md5) | 0.06 ms (57.6 µs) | 17 359 op/s | **14.0× faster** |
-| native               | 0.8 ms (803.9 µs) | 1 244 op/s  | baseline         |
+| Scenario             | Mean              | Hz          | Relative        |
+| -------------------- | ----------------- | ----------- | --------------- |
+| native               | 0.02 ms (23.2 µs) | 43 049 op/s | **2.5× faster** |
+| Node.js crypto (md5) | 0.06 ms (58.2 µs) | 17 187 op/s | baseline        |
 
 <!-- HASHFILE_BENCHMARKS:END -->
 
@@ -246,8 +297,8 @@ hood, but they are fully usable on their own.
 
 | Scenario             | Mean                  | Hz       | Throughput | Relative        |
 | -------------------- | --------------------- | -------- | ---------- | --------------- |
-| native               | 7.3 ms (7 252.5 µs)   | 138 op/s | 3.4 GB/s   | **4.9× faster** |
-| Node.js crypto (md5) | 35.7 ms (35 692.2 µs) | 28 op/s  | 692 MB/s   | baseline        |
+| native               | 7.1 ms (7 072.3 µs)   | 141 op/s | 3.5 GB/s   | **5.0× faster** |
+| Node.js crypto (md5) | 35.6 ms (35 639.5 µs) | 28 op/s  | 693 MB/s   | baseline        |
 
 <!-- BENCHMARKS:END -->
 
@@ -259,15 +310,15 @@ hood, but they are fully usable on their own.
 
 | Scenario           | Mean              | Hz           | Throughput | Relative         |
 | ------------------ | ----------------- | ------------ | ---------- | ---------------- |
-| native XXH3-128    | 0.001 ms (1.4 µs) | 711 439 op/s | 46.6 GB/s  | **48.7× faster** |
-| Node.js crypto md5 | 0.07 ms (68.5 µs) | 14 609 op/s  | 957 MB/s   | baseline         |
+| native XXH3-128    | 0.001 ms (1.5 µs) | 689 500 op/s | 45.2 GB/s  | **49.3× faster** |
+| Node.js crypto md5 | 0.07 ms (71.4 µs) | 13 997 op/s  | 917 MB/s   | baseline         |
 
 **1 MB buffer:**
 
 | Scenario           | Mean                | Hz          | Throughput | Relative         |
 | ------------------ | ------------------- | ----------- | ---------- | ---------------- |
-| native XXH3-128    | 0.02 ms (21.9 µs)   | 45 720 op/s | 47.9 GB/s  | **49.3× faster** |
-| Node.js crypto md5 | 1.1 ms (1 078.8 µs) | 927 op/s    | 972 MB/s   | baseline         |
+| native XXH3-128    | 0.02 ms (22.3 µs)   | 44 920 op/s | 47.1 GB/s  | **51.2× faster** |
+| Node.js crypto md5 | 1.1 ms (1 138.7 µs) | 878 op/s    | 921 MB/s   | baseline         |
 
 <!-- HASH_BUFFER_BENCHMARKS:END -->
 
@@ -372,29 +423,29 @@ compressed data and pass it to the decompression function.
 
 | Scenario                | Ratio | Mean              | Hz           | Throughput | Relative        |
 | ----------------------- | ----- | ----------------- | ------------ | ---------- | --------------- |
-| native LZ4              | 0.7%  | 0.003 ms (3.5 µs) | 285 970 op/s | 18.7 GB/s  | **7.2× faster** |
-| Node.js deflate level=1 | 1.0%  | 0.03 ms (25.3 µs) | 39 530 op/s  | 2.6 GB/s   | baseline        |
+| native LZ4              | 0.7%  | 0.004 ms (3.5 µs) | 285 268 op/s | 18.7 GB/s  | **7.4× faster** |
+| Node.js deflate level=1 | 1.0%  | 0.03 ms (25.8 µs) | 38 752 op/s  | 2.5 GB/s   | baseline        |
 
 **decompress 64 KB:**
 
 | Scenario        | Mean              | Hz           | Throughput | Relative        |
 | --------------- | ----------------- | ------------ | ---------- | --------------- |
-| native LZ4      | 0.003 ms (2.7 µs) | 370 189 op/s | 24.3 GB/s  | **3.8× faster** |
-| Node.js deflate | 0.01 ms (10.3 µs) | 96 695 op/s  | 6.3 GB/s   | baseline        |
+| native LZ4      | 0.003 ms (2.7 µs) | 373 293 op/s | 24.5 GB/s  | **4.1× faster** |
+| Node.js deflate | 0.01 ms (11.1 µs) | 90 435 op/s  | 5.9 GB/s   | baseline        |
 
 **compress 1 MB:**
 
 | Scenario                | Ratio | Mean              | Hz          | Throughput | Relative        |
 | ----------------------- | ----- | ----------------- | ----------- | ---------- | --------------- |
-| native LZ4              | 0.4%  | 0.04 ms (35.2 µs) | 28 383 op/s | 29.8 GB/s  | **9.8× faster** |
-| Node.js deflate level=1 | 0.7%  | 0.3 ms (344.6 µs) | 2 902 op/s  | 3.0 GB/s   | baseline        |
+| native LZ4              | 0.4%  | 0.04 ms (35.9 µs) | 27 863 op/s | 29.2 GB/s  | **9.9× faster** |
+| Node.js deflate level=1 | 0.7%  | 0.4 ms (356.0 µs) | 2 809 op/s  | 2.9 GB/s   | baseline        |
 
 **decompress 1 MB:**
 
 | Scenario        | Mean              | Hz          | Throughput | Relative        |
 | --------------- | ----------------- | ----------- | ---------- | --------------- |
-| native LZ4      | 0.03 ms (33.4 µs) | 29 909 op/s | 31.4 GB/s  | **3.0× faster** |
-| Node.js deflate | 0.10 ms (98.7 µs) | 10 127 op/s | 10.6 GB/s  | baseline        |
+| native LZ4      | 0.03 ms (32.4 µs) | 30 868 op/s | 32.4 GB/s  | **3.1× faster** |
+| Node.js deflate | 0.1 ms (101.0 µs) | 9 898 op/s  | 10.4 GB/s  | baseline        |
 
 <!-- LZ4_BENCHMARKS:END -->
 
@@ -464,29 +515,29 @@ either file cannot be opened/read or if sizes differ — never throws.
 
 | Scenario                           | Mean              | Hz          | Throughput | Relative        |
 | ---------------------------------- | ----------------- | ----------- | ---------- | --------------- |
-| native                             | 0.05 ms (46.5 µs) | 21 491 op/s | 1.1 GB/s   | **2.4× faster** |
-| Node.js (fs.open + read + compare) | 0.1 ms (112.1 µs) | 8 918 op/s  | 445 MB/s   | baseline        |
+| native                             | 0.04 ms (39.2 µs) | 25 479 op/s | 1.3 GB/s   | **2.7× faster** |
+| Node.js (fs.open + read + compare) | 0.1 ms (107.5 µs) | 9 303 op/s  | 464 MB/s   | baseline        |
 
 **equal files (~197.3 KB):**
 
 | Scenario                           | Mean              | Hz          | Throughput | Relative        |
 | ---------------------------------- | ----------------- | ----------- | ---------- | --------------- |
-| native                             | 0.05 ms (50.0 µs) | 19 982 op/s | 3.9 GB/s   | **3.1× faster** |
-| Node.js (fs.open + read + compare) | 0.2 ms (156.2 µs) | 6 401 op/s  | 1.3 GB/s   | baseline        |
+| native                             | 0.05 ms (49.0 µs) | 20 420 op/s | 4.0 GB/s   | **2.9× faster** |
+| Node.js (fs.open + read + compare) | 0.1 ms (142.4 µs) | 7 022 op/s  | 1.4 GB/s   | baseline        |
 
 **different content, same size (~49.9 KB):**
 
 | Scenario                           | Mean              | Hz          | Throughput | Relative        |
 | ---------------------------------- | ----------------- | ----------- | ---------- | --------------- |
-| native                             | 0.04 ms (40.3 µs) | 24 825 op/s | 1.2 GB/s   | **2.7× faster** |
-| Node.js (fs.open + read + compare) | 0.1 ms (107.8 µs) | 9 277 op/s  | 463 MB/s   | baseline        |
+| native                             | 0.04 ms (39.5 µs) | 25 297 op/s | 1.3 GB/s   | **2.7× faster** |
+| Node.js (fs.open + read + compare) | 0.1 ms (108.5 µs) | 9 218 op/s  | 460 MB/s   | baseline        |
 
 **different sizes (early exit):**
 
 | Scenario                           | Mean              | Hz          | Relative        |
 | ---------------------------------- | ----------------- | ----------- | --------------- |
-| native                             | 0.04 ms (37.1 µs) | 26 952 op/s | **2.4× faster** |
-| Node.js (fs.open + read + compare) | 0.09 ms (90.6 µs) | 11 043 op/s | baseline        |
+| native                             | 0.03 ms (34.8 µs) | 28 744 op/s | **2.6× faster** |
+| Node.js (fs.open + read + compare) | 0.09 ms (89.9 µs) | 11 127 op/s | baseline        |
 
 <!-- FILES_EQUAL_BENCHMARKS:END -->
 
