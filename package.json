@@ -35,7 +35,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.10",
-    "@types/node": "^25.5.0",
+    "@types/node": "^25.5.2",
     "ansis": "^4.2.0",
     "cmake-js": "^8.0.0",
     "lefthook": "^2.1.4",

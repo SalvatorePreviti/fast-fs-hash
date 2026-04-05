@@ -21,6 +21,7 @@ import { XxHash128Stream } from "./XxHash128Stream";
 
 export type {
   CacheStatus,
+  FileHashCacheConfigOptions,
   FileHashCacheEntries,
   FileHashCacheEntry,
   FileHashCacheOptions,

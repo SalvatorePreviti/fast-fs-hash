@@ -124,24 +124,25 @@ describe("FileHashCache binary format [native]", () => {
       const files = [fixtureFile("a.txt")];
       await withCache(cp, files, { version: 1 }, async (session) => {
         await session.write({
-          userValue0: 0xdead,
-          userValue1: 0xbeef,
-          userValue2: 0xcafe,
-          userValue3: 0xbabe,
+          payloadValue0: 0xdead,
+          payloadValue1: 0xbeef,
+          payloadValue2: 0xcafe,
+          payloadValue3: 0xbabe,
         });
       });
 
       // Re-open and verify user values survived the round-trip
-      const userValues = await withCache(
+      const payloadValues = await withCache(
         cp,
         files,
         { version: 1 },
-        (session) => [session.userValue0, session.userValue1, session.userValue2, session.userValue3] as const
+        (session) =>
+          [session.payloadValue0, session.payloadValue1, session.payloadValue2, session.payloadValue3] as const
       );
-      expect(userValues[0]).toBe(0xdead);
-      expect(userValues[1]).toBe(0xbeef);
-      expect(userValues[2]).toBe(0xcafe);
-      expect(userValues[3]).toBe(0xbabe);
+      expect(payloadValues[0]).toBe(0xdead);
+      expect(payloadValues[1]).toBe(0xbeef);
+      expect(payloadValues[2]).toBe(0xcafe);
+      expect(payloadValues[3]).toBe(0xbabe);
     });
   });
 
@@ -170,25 +171,27 @@ describe("FileHashCache binary format [native]", () => {
   //  - Fingerprint validation
 
   describe("fingerprint validation", () => {
-    it("throws on wrong-length Uint8Array", async () => {
-      await expect(
-        new FileHashCache({
-          cachePath: cachePath(),
-          files: [],
-          rootPath: FIXTURE_DIR,
-          version: 0,
-          fingerprint: new Uint8Array(8),
-        }).open()
-      ).rejects.toThrow();
-      await expect(
-        new FileHashCache({
-          cachePath: cachePath(),
-          files: [],
-          rootPath: FIXTURE_DIR,
-          version: 0,
-          fingerprint: new Uint8Array(32),
-        }).open()
-      ).rejects.toThrow();
+    it("throws on wrong-length Uint8Array", () => {
+      expect(
+        () =>
+          new FileHashCache({
+            cachePath: cachePath(),
+            files: [],
+            rootPath: FIXTURE_DIR,
+            version: 0,
+            fingerprint: new Uint8Array(8),
+          })
+      ).toThrow("16 bytes");
+      expect(
+        () =>
+          new FileHashCache({
+            cachePath: cachePath(),
+            files: [],
+            rootPath: FIXTURE_DIR,
+            version: 0,
+            fingerprint: new Uint8Array(32),
+          })
+      ).toThrow("16 bytes");
     });
 
     it("omitted fingerprint defaults to zero (round-trips)", async () => {

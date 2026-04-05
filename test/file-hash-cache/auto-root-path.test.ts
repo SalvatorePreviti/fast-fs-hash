@@ -28,10 +28,11 @@ async function withCache<T>(
   cp: string,
   files: string[],
   opts: { rootPath?: string; version?: number; fingerprint?: Uint8Array | null; lockTimeoutMs?: number },
-  run: (session: FileHashCacheSession) => Promise<T> | T
+  run: (session: FileHashCacheSession, cache: FileHashCache) => Promise<T> | T
 ): Promise<T> {
-  using session = await new FileHashCache({ cachePath: cp, files, ...opts }).open();
-  return await run(session);
+  const cache = new FileHashCache({ cachePath: cp, files, ...opts });
+  using session = await cache.open();
+  return await run(session, cache);
 }
 
 //  - Tests
@@ -58,8 +59,9 @@ describe("FileHashCache auto root path [native]", () => {
     const fileB = path.join(FIX_A, "b.txt");
     const files = [fileA, fileB];
 
-    await withCache(cp, [], { rootPath: TEST_DIR, version: 1 }, async (ctx1) => {
-      await ctx1.write({ files, rootPath: true });
+    await withCache(cp, [], { rootPath: TEST_DIR, version: 1 }, async (ctx1, cache1) => {
+      cache1.configure({ files, rootPath: true });
+      await ctx1.write();
     });
 
     // Verify: re-open with the same files (root auto-detected as FIX_A)
@@ -73,8 +75,9 @@ describe("FileHashCache auto root path [native]", () => {
     const fileC = path.join(FIX_B, "c.txt");
     const files = [fileA, fileC];
 
-    await withCache(cp, [], { rootPath: TEST_DIR, version: 1 }, async (ctx1) => {
-      await ctx1.write({ files, rootPath: true });
+    await withCache(cp, [], { rootPath: TEST_DIR, version: 1 }, async (ctx1, cache1) => {
+      cache1.configure({ files, rootPath: true });
+      await ctx1.write();
     });
 
     // Root should be TEST_DIR (common parent of project-a and project-b)
@@ -102,8 +105,9 @@ describe("FileHashCache auto root path [native]", () => {
     const fileB = path.join(FIX_A, "b.txt");
     const files = [fileA, fileB];
 
-    await withCache(cp, [], { rootPath: TEST_DIR, version: 1 }, async (ctx1) => {
-      await ctx1.write({ files, rootPath: true });
+    await withCache(cp, [], { rootPath: TEST_DIR, version: 1 }, async (ctx1, cache1) => {
+      cache1.configure({ files, rootPath: true });
+      await ctx1.write();
     });
 
     // Should have used auto-computed root (FIX_A)
@@ -115,8 +119,9 @@ describe("FileHashCache auto root path [native]", () => {
     const cp = cachePath("auto-explicit");
     const files = [path.join(FIX_A, "a.txt")];
 
-    await withCache(cp, [], { rootPath: TEST_DIR, version: 1 }, async (ctx1) => {
-      await ctx1.write({ files, rootPath: FIX_A });
+    await withCache(cp, [], { rootPath: TEST_DIR, version: 1 }, async (ctx1, cache1) => {
+      cache1.configure({ files, rootPath: FIX_A });
+      await ctx1.write();
     });
 
     const status = await withCache(cp, files, { rootPath: FIX_A, version: 1 }, (ctx2) => ctx2.status);

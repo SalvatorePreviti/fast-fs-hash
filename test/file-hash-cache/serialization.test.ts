@@ -258,15 +258,15 @@ describe("overwrite() serialization", () => {
     const cache = new FileHashCache({ cachePath: cp(), files: [fx("a.txt")], rootPath: FIXTURE_DIR });
     const order: number[] = [];
 
-    const p1 = cache.overwrite({ userValue0: 1 }).then((ok) => {
+    const p1 = cache.overwrite({ payloadValue0: 1 }).then((ok) => {
       order.push(1);
       return ok;
     });
-    const p2 = cache.overwrite({ userValue0: 2 }).then((ok) => {
+    const p2 = cache.overwrite({ payloadValue0: 2 }).then((ok) => {
       order.push(2);
       return ok;
     });
-    const p3 = cache.overwrite({ userValue0: 3 }).then((ok) => {
+    const p3 = cache.overwrite({ payloadValue0: 3 }).then((ok) => {
       order.push(3);
       return ok;
     });
@@ -277,7 +277,7 @@ describe("overwrite() serialization", () => {
     // Last overwrite wins
     cache.invalidateAll();
     using s = await cache.open();
-    expect(s.userValue0).toBe(3);
+    expect(s.payloadValue0).toBe(3);
   });
 });
 
@@ -295,7 +295,7 @@ describe("mixed operation serialization", () => {
     });
 
     // Queue overwrite while open is pending
-    const p2 = cache.overwrite({ userValue0: 99 }).then((ok) => {
+    const p2 = cache.overwrite({ payloadValue0: 99 }).then((ok) => {
       order.push("overwrite");
       return ok;
     });
@@ -313,7 +313,7 @@ describe("mixed operation serialization", () => {
     const s2 = await p3;
 
     expect(order).toEqual(["open1", "overwrite", "open2"]);
-    expect(s2.userValue0).toBe(99);
+    expect(s2.payloadValue0).toBe(99);
     s2.close();
   });
 
@@ -321,7 +321,7 @@ describe("mixed operation serialization", () => {
     const cache = new FileHashCache({ cachePath: cp(), files: [fx("a.txt")], rootPath: FIXTURE_DIR });
 
     // Queue: overwrite → open, verify data flows through
-    const p1 = cache.overwrite({ userValue0: 42, userValue1: 3.14 });
+    const p1 = cache.overwrite({ payloadValue0: 42, payloadValue1: 3.14 });
     const p2 = (async () => {
       await p1;
       cache.invalidateAll();
@@ -330,8 +330,8 @@ describe("mixed operation serialization", () => {
 
     await p1;
     const session = await p2;
-    expect(session.userValue0).toBe(42);
-    expect(session.userValue1).toBe(3.14);
+    expect(session.payloadValue0).toBe(42);
+    expect(session.payloadValue1).toBe(3.14);
     session.close();
   });
 
@@ -340,8 +340,8 @@ describe("mixed operation serialization", () => {
 
     const session = await cache.open();
 
-    // Write with payloads, then queue an open
-    const writePromise = session.write({ userValue0: 777 });
+    // Write with payloadData, then queue an open
+    const writePromise = session.write({ payloadValue0: 777 });
     const openPromise = cache.open();
 
     await writePromise;
@@ -355,26 +355,34 @@ describe("mixed operation serialization", () => {
     // Definitively verify persistence with a fresh open
     cache.invalidateAll();
     using s3 = await cache.open();
-    expect(s3.userValue0).toBe(777);
+    expect(s3.payloadValue0).toBe(777);
   });
 });
 
 // ── Error handling ──────────────────────────────────────────────────
 
 describe("error handling with mutex", () => {
-  it("mutex is released if open() throws (e.g. bad fingerprint)", async () => {
-    const cache = new FileHashCache({
-      cachePath: cp(),
-      files: [fx("a.txt")],
-      rootPath: FIXTURE_DIR,
-      fingerprint: new Uint8Array(8), // wrong length — should throw
-    });
+  it("bad fingerprint throws at construction time", () => {
+    expect(
+      () =>
+        new FileHashCache({
+          cachePath: cp(),
+          files: [fx("a.txt")],
+          rootPath: FIXTURE_DIR,
+          fingerprint: new Uint8Array(8), // wrong length — should throw
+        })
+    ).toThrow("16 bytes");
+  });
 
-    await expect(cache.open()).rejects.toThrow();
+  it("mutex is released if overwrite() fails", async () => {
+    // overwrite without files should throw
+    const cache = new FileHashCache({ cachePath: cp(), rootPath: FIXTURE_DIR });
+
+    await expect(cache.overwrite()).rejects.toThrow("files must be set");
     expect(cache.busy).toBe(false);
 
-    // Should be able to open again after fixing the issue
-    cache.fingerprint = null;
+    // Should be able to use the cache after the error
+    cache.files = [fx("a.txt")];
     const session = await cache.open();
     expect(session.status).toBe("missing");
     session.close();

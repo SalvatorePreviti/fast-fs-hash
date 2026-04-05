@@ -103,9 +103,9 @@ export class FileHashCacheEntry {
     const offset = HEADER_SIZE + index * ENTRY_STRIDE;
     this.path = path;
     this.index = index;
-    this.size = Number(dataBuf.readBigUInt64LE(offset + 24));
-    this.mtimeMs = Number(dataBuf.readBigUInt64LE(offset + 8)) / 1e6;
-    this.ctimeMs = Number(dataBuf.readBigUInt64LE(offset + 16)) / 1e6;
+    this.size = dataBuf.readUInt32LE(offset + 24) + dataBuf.readUInt32LE(offset + 28) * 0x100000000;
+    this.mtimeMs = (dataBuf.readUInt32LE(offset + 8) + dataBuf.readUInt32LE(offset + 12) * 0x100000000) / 1e6;
+    this.ctimeMs = (dataBuf.readUInt32LE(offset + 16) + dataBuf.readUInt32LE(offset + 20) * 0x100000000) / 1e6;
     this.changed = (dataBuf.readUInt8(offset + 7) & 0x20) !== 0;
     this.contentHash = dataBuf.subarray(offset + 32, offset + 48);
     this.#hashHex = null;

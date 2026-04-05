@@ -255,29 +255,29 @@ describe("overwrite", () => {
     }
   });
 
-  it("overwrite with payloads", async () => {
+  it("overwrite with payloadData", async () => {
     const cacheFile = cp();
     const files = [fx("a.txt")];
     const cache = new FileHashCache({ cachePath: cacheFile, files, rootPath: FIXTURE_DIR });
 
     await cache.overwrite({
-      userValue0: 42,
-      userValue1: 3.14,
-      userData: [Buffer.from("hello"), Buffer.from("world")],
+      payloadValue0: 42,
+      payloadValue1: 3.14,
+      payloadData: [Buffer.from("hello"), Buffer.from("world")],
     });
 
-    // Verify payloads are readable
+    // Verify payloadData are readable
     {
       cache.invalidateAll();
       using s = await cache.open();
       expect(s.status).toBe("upToDate");
-      expect(s.userValue0).toBe(42);
-      expect(s.userValue1).toBe(3.14);
-      expect(s.userValue2).toBe(0);
-      expect(s.userValue3).toBe(0);
-      expect(s.userData).toHaveLength(2);
-      expect(Buffer.from(s.userData[0]).toString()).toBe("hello");
-      expect(Buffer.from(s.userData[1]).toString()).toBe("world");
+      expect(s.payloadValue0).toBe(42);
+      expect(s.payloadValue1).toBe(3.14);
+      expect(s.payloadValue2).toBe(0);
+      expect(s.payloadValue3).toBe(0);
+      expect(s.payloadData).toHaveLength(2);
+      expect(Buffer.from(s.payloadData[0]).toString()).toBe("hello");
+      expect(Buffer.from(s.payloadData[1]).toString()).toBe("world");
     }
   });
 
@@ -323,20 +323,20 @@ describe("open + write + close pattern", () => {
     }
   });
 
-  it("write passes payloads through", async () => {
+  it("write passes payloadData through", async () => {
     const cacheFile = cp();
     const files = [fx("a.txt")];
     const cache = new FileHashCache({ cachePath: cacheFile, files, rootPath: FIXTURE_DIR });
 
     {
       using s = await cache.open();
-      await s.write({ userValue0: 55 });
+      await s.write({ payloadValue0: 55 });
     }
 
     {
       cache.invalidateAll();
       using s = await cache.open();
-      expect(s.userValue0).toBe(55);
+      expect(s.payloadValue0).toBe(55);
     }
   });
 });

@@ -38,7 +38,7 @@ async function withCache<T>(
   cp: string,
   files: Iterable<string> | null,
   opts: { rootPath?: string; version?: number; fingerprint?: Uint8Array | null },
-  run: (session: FileHashCacheSession) => Promise<T> | T
+  run: (session: FileHashCacheSession, cache: FileHashCache) => Promise<T> | T
 ): Promise<T> {
   const cache = new FileHashCache({
     cachePath: cp,
@@ -48,7 +48,7 @@ async function withCache<T>(
     fingerprint: opts.fingerprint,
   });
   using session = await cache.open();
-  return await run(session);
+  return await run(session, cache);
 }
 
 //  - Tests
@@ -240,8 +240,9 @@ describe("FileHashCache change detection [native]", () => {
       });
 
       // Write changes file list from 2 files to 1
-      await withCache(cp, files1, { version: 1 }, async (ctx2) => {
-        await ctx2.write({ files: files2, rootPath: FIXTURE_DIR });
+      await withCache(cp, files1, { version: 1 }, async (ctx2, cache2) => {
+        cache2.configure({ files: files2, rootPath: FIXTURE_DIR });
+        await ctx2.write();
       });
 
       // Verify the updated cache only has 1 file
@@ -257,8 +258,9 @@ describe("FileHashCache change detection [native]", () => {
       const files1 = [fixtureFile("a.txt")];
       const files2 = [fixtureFile("a.txt"), fixtureFile("b.txt"), fixtureFile("c.txt")];
 
-      await withCache(cp, files1, { version: 1 }, async (ctx1) => {
-        await ctx1.write({ files: files2, rootPath: FIXTURE_DIR });
+      await withCache(cp, files1, { version: 1 }, async (ctx1, cache1) => {
+        cache1.configure({ files: files2, rootPath: FIXTURE_DIR });
+        await ctx1.write();
       });
 
       // Verify expanded file list
@@ -275,8 +277,9 @@ describe("FileHashCache change detection [native]", () => {
         await ctx1.write();
       });
 
-      await withCache(cp, files1, { version: 1 }, async (ctx2) => {
-        await ctx2.write({ files: files2, rootPath: FIXTURE_DIR });
+      await withCache(cp, files1, { version: 1 }, async (ctx2, cache2) => {
+        cache2.configure({ files: files2, rootPath: FIXTURE_DIR });
+        await ctx2.write();
       });
 
       const status = await withCache(cp, files2, { version: 1 }, (ctx3) => ctx3.status);
@@ -296,8 +299,9 @@ describe("FileHashCache change detection [native]", () => {
       const sizeWith3 = statSync(cp).size;
 
       // Overwrite with 1 file — must truncate
-      await withCache(cp, files3, { version: 1 }, async (ctx) => {
-        await ctx.write({ files: files1, rootPath: FIXTURE_DIR });
+      await withCache(cp, files3, { version: 1 }, async (ctx, cacheInst) => {
+        cacheInst.configure({ files: files1, rootPath: FIXTURE_DIR });
+        await ctx.write();
       });
       const sizeWith1 = statSync(cp).size;
 

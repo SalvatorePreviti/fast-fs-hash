@@ -307,15 +307,15 @@ describe("stale cache", () => {
     }
   });
 
-  it("stale preserves old payloads on the session", async () => {
+  it("stale preserves old payloadData on the session", async () => {
     const cacheFile = cp();
     const files = [fx("a.txt")];
     const cache = new FileHashCache({ cachePath: cacheFile, files, rootPath: FIXTURE_DIR, version: 1 });
 
-    // Write with payloads
+    // Write with payloadData
     {
       using s = await cache.open();
-      await s.write({ userValue0: 99, userData: [Buffer.from("old-data")] });
+      await s.write({ payloadValue0: 99, payloadData: [Buffer.from("old-data")] });
     }
 
     // Bump version → stale
@@ -324,9 +324,9 @@ describe("stale cache", () => {
       cache.invalidateAll();
       using s = await cache.open();
       expect(s.status).toBe("stale");
-      // Old payloads are still readable from the stale cache
-      expect(s.userValue0).toBe(99);
-      expect(Buffer.from(s.userData[0]).toString()).toBe("old-data");
+      // Old payloadData are still readable from the stale cache
+      expect(s.payloadValue0).toBe(99);
+      expect(Buffer.from(s.payloadData[0]).toString()).toBe("old-data");
     }
   });
 });
@@ -441,24 +441,24 @@ describe("session old properties", () => {
     s.close();
   });
 
-  it("old payloads are zero when cache is missing", async () => {
+  it("old payloadData are zero when cache is missing", async () => {
     const cache = new FileHashCache({ cachePath: cp(), files: [fx("a.txt")], rootPath: FIXTURE_DIR });
     {
       using s = await cache.open();
       expect(s.status).toBe("missing");
-      expect(s.userValue0).toBe(0);
-      expect(s.userValue1).toBe(0);
-      expect(s.userValue2).toBe(0);
-      expect(s.userValue3).toBe(0);
-      expect(s.userData).toHaveLength(0);
+      expect(s.payloadValue0).toBe(0);
+      expect(s.payloadValue1).toBe(0);
+      expect(s.payloadValue2).toBe(0);
+      expect(s.payloadValue3).toBe(0);
+      expect(s.payloadData).toHaveLength(0);
     }
   });
 });
 
-// ── session.write with payloads ──────────────────────────────────────
+// ── session.write with payloadData ──────────────────────────────────────
 
-describe("session payloads", () => {
-  it("set payloads via write argument", async () => {
+describe("session payloadData", () => {
+  it("set payloadData via write argument", async () => {
     const cacheFile = cp();
     const files = [fx("a.txt")];
     const cache = new FileHashCache({ cachePath: cacheFile, files, rootPath: FIXTURE_DIR });
@@ -466,11 +466,11 @@ describe("session payloads", () => {
     {
       using s = await cache.open();
       await s.write({
-        userValue0: 100,
-        userValue1: 200,
-        userValue2: 300,
-        userValue3: 400,
-        userData: [Buffer.from("data1")],
+        payloadValue0: 100,
+        payloadValue1: 200,
+        payloadValue2: 300,
+        payloadValue3: 400,
+        payloadData: [Buffer.from("data1")],
       });
     }
 
@@ -478,22 +478,22 @@ describe("session payloads", () => {
     {
       cache.invalidateAll();
       using s = await cache.open();
-      expect(s.userValue0).toBe(100);
-      expect(s.userValue1).toBe(200);
-      expect(s.userValue2).toBe(300);
-      expect(s.userValue3).toBe(400);
-      expect(s.userData).toHaveLength(1);
-      expect(Buffer.from(s.userData[0]).toString()).toBe("data1");
+      expect(s.payloadValue0).toBe(100);
+      expect(s.payloadValue1).toBe(200);
+      expect(s.payloadValue2).toBe(300);
+      expect(s.payloadValue3).toBe(400);
+      expect(s.payloadData).toHaveLength(1);
+      expect(Buffer.from(s.payloadData[0]).toString()).toBe("data1");
     }
   });
 
-  it("write without payloads preserves old values", async () => {
+  it("write without payloadData preserves old values", async () => {
     const cacheFile = cp();
     const files = [fx("a.txt")];
     const cache = new FileHashCache({ cachePath: cacheFile, files, rootPath: FIXTURE_DIR });
 
-    // Write with payloads
-    await cache.overwrite({ userValue0: 77, userData: [Buffer.from("stored")] });
+    // Write with payloadData
+    await cache.overwrite({ payloadValue0: 77, payloadData: [Buffer.from("stored")] });
 
     // Modify file to trigger a write
     writeFileSync(fx("a.txt"), "aaa v2\n");
@@ -501,35 +501,35 @@ describe("session payloads", () => {
       cache.invalidateAll();
       using s = await cache.open();
       expect(s.status).toBe("changed");
-      expect(s.userValue0).toBe(77);
-      // Write without payloads — old values preserved
+      expect(s.payloadValue0).toBe(77);
+      // Write without payloadData — old values preserved
       await s.write();
     }
 
-    // Verify old payloads survived
+    // Verify old payloadData survived
     {
       cache.invalidateAll();
       using s = await cache.open();
-      expect(s.userValue0).toBe(77);
-      expect(Buffer.from(s.userData[0]).toString()).toBe("stored");
+      expect(s.payloadValue0).toBe(77);
+      expect(Buffer.from(s.payloadData[0]).toString()).toBe("stored");
     }
 
     // Restore
     writeFileSync(fx("a.txt"), "aaa\n");
   });
 
-  it("payloads from disk are readable on open", async () => {
+  it("payloadData from disk are readable on open", async () => {
     const cacheFile = cp();
     const files = [fx("a.txt")];
     const cache = new FileHashCache({ cachePath: cacheFile, files, rootPath: FIXTURE_DIR });
 
-    await cache.overwrite({ userValue0: 77, userData: [Buffer.from("stored")] });
+    await cache.overwrite({ payloadValue0: 77, payloadData: [Buffer.from("stored")] });
 
     {
       cache.invalidateAll();
       using s = await cache.open();
-      expect(s.userValue0).toBe(77);
-      expect(Buffer.from(s.userData[0]).toString()).toBe("stored");
+      expect(s.payloadValue0).toBe(77);
+      expect(Buffer.from(s.payloadData[0]).toString()).toBe("stored");
     }
   });
 });

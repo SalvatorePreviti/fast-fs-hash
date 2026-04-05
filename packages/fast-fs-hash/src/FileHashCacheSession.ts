@@ -12,20 +12,20 @@ import type { CacheStatus, FileHashCache, FileHashCacheWriteOptions } from "./Fi
 import { FileHashCacheEntries } from "./FileHashCacheEntries";
 import {
   H_FINGERPRINT_BYTE,
-  H_USER_VALUE0_BYTE,
-  H_USER_VALUE1_BYTE,
-  H_USER_VALUE2_BYTE,
-  H_USER_VALUE3_BYTE,
+  H_PAYLOAD0_BYTE,
+  H_PAYLOAD1_BYTE,
+  H_PAYLOAD2_BYTE,
+  H_PAYLOAD3_BYTE,
   S_CANCEL_FLAG,
   S_FILE_COUNT,
   S_FINGERPRINT,
   S_FLAGS,
   S_LOCK_TIMEOUT,
+  S_PAYLOAD0,
+  S_PAYLOAD1,
+  S_PAYLOAD2,
+  S_PAYLOAD3,
   S_STATUS,
-  S_USER_VALUE0,
-  S_USER_VALUE1,
-  S_USER_VALUE2,
-  S_USER_VALUE3,
   S_VERSION,
 } from "./file-hash-cache-format";
 import {
@@ -39,7 +39,6 @@ import {
   teardownCancel,
   toAbsolutePaths,
 } from "./file-hash-cache-internal";
-import { encodeNormalizedPaths, normalizeFilePaths } from "./utils";
 
 // ── FileHashCacheSession ─────────────────────────────────────────────
 
@@ -63,17 +62,17 @@ export class FileHashCacheSession {
   /** Root path that was active when this session was opened. */
   public readonly rootPath: string;
 
-  /** User f64 value (slot 0) read from disk. `0` when status is `'missing'`. */
-  public readonly userValue0: number;
+  /** Payload f64 value (slot 0) read from disk. `0` when status is `'missing'`. */
+  public readonly payloadValue0: number;
 
-  /** User f64 value (slot 1) read from disk. `0` when status is `'missing'`. */
-  public readonly userValue1: number;
+  /** Payload f64 value (slot 1) read from disk. `0` when status is `'missing'`. */
+  public readonly payloadValue1: number;
 
-  /** User f64 value (slot 2) read from disk. `0` when status is `'missing'`. */
-  public readonly userValue2: number;
+  /** Payload f64 value (slot 2) read from disk. `0` when status is `'missing'`. */
+  public readonly payloadValue2: number;
 
-  /** User f64 value (slot 3) read from disk. `0` when status is `'missing'`. */
-  public readonly userValue3: number;
+  /** Payload f64 value (slot 3) read from disk. `0` when status is `'missing'`. */
+  public readonly payloadValue3: number;
 
   readonly #cache: FileHashCache;
   /** 0 = open, 1 = writing, 2 = closed */
@@ -82,7 +81,7 @@ export class FileHashCacheSession {
   readonly #stateBuf: Buffer;
   readonly #lockTimeoutMs: number;
   #files: readonly string[] | null;
-  #userData: readonly Buffer[] | null;
+  #payloadData: readonly Buffer[] | null;
   #resolvedEntries: FileHashCacheEntries | null;
 
   /** @internal */
@@ -99,16 +98,16 @@ export class FileHashCacheSession {
     this.#stateBuf = stateBuf;
     this.#lockTimeoutMs = lockTimeoutMs;
     this.#files = null;
-    this.#userData = null;
+    this.#payloadData = null;
     this.#resolvedEntries = null;
 
-    this.status = (STATUS_MAP[stateBuf.readUInt32LE(S_STATUS)] as CacheStatus) ?? "missing";
+    this.status = STATUS_MAP[stateBuf.readUInt32LE(S_STATUS)] ?? "missing";
     this.version = cache.version;
     this.rootPath = openRootPath;
-    this.userValue0 = dataBuf.readDoubleLE(H_USER_VALUE0_BYTE);
-    this.userValue1 = dataBuf.readDoubleLE(H_USER_VALUE1_BYTE);
-    this.userValue2 = dataBuf.readDoubleLE(H_USER_VALUE2_BYTE);
-    this.userValue3 = dataBuf.readDoubleLE(H_USER_VALUE3_BYTE);
+    this.payloadValue0 = dataBuf.readDoubleLE(H_PAYLOAD0_BYTE);
+    this.payloadValue1 = dataBuf.readDoubleLE(H_PAYLOAD1_BYTE);
+    this.payloadValue2 = dataBuf.readDoubleLE(H_PAYLOAD2_BYTE);
+    this.payloadValue3 = dataBuf.readDoubleLE(H_PAYLOAD3_BYTE);
   }
 
   /** The parent {@link FileHashCache} that created this session. */
@@ -136,12 +135,12 @@ export class FileHashCacheSession {
     return this.#cache.fileCount;
   }
 
-  /** Opaque binary payloads read from disk. Empty array if none. Lazily decoded, zero-copy. */
-  public get userData(): readonly Buffer[] {
-    let d = this.#userData;
+  /** Opaque binary payloadData read from disk. Empty array if none. Lazily decoded, zero-copy. */
+  public get payloadData(): readonly Buffer[] {
+    let d = this.#payloadData;
     if (!d) {
       d = readPayloadData(this.#dataBuf);
-      this.#userData = d;
+      this.#payloadData = d;
     }
     return d;
   }
@@ -245,55 +244,21 @@ export class FileHashCacheSession {
   }
 
   /**
-   * Check if calling `write(opts)` would result in changes being written.
-   *
-   * Compares the session status and optional config overrides against the
-   * current cache state. Does not perform I/O.
-   *
-   * @param opts Optional write options to check against.
-   * @returns `true` if write would produce changes, `false` if cache is already up-to-date.
+   * `true` if the cache configuration (files, version, fingerprint) was modified
+   * since this session was opened (via setters or {@link FileHashCache.configure}).
    */
-  public wouldNeedWrite(opts?: FileHashCacheWriteOptions | null): boolean {
-    const s = this.status;
-    if (s !== "upToDate") {
-      return true; // changed, stale, missing, statsDirty, lockFailed all need a write
-    }
-    if (!opts) {
-      return false;
-    }
-    const cache = this.#cache;
-    if (opts.version !== undefined && opts.version !== cache.version) {
-      return true;
-    }
-    if (opts.fingerprint !== undefined) {
-      const newFp = opts.fingerprint;
-      const oldFp = cache.fingerprint;
-      if (newFp !== oldFp) {
-        if (!newFp || !oldFp || newFp.length !== 16 || oldFp.length !== 16) {
-          return true;
-        }
-        if (!Buffer.from(newFp.buffer, newFp.byteOffset, 16).equals(Buffer.from(oldFp.buffer, oldFp.byteOffset, 16))) {
-          return true;
-        }
-      }
-    }
-    if (opts.files !== undefined) {
-      // Compare encoded paths — if the normalized file list differs, write is needed
-      const root = opts.rootPath === true ? null : (opts.rootPath ?? cache.rootPath);
-      if (opts.files === null) {
-        return cache.fileCount > 0;
-      }
-      const normalized = normalizeFilePaths(root || cache.rootPath, opts.files);
-      if (normalized.length !== cache.fileCount) {
-        return true;
-      }
-      const newEncoded = encodeNormalizedPaths(normalized);
-      const oldEncoded = cache._encodedPaths;
-      if (newEncoded.length !== oldEncoded.length || !newEncoded.equals(oldEncoded)) {
-        return true;
-      }
-    }
-    return false;
+  public get configChanged(): boolean {
+    return this.#cache.needsOpen;
+  }
+
+  /**
+   * Check if a write is needed — either because the cache status indicates changes
+   * on disk, or because the cache configuration was modified since this session was opened.
+   *
+   * Equivalent to `session.status !== 'upToDate' || session.configChanged`.
+   */
+  public get wouldNeedWrite(): boolean {
+    return this.status !== "upToDate" || this.#cache.needsOpen;
   }
 
   /**
@@ -317,17 +282,16 @@ export class FileHashCacheSession {
 
     const cache = this.#cache;
     const signal = options?.signal;
-
-    if (options) {
-      cache._applyOptions(options);
-    }
-
-    const p0 = options?.userValue0 ?? this.userValue0;
-    const p1 = options?.userValue1 ?? this.userValue1;
-    const p2 = options?.userValue2 ?? this.userValue2;
-    const p3 = options?.userValue3 ?? this.userValue3;
+    const p0 = options?.payloadValue0 ?? this.payloadValue0;
+    const p1 = options?.payloadValue1 ?? this.payloadValue1;
+    const p2 = options?.payloadValue2 ?? this.payloadValue2;
+    const p3 = options?.payloadValue3 ?? this.payloadValue3;
     const ud =
-      options?.userData !== undefined ? (options.userData ?? null) : this.userData.length > 0 ? this.userData : null;
+      options?.payloadData !== undefined
+        ? (options.payloadData ?? null)
+        : this.payloadData.length > 0
+          ? this.payloadData
+          : null;
     const encoded = cache._encodedPaths;
     const fc = cache.fileCount;
     const root = cache.rootPath;
@@ -340,17 +304,14 @@ export class FileHashCacheSession {
       sb.writeInt32LE(options?.lockTimeoutMs ?? this.#lockTimeoutMs, S_LOCK_TIMEOUT);
       sb.writeUInt32LE(fc, S_FILE_COUNT);
       if (fp) {
-        if (!(fp instanceof Uint8Array) || fp.length !== 16) {
-          throw new TypeError("FileHashCache: fingerprint must be a Uint8Array of exactly 16 bytes");
-        }
         sb.set(fp, S_FINGERPRINT);
       } else {
         sb.fill(0, S_FINGERPRINT, S_FINGERPRINT + 16);
       }
-      sb.writeDoubleLE(p0, S_USER_VALUE0);
-      sb.writeDoubleLE(p1, S_USER_VALUE1);
-      sb.writeDoubleLE(p2, S_USER_VALUE2);
-      sb.writeDoubleLE(p3, S_USER_VALUE3);
+      sb.writeDoubleLE(p0, S_PAYLOAD0);
+      sb.writeDoubleLE(p1, S_PAYLOAD1);
+      sb.writeDoubleLE(p2, S_PAYLOAD2);
+      sb.writeDoubleLE(p3, S_PAYLOAD3);
 
       const cancelCb = setupCancel(sb, signal);
       let result: number;
@@ -367,10 +328,10 @@ export class FileHashCacheSession {
 
     const dataBuf = this.#dataBuf;
 
-    dataBuf.writeDoubleLE(p0, H_USER_VALUE0_BYTE);
-    dataBuf.writeDoubleLE(p1, H_USER_VALUE1_BYTE);
-    dataBuf.writeDoubleLE(p2, H_USER_VALUE2_BYTE);
-    dataBuf.writeDoubleLE(p3, H_USER_VALUE3_BYTE);
+    dataBuf.writeDoubleLE(p0, H_PAYLOAD0_BYTE);
+    dataBuf.writeDoubleLE(p1, H_PAYLOAD1_BYTE);
+    dataBuf.writeDoubleLE(p2, H_PAYLOAD2_BYTE);
+    dataBuf.writeDoubleLE(p3, H_PAYLOAD3_BYTE);
 
     if (fp) {
       if (!(fp instanceof Uint8Array) || fp.length !== 16) {

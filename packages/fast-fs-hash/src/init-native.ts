@@ -65,13 +65,13 @@ export interface BindingExportNative {
     dataBuf: Uint8Array,
     encodedPaths: Uint8Array | null,
     rootPath: string,
-    userData: readonly Uint8Array[] | null | undefined
+    payloadData: readonly Uint8Array[] | null | undefined
   ): Promise<number>;
   cacheWriteNew(
     stateBuf: Uint8Array,
     encodedPaths: Uint8Array,
     rootPath: string,
-    userData: readonly Uint8Array[] | null | undefined
+    payloadData: readonly Uint8Array[] | null | undefined
   ): Promise<number>;
   cacheClose(stateBuf: Uint8Array): boolean;
   cacheIsLocked(cachePath: string): boolean;

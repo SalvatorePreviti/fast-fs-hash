@@ -31,10 +31,13 @@ export const {
   cacheFireCancel,
 } = binding;
 
-export let _emptyBuf: Buffer;
+let _emptyBufCached: Buffer | undefined;
+export function emptyBuf(): Buffer {
+  return (_emptyBufCached ??= bufferAlloc(0));
+}
 let _onceTrue: AddEventListenerOptions;
 
-export const STATUS_MAP: readonly string[] = ["upToDate", "changed", "stale", "missing", "statsDirty", "lockFailed"];
+export const STATUS_MAP = ["upToDate", "changed", "stale", "missing", "statsDirty", "lockFailed"] as const;
 
 // ── Cancel helpers ──────────────────────────────────────────────────
 
@@ -103,7 +106,7 @@ export function toAbsolutePaths(rootPath: string, relativePaths: readonly string
 export function extractEncodedPaths(buf: Buffer, fc: number): Buffer {
   const pathsLen = buf.readUInt32LE(H_PATHS_LEN);
   if (fc <= 0 || pathsLen <= 0) {
-    return (_emptyBuf ??= bufferAlloc(0));
+    return emptyBuf();
   }
   const udItemCount = buf.readUInt32LE(H_UD_ITEM_COUNT);
   const pathEndsStart = HEADER_SIZE + fc * ENTRY_STRIDE + udItemCount * 4;
@@ -143,7 +146,7 @@ export function decodeEncodedPaths(encoded: Buffer, fc: number): string[] {
   return result;
 }
 
-/** Read user-data payload buffers from a dataBuf. Returns zero-copy slices. */
+/** Read payload data buffers from a dataBuf. Returns zero-copy slices. */
 export function readPayloadData(dataBuf: Buffer): readonly Buffer[] {
   const fc = dataBuf.readUInt32LE(H_FILE_COUNT);
   const pathsLen = dataBuf.readUInt32LE(H_PATHS_LEN);
@@ -164,7 +167,7 @@ export function readPayloadData(dataBuf: Buffer): readonly Buffer[] {
     const end = dataBuf.readUInt32LE(udDirStart + i * 4);
     const size = end - prevEnd;
     if (size <= 0) {
-      result[i] = _emptyBuf ??= bufferAlloc(0);
+      result[i] = emptyBuf();
     } else {
       result[i] = dataBuf.subarray(udPayloadsStart + prevEnd, udPayloadsStart + end);
     }

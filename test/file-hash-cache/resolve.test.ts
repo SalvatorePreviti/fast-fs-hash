@@ -1,5 +1,5 @@
 /**
- * Tests: session.resolve() and session.wouldNeedWrite().
+ * Tests: session.resolve() and session.wouldNeedWrite.
  */
 
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -236,14 +236,14 @@ describe("session.resolve()", () => {
   });
 });
 
-describe("session.wouldNeedWrite()", () => {
+describe("session.wouldNeedWrite", () => {
   it("returns true when status is missing", async () => {
     const files = [fx("a.txt")];
     const cache = new FileHashCache({ cachePath: cp(), files, rootPath: FIXTURE_DIR });
 
     using session = await cache.open();
     expect(session.status).toBe("missing");
-    expect(session.wouldNeedWrite()).toBe(true);
+    expect(session.wouldNeedWrite).toBe(true);
   });
 
   it("returns false when status is upToDate and no options", async () => {
@@ -258,7 +258,7 @@ describe("session.wouldNeedWrite()", () => {
     cache.invalidateAll();
     using session = await cache.open();
     expect(session.status).toBe("upToDate");
-    expect(session.wouldNeedWrite()).toBe(false);
+    expect(session.wouldNeedWrite).toBe(false);
   });
 
   it("returns true when status is upToDate but version changes", async () => {
@@ -272,8 +272,10 @@ describe("session.wouldNeedWrite()", () => {
 
     cache.invalidateAll();
     using session = await cache.open();
-    expect(session.wouldNeedWrite({ version: 2 })).toBe(true);
-    expect(session.wouldNeedWrite({ version: 1 })).toBe(false);
+    cache.configure({ version: 2 });
+    expect(session.wouldNeedWrite).toBe(true);
+    cache.configure({ version: 1 });
+    expect(session.wouldNeedWrite).toBe(false);
   });
 
   it("returns false when same files, true when different files", async () => {
@@ -287,9 +289,13 @@ describe("session.wouldNeedWrite()", () => {
 
     cache.invalidateAll();
     using session = await cache.open();
-    expect(session.wouldNeedWrite({ files: [fx("a.txt")] })).toBe(false);
-    expect(session.wouldNeedWrite({ files: [fx("a.txt"), fx("b.txt")] })).toBe(true);
-    expect(session.wouldNeedWrite({ files: [fx("b.txt")] })).toBe(true);
+    // Same files as written — should not need write
+    expect(session.wouldNeedWrite).toBe(false);
+    // Change to different files — should need write
+    cache.configure({ files: [fx("a.txt"), fx("b.txt")] });
+    expect(session.wouldNeedWrite).toBe(true);
+    cache.configure({ files: [fx("b.txt")] });
+    expect(session.wouldNeedWrite).toBe(true);
   });
 
   it("returns true when status is changed", async () => {
@@ -305,7 +311,7 @@ describe("session.wouldNeedWrite()", () => {
     cache.invalidateAll();
     using session = await cache.open();
     expect(session.status).toBe("changed");
-    expect(session.wouldNeedWrite()).toBe(true);
+    expect(session.wouldNeedWrite).toBe(true);
 
     writeFileSync(fx("a.txt"), "aaa\n");
   });

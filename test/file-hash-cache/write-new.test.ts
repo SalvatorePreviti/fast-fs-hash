@@ -150,13 +150,13 @@ describe("FileHashCache.overwrite [native]", () => {
       }
     });
 
-    it("fingerprint must be 16 bytes", async () => {
+    it("fingerprint must be 16 bytes", () => {
       const cp = cachePath("fp-bad");
       const files = [fixtureFile("a.txt")];
 
-      await expect(
-        new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, fingerprint: new Uint8Array(8) }).overwrite()
-      ).rejects.toThrow("16 bytes");
+      expect(
+        () => new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, fingerprint: new Uint8Array(8) })
+      ).toThrow("16 bytes");
     });
   });
 
@@ -168,19 +168,19 @@ describe("FileHashCache.overwrite [native]", () => {
       const files = [fixtureFile("a.txt")];
 
       await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite({
-        userValue0: 10,
-        userValue1: 20,
-        userValue2: 30,
-        userValue3: 40,
+        payloadValue0: 10,
+        payloadValue1: 20,
+        payloadValue2: 30,
+        payloadValue3: 40,
       });
 
       {
         using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
         expect(ctx.status).toBe("upToDate");
-        expect(ctx.userValue0).toBe(10);
-        expect(ctx.userValue1).toBe(20);
-        expect(ctx.userValue2).toBe(30);
-        expect(ctx.userValue3).toBe(40);
+        expect(ctx.payloadValue0).toBe(10);
+        expect(ctx.payloadValue1).toBe(20);
+        expect(ctx.payloadValue2).toBe(30);
+        expect(ctx.payloadValue3).toBe(40);
       }
     });
 
@@ -192,10 +192,10 @@ describe("FileHashCache.overwrite [native]", () => {
 
       {
         using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
-        expect(ctx.userValue0).toBe(0);
-        expect(ctx.userValue1).toBe(0);
-        expect(ctx.userValue2).toBe(0);
-        expect(ctx.userValue3).toBe(0);
+        expect(ctx.payloadValue0).toBe(0);
+        expect(ctx.payloadValue1).toBe(0);
+        expect(ctx.payloadValue2).toBe(0);
+        expect(ctx.payloadValue3).toBe(0);
       }
     });
   });
@@ -203,47 +203,47 @@ describe("FileHashCache.overwrite [native]", () => {
   //  - user data
 
   describe("user data", () => {
-    it("writes single userData item", async () => {
+    it("writes single payloadData item", async () => {
       const cp = cachePath("ud-single");
       const files = [fixtureFile("a.txt")];
 
       await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite({
-        userData: [Buffer.from("test payload")],
+        payloadData: [Buffer.from("test payload")],
       });
 
       {
         using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
         expect(ctx.status).toBe("upToDate");
-        expect(ctx.userData.length).toBe(1);
-        expect(ctx.userData[0].toString()).toBe("test payload");
+        expect(ctx.payloadData.length).toBe(1);
+        expect(ctx.payloadData[0].toString()).toBe("test payload");
       }
     });
 
-    it("writes multiple userData items", async () => {
+    it("writes multiple payloadData items", async () => {
       const cp = cachePath("ud-multi");
       const files = [fixtureFile("a.txt")];
       const items = [Buffer.from("first"), Buffer.from("second item"), Buffer.from("third")];
 
-      await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite({ userData: items });
+      await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite({ payloadData: items });
 
       {
         using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
-        expect(ctx.userData.length).toBe(3);
+        expect(ctx.payloadData.length).toBe(3);
         for (let i = 0; i < 3; i++) {
-          expect(ctx.userData[i].toString()).toBe(items[i].toString());
+          expect(ctx.payloadData[i].toString()).toBe(items[i].toString());
         }
       }
     });
 
-    it("null userData produces no user data items", async () => {
+    it("null payloadData produces no user data items", async () => {
       const cp = cachePath("ud-null");
       const files = [fixtureFile("a.txt")];
 
-      await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite({ userData: null });
+      await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite({ payloadData: null });
 
       {
         using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
-        expect(ctx.userData.length).toBe(0);
+        expect(ctx.payloadData.length).toBe(0);
       }
     });
 
@@ -253,12 +253,12 @@ describe("FileHashCache.overwrite [native]", () => {
       const utf8Str = "日本語テスト 🚀 émojis";
 
       await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite({
-        userData: [Buffer.from(utf8Str)],
+        payloadData: [Buffer.from(utf8Str)],
       });
 
       {
         using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
-        expect(ctx.userData[0].toString("utf8")).toBe(utf8Str);
+        expect(ctx.payloadData[0].toString("utf8")).toBe(utf8Str);
       }
     });
 
@@ -267,15 +267,15 @@ describe("FileHashCache.overwrite [native]", () => {
       const files = [fixtureFile("a.txt")];
 
       await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite({
-        userData: [Buffer.alloc(0), Buffer.from("non-empty"), Buffer.alloc(0)],
+        payloadData: [Buffer.alloc(0), Buffer.from("non-empty"), Buffer.alloc(0)],
       });
 
       {
         using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
-        expect(ctx.userData.length).toBe(3);
-        expect(ctx.userData[0].length).toBe(0);
-        expect(ctx.userData[1].toString()).toBe("non-empty");
-        expect(ctx.userData[2].length).toBe(0);
+        expect(ctx.payloadData.length).toBe(3);
+        expect(ctx.payloadData[0].length).toBe(0);
+        expect(ctx.payloadData[1].toString()).toBe("non-empty");
+        expect(ctx.payloadData[2].length).toBe(0);
       }
     });
   });
@@ -290,21 +290,21 @@ describe("FileHashCache.overwrite [native]", () => {
       // Seed via open+write with userValue
       {
         using ctx1 = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
-        await ctx1.write({ userValue0: 42, userData: [Buffer.from("old")] });
+        await ctx1.write({ payloadValue0: 42, payloadData: [Buffer.from("old")] });
       }
 
       // Overwrite via overwrite with different options
       await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 2 }).overwrite({
-        userValue0: 99,
-        userData: [Buffer.from("new")],
+        payloadValue0: 99,
+        payloadData: [Buffer.from("new")],
       });
 
       {
         using ctx2 = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 2 }).open();
         expect(ctx2.status).toBe("upToDate");
-        expect(ctx2.userValue0).toBe(99);
-        expect(ctx2.userData.length).toBe(1);
-        expect(ctx2.userData[0].toString()).toBe("new");
+        expect(ctx2.payloadValue0).toBe(99);
+        expect(ctx2.payloadData.length).toBe(1);
+        expect(ctx2.payloadData[0].toString()).toBe("new");
       }
 
       // Old version → stale
@@ -355,11 +355,11 @@ describe("FileHashCache.overwrite [native]", () => {
       const fp = new Uint8Array(16).fill(0x42);
 
       await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 7, fingerprint: fp }).overwrite({
-        userValue0: 100,
-        userValue1: 200,
-        userValue2: 300,
-        userValue3: 400,
-        userData: [Buffer.from("alpha"), Buffer.from("beta")],
+        payloadValue0: 100,
+        payloadValue1: 200,
+        payloadValue2: 300,
+        payloadValue3: 400,
+        payloadData: [Buffer.from("alpha"), Buffer.from("beta")],
       });
 
       {
@@ -372,13 +372,13 @@ describe("FileHashCache.overwrite [native]", () => {
         }).open();
         expect(ctx.status).toBe("upToDate");
         expect(ctx.fileCount).toBe(2);
-        expect(ctx.userValue0).toBe(100);
-        expect(ctx.userValue1).toBe(200);
-        expect(ctx.userValue2).toBe(300);
-        expect(ctx.userValue3).toBe(400);
-        expect(ctx.userData.length).toBe(2);
-        expect(ctx.userData[0].toString()).toBe("alpha");
-        expect(ctx.userData[1].toString()).toBe("beta");
+        expect(ctx.payloadValue0).toBe(100);
+        expect(ctx.payloadValue1).toBe(200);
+        expect(ctx.payloadValue2).toBe(300);
+        expect(ctx.payloadValue3).toBe(400);
+        expect(ctx.payloadData.length).toBe(2);
+        expect(ctx.payloadData[0].toString()).toBe("alpha");
+        expect(ctx.payloadData[1].toString()).toBe("beta");
       }
     });
   });
@@ -450,24 +450,24 @@ describe("FileHashCache.overwrite [native]", () => {
 
       // Initialize via overwrite
       await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).overwrite({
-        userData: [Buffer.from("initial data")],
+        payloadData: [Buffer.from("initial data")],
       });
 
       // Open and validate
       {
         using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
         expect(ctx.status).toBe("upToDate");
-        expect(ctx.userData[0].toString()).toBe("initial data");
+        expect(ctx.payloadData[0].toString()).toBe("initial data");
 
-        // Update userData via instance write
-        await ctx.write({ userData: [Buffer.from("updated data")] });
+        // Update payloadData via instance write
+        await ctx.write({ payloadData: [Buffer.from("updated data")] });
       }
 
       // Verify the update persisted
       {
         using ctx2 = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
         expect(ctx2.status).toBe("upToDate");
-        expect(ctx2.userData[0].toString()).toBe("updated data");
+        expect(ctx2.payloadData[0].toString()).toBe("updated data");
       }
     });
   });
@@ -481,7 +481,7 @@ describe("FileHashCache.overwrite [native]", () => {
 
       for (let i = 0; i < 3; i++) {
         const ok = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite({
-          userValue0: i,
+          payloadValue0: i,
         });
         expect(ok).toBe(true);
       }
@@ -489,7 +489,7 @@ describe("FileHashCache.overwrite [native]", () => {
       {
         using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
         expect(ctx.status).toBe("upToDate");
-        expect(ctx.userValue0).toBe(2); // last write wins
+        expect(ctx.payloadValue0).toBe(2); // last write wins
       }
     });
   });

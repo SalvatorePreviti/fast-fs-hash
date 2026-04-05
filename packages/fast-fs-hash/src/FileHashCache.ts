@@ -23,21 +23,21 @@ import {
   S_FILE_HANDLE,
   S_FINGERPRINT,
   S_LOCK_TIMEOUT,
-  S_USER_VALUE0,
-  S_USER_VALUE1,
-  S_USER_VALUE2,
-  S_USER_VALUE3,
+  S_PAYLOAD0,
+  S_PAYLOAD1,
+  S_PAYLOAD2,
+  S_PAYLOAD3,
   S_VERSION,
   STATE_HEADER_SIZE,
 } from "./file-hash-cache-format";
 import {
-  _emptyBuf,
   cacheIsLocked,
   cacheOpen,
   cacheStatHash,
   cacheWaitUnlocked,
   cacheWriteNew,
   decodeEncodedPaths,
+  emptyBuf,
   extractEncodedPaths,
   setupCancel,
   teardownCancel,
@@ -83,34 +83,43 @@ export interface FileHashCacheOptions {
 }
 
 /**
+ * Options for {@link FileHashCache.configure} — sets cache configuration.
+ * All fields are optional. Omitted fields keep the current value.
+ */
+export interface FileHashCacheConfigOptions {
+  /** Override cache version (u32). */
+  version?: number;
+  /** Override fingerprint (16 bytes, or `null` to clear). */
+  fingerprint?: Uint8Array | null;
+  /** Override root path. Pass `true` to auto-detect from files. Pass `null` to clear. */
+  rootPath?: string | true | null;
+  /** Override file list. Pass `null` to clear. */
+  files?: Iterable<string> | null;
+  /** Override lock acquisition timeout in ms. */
+  lockTimeoutMs?: number;
+}
+
+/**
  * Options for {@link FileHashCacheSession.write} and {@link FileHashCache.overwrite}.
  *
- * All fields are optional. When passed to `write()` or `overwrite()`, the values
- * are applied to the parent {@link FileHashCache} first (updating version, fingerprint,
- * rootPath, files) and then written to disk. Omitted fields keep the current value.
+ * Contains only per-write data (user values, payloadData, signal).
+ * To change files, version, fingerprint, or rootPath, use {@link FileHashCache.configure}
+ * or the corresponding setters before calling write.
  */
 export interface FileHashCacheWriteOptions {
-  /** Override cache version (u32). Applied to the cache before writing. */
-  version?: number;
-  /** Override fingerprint (16 bytes). Applied to the cache before writing. */
-  fingerprint?: Uint8Array | null;
-  /** Override root path. Pass `true` to auto-detect from files. Applied to the cache before writing. */
-  rootPath?: string | true;
-  /** Override file list. Applied to the cache before writing. */
-  files?: Iterable<string> | null;
-  /** User f64 value (slot 0). Default: preserves old value (or `0` for overwrite). */
-  userValue0?: number;
-  /** User f64 value (slot 1). Default: preserves old value (or `0` for overwrite). */
-  userValue1?: number;
-  /** User f64 value (slot 2). Default: preserves old value (or `0` for overwrite). */
-  userValue2?: number;
-  /** User f64 value (slot 3). Default: preserves old value (or `0` for overwrite). */
-  userValue3?: number;
+  /** Payload f64 value (slot 0). Default: preserves old value (or `0` for overwrite). */
+  payloadValue0?: number;
+  /** Payload f64 value (slot 1). Default: preserves old value (or `0` for overwrite). */
+  payloadValue1?: number;
+  /** Payload f64 value (slot 2). Default: preserves old value (or `0` for overwrite). */
+  payloadValue2?: number;
+  /** Payload f64 value (slot 3). Default: preserves old value (or `0` for overwrite). */
+  payloadValue3?: number;
   /** Opaque binary payloads stored alongside the cache. Default: preserves old value (or `null` for overwrite). */
-  userData?: readonly Uint8Array[] | null;
+  payloadData?: readonly Uint8Array[] | null;
   /** Optional AbortSignal to cancel the hash phase. */
   signal?: AbortSignal | null;
-  /** Lock acquisition timeout in ms (used by overwrite). `-1` = block forever, `0` = non-blocking. */
+  /** Lock acquisition timeout in ms (overwrite/lockFailed only). `-1` = block forever, `0` = non-blocking. */
   lockTimeoutMs?: number;
 }
 
@@ -152,7 +161,7 @@ export type FileHashCachePayloads = FileHashCacheWriteOptions;
 export class FileHashCache {
   #rootPath: string;
   #version: number;
-  #fingerprint: Uint8Array | null;
+  #fingerprint: Uint8Array | null = null;
   #lockTimeoutMs: number;
 
   /** NUL-separated encoded paths (relative) for C++. Source of truth for file identity. */
@@ -190,8 +199,9 @@ export class FileHashCache {
     const { cachePath, files, rootPath: rootPathOpt, version, fingerprint, lockTimeoutMs } = options;
     const rootPath = rootPathOpt ?? null;
     this.#version = (version ?? 0) >>> 0;
-    this.#fingerprint = fingerprint ?? null;
     this.#lockTimeoutMs = lockTimeoutMs ?? -1;
+    // Use setter for validation
+    this.fingerprint = fingerprint ?? null;
 
     let resolvedCachePath: string;
     if (files) {
@@ -212,7 +222,7 @@ export class FileHashCache {
         resolvedCachePath = pathResolve(root, cachePath);
       }
       this.#absoluteFiles = null;
-      this.#encodedPaths = _emptyBuf ?? bufferAlloc(0);
+      this.#encodedPaths = emptyBuf();
       this.#fileCount = 0;
     }
 
@@ -244,12 +254,15 @@ export class FileHashCache {
     return this.#cachePath;
   }
 
-  /** Root path used for file path resolution. */
+  /**
+   * Root path used for file path resolution.
+   * Set to `null` or `""` to auto-detect from files on next open.
+   */
   public get rootPath(): string {
     return this.#rootPath;
   }
-  public set rootPath(value: string) {
-    const root = resolveDir(value);
+  public set rootPath(value: string | null) {
+    const root = value ? resolveDir(value) : "";
     if (root === this.#rootPath) {
       return;
     }
@@ -264,14 +277,19 @@ export class FileHashCache {
     return this.#version;
   }
   public set version(value: number) {
-    this.#version = (value ?? 0) >>> 0;
+    this.#version = value >>> 0;
   }
 
-  /** 16-byte fingerprint for fast cache rejection. */
+  /** 16-byte fingerprint for fast cache rejection. Must be exactly 16 bytes or `null`. */
   public get fingerprint(): Uint8Array | null {
     return this.#fingerprint;
   }
   public set fingerprint(value: Uint8Array | null) {
+    if (value != null) {
+      if (!(value instanceof Uint8Array) || value.length !== 16) {
+        throw new TypeError("FileHashCache: fingerprint must be a Uint8Array of exactly 16 bytes");
+      }
+    }
     this.#fingerprint = value ?? null;
   }
 
@@ -280,7 +298,7 @@ export class FileHashCache {
     return this.#lockTimeoutMs;
   }
   public set lockTimeoutMs(value: number) {
-    this.#lockTimeoutMs = value ?? -1;
+    this.#lockTimeoutMs = value;
   }
 
   /**
@@ -314,7 +332,7 @@ export class FileHashCache {
       this.#fileCount = normalized.length;
     } else {
       this.#absoluteFiles = null;
-      this.#encodedPaths = _emptyBuf ?? bufferAlloc(0);
+      this.#encodedPaths = emptyBuf();
       this.#fileCount = 0;
     }
     this.#dirtyAll = true;
@@ -417,22 +435,19 @@ export class FileHashCache {
     sb.writeUInt32LE(fc, S_FILE_COUNT);
 
     if (fp) {
-      if (!(fp instanceof Uint8Array) || fp.length !== 16) {
-        throw new TypeError("FileHashCache: fingerprint must be a Uint8Array of exactly 16 bytes");
-      }
       sb.set(fp, S_FINGERPRINT);
     } else {
       sb.fill(0, S_FINGERPRINT, S_FINGERPRINT + 16);
     }
   }
 
-  /** Write user values into stateBuf (for writeNew/overwrite). */
-  #syncUserValues(uv0: number, uv1: number, uv2: number, uv3: number): void {
+  /** Write payload values into stateBuf (for writeNew/overwrite). */
+  #syncPayloads(uv0: number, uv1: number, uv2: number, uv3: number): void {
     const sb = this.#stateBuf;
-    sb.writeDoubleLE(uv0, S_USER_VALUE0);
-    sb.writeDoubleLE(uv1, S_USER_VALUE1);
-    sb.writeDoubleLE(uv2, S_USER_VALUE2);
-    sb.writeDoubleLE(uv3, S_USER_VALUE3);
+    sb.writeDoubleLE(uv0, S_PAYLOAD0);
+    sb.writeDoubleLE(uv1, S_PAYLOAD1);
+    sb.writeDoubleLE(uv2, S_PAYLOAD2);
+    sb.writeDoubleLE(uv3, S_PAYLOAD3);
   }
 
   /**
@@ -465,7 +480,7 @@ export class FileHashCache {
         dirtyBuf = encodeNormalizedPaths(dirtyArray);
         dirtyCount = dirtyArray.length;
       } else if (!dp) {
-        dirtyBuf = _emptyBuf ?? bufferAlloc(0);
+        dirtyBuf = emptyBuf();
       }
     }
 
@@ -509,32 +524,32 @@ export class FileHashCache {
   /**
    * Write a brand-new cache file without reading the old one.
    *
-   * @param options Optional write options (version, fingerprint, files, payloads, signal, etc.).
+   * Uses the current cache configuration (files, version, fingerprint, rootPath).
+   * Call {@link configure} or set properties before calling this method.
+   *
+   * @param options Optional write options (payload values, payload data, signal, lockTimeoutMs).
    */
   public async overwrite(options?: FileHashCacheWriteOptions | null): Promise<boolean> {
     await this.#acquire();
     try {
       this.#activeSession?.close();
-      if (options) {
-        this._applyOptions(options);
-      }
       const fc = this.#fileCount;
       if (this.#absoluteFiles === null && fc === 0) {
         throw new Error("FileHashCache: files must be set before calling overwrite");
       }
       this.#syncStateBuf();
-      this.#syncUserValues(
-        options?.userValue0 ?? 0,
-        options?.userValue1 ?? 0,
-        options?.userValue2 ?? 0,
-        options?.userValue3 ?? 0
+      this.#syncPayloads(
+        options?.payloadValue0 ?? 0,
+        options?.payloadValue1 ?? 0,
+        options?.payloadValue2 ?? 0,
+        options?.payloadValue3 ?? 0
       );
       const sb = this.#stateBuf;
       if (options?.lockTimeoutMs !== undefined) {
         sb.writeInt32LE(options.lockTimeoutMs, S_LOCK_TIMEOUT);
       }
       const sig = options?.signal;
-      const ud = options?.userData ?? null;
+      const ud = options?.payloadData ?? null;
       const cancelCb = setupCancel(sb, sig);
       let result: number;
       try {
@@ -577,14 +592,21 @@ export class FileHashCache {
     }
   }
 
-  /** @internal Apply options to this cache instance. */
-  public _applyOptions(opts: FileHashCacheWriteOptions): void {
+  /**
+   * Set multiple configuration options at once.
+   *
+   * Equivalent to setting individual properties (version, fingerprint, files, rootPath, lockTimeoutMs).
+   * Can be called between `open()` and `write()` to change what gets written.
+   *
+   * @param opts Configuration options. Omitted fields keep the current value.
+   */
+  public configure(opts: FileHashCacheConfigOptions): void {
     const rp = opts.rootPath;
     if (rp !== undefined) {
       if (rp === true) {
         const files = opts.files;
         if (files) {
-          this.#rootPath = resolveRoot(null, files, true);
+          this.rootPath = resolveRoot(null, files, true);
         }
       } else {
         this.rootPath = rp;
@@ -598,6 +620,9 @@ export class FileHashCache {
     }
     if (opts.files !== undefined) {
       this.files = opts.files;
+    }
+    if (opts.lockTimeoutMs !== undefined) {
+      this.lockTimeoutMs = opts.lockTimeoutMs;
     }
   }
 

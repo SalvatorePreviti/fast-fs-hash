@@ -14,7 +14,7 @@
  * [udDir: udItemCount × 4 bytes]
  * [pathEnds: fileCount × 4 bytes]
  * [paths: pathsLen bytes]
- * [user data payloads]
+ * [user data payloadData]
  * ```
  *
  * ### CacheStateBuf
@@ -44,22 +44,22 @@ export const H_UD_ITEM_COUNT = 12;
 /** Header byte 16: Fingerprint (16 bytes xxHash3-128, or all-zero). */
 export const H_FINGERPRINT_BYTE = 16;
 
-/** Header byte 32: userValue0 (f64 LE). */
-export const H_USER_VALUE0_BYTE = 32;
+/** Header byte 32: payloadValue0 (f64 LE). */
+export const H_PAYLOAD0_BYTE = 32;
 
-/** Header byte 40: userValue1 (f64 LE). */
-export const H_USER_VALUE1_BYTE = 40;
+/** Header byte 40: payloadValue1 (f64 LE). */
+export const H_PAYLOAD1_BYTE = 40;
 
-/** Header byte 48: userValue2 (f64 LE). */
-export const H_USER_VALUE2_BYTE = 48;
+/** Header byte 48: payloadValue2 (f64 LE). */
+export const H_PAYLOAD2_BYTE = 48;
 
-/** Header byte 56: userValue3 (f64 LE). */
-export const H_USER_VALUE3_BYTE = 56;
+/** Header byte 56: payloadValue3 (f64 LE). */
+export const H_PAYLOAD3_BYTE = 56;
 
 /** Header byte 64: Byte length of the packed paths section (u32). */
 export const H_PATHS_LEN = 64;
 
-/** Header byte 68: Total byte length of user data payloads (u32). */
+/** Header byte 68: Total byte length of user data payloadData (u32). */
 export const H_UD_PAYLOADS_LEN = 68;
 
 /** Fixed byte size of each file entry (48 bytes, 16-byte aligned). */
@@ -94,17 +94,17 @@ export const S_CACHE_STAT0 = 32;
 /** State byte 40: cacheFileStat1 (f64, C++→JS). */
 export const S_CACHE_STAT1 = 40;
 
-/** State byte 48: userValue0 (f64, JS→C++). */
-export const S_USER_VALUE0 = 48;
+/** State byte 48: payloadValue0 (f64, JS→C++). */
+export const S_PAYLOAD0 = 48;
 
-/** State byte 56: userValue1 (f64, JS→C++). */
-export const S_USER_VALUE1 = 56;
+/** State byte 56: payloadValue1 (f64, JS→C++). */
+export const S_PAYLOAD1 = 56;
 
-/** State byte 64: userValue2 (f64, JS→C++). */
-export const S_USER_VALUE2 = 64;
+/** State byte 64: payloadValue2 (f64, JS→C++). */
+export const S_PAYLOAD2 = 64;
 
-/** State byte 72: userValue3 (f64, JS→C++). */
-export const S_USER_VALUE3 = 72;
+/** State byte 72: payloadValue3 (f64, JS→C++). */
+export const S_PAYLOAD3 = 72;
 
 /** State byte 80: cancelFlag (u32, JS↔C++). */
 export const S_CANCEL_FLAG = 80;

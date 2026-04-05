@@ -282,8 +282,9 @@ describe("write({ files }) updates same cache instance", () => {
       expect(s.status).toBe("upToDate");
       expect(cache.fileCount).toBe(1);
 
-      // Pass new files through write options (not cache.files setter)
-      await s.write({ files: filesV2, rootPath: FIXTURE_DIR });
+      // Pass new files through configure (not cache.files setter)
+      cache.configure({ files: filesV2, rootPath: FIXTURE_DIR });
+      await s.write();
     }
 
     // Re-open same cache instance — should see v2 files
@@ -314,7 +315,8 @@ describe("write({ files }) updates same cache instance", () => {
       cache.invalidateAll();
       const s = await cache.open();
       expect(s.status).toBe("upToDate");
-      await s.write({ files: filesV2, rootPath: FIXTURE_DIR });
+      cache.configure({ files: filesV2, rootPath: FIXTURE_DIR });
+      await s.write();
     }
 
     // Re-open — should be upToDate with 1 file
@@ -327,7 +329,7 @@ describe("write({ files }) updates same cache instance", () => {
     }
   });
 
-  it("write({ files, userValue0, userData }) all together on same instance", async () => {
+  it("write({ files, payloadValue0, payloadData }) all together on same instance", async () => {
     const cacheFile = cp();
     const filesV1 = [fx("a.txt")];
     const filesV2 = [fx("a.txt"), fx("b.txt")];
@@ -336,20 +338,19 @@ describe("write({ files }) updates same cache instance", () => {
     // Seed
     {
       using s = await cache.open();
-      await s.write({ userValue0: 10, userData: [Buffer.from("initial")] });
+      await s.write({ payloadValue0: 10, payloadData: [Buffer.from("initial")] });
     }
 
     // Write with new files + new user values via options
     {
       cache.invalidateAll();
       const s = await cache.open();
-      expect(s.userValue0).toBe(10);
-      expect(s.userData[0].toString()).toBe("initial");
+      expect(s.payloadValue0).toBe(10);
+      expect(s.payloadData[0].toString()).toBe("initial");
+      cache.configure({ files: filesV2, rootPath: FIXTURE_DIR });
       await s.write({
-        files: filesV2,
-        rootPath: FIXTURE_DIR,
-        userValue0: 99,
-        userData: [Buffer.from("updated")],
+        payloadValue0: 99,
+        payloadData: [Buffer.from("updated")],
       });
     }
 
@@ -360,9 +361,9 @@ describe("write({ files }) updates same cache instance", () => {
       expect(s.status).toBe("upToDate");
       expect(cache.fileCount).toBe(2);
       expect(s.fileCount).toBe(2);
-      expect(s.userValue0).toBe(99);
-      expect(s.userData.length).toBe(1);
-      expect(s.userData[0].toString()).toBe("updated");
+      expect(s.payloadValue0).toBe(99);
+      expect(s.payloadData.length).toBe(1);
+      expect(s.payloadData[0].toString()).toBe("updated");
     }
   });
 
@@ -376,11 +377,12 @@ describe("write({ files }) updates same cache instance", () => {
       await s.write();
     }
 
-    // Cycle 2: expand to 3 files via write options
+    // Cycle 2: expand to 3 files via configure
     {
       cache.invalidateAll();
       const s = await cache.open();
-      await s.write({ files: [fx("a.txt"), fx("b.txt"), fx("c.txt")], rootPath: FIXTURE_DIR });
+      cache.configure({ files: [fx("a.txt"), fx("b.txt"), fx("c.txt")], rootPath: FIXTURE_DIR });
+      await s.write();
     }
     expect(cache.fileCount).toBe(3);
 
@@ -392,11 +394,12 @@ describe("write({ files }) updates same cache instance", () => {
       expect(s.fileCount).toBe(3);
     }
 
-    // Cycle 4: shrink to 2 files via write options
+    // Cycle 4: shrink to 2 files via configure
     {
       cache.invalidateAll();
       const s = await cache.open();
-      await s.write({ files: [fx("a.txt"), fx("c.txt")], rootPath: FIXTURE_DIR });
+      cache.configure({ files: [fx("a.txt"), fx("c.txt")], rootPath: FIXTURE_DIR });
+      await s.write();
     }
     expect(cache.fileCount).toBe(2);
 
