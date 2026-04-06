@@ -433,17 +433,31 @@ jobs:
       - name: Dry-run publish (verify all packages)
         shell: bash
         run: |
+          # Derive --tag flag: prerelease versions (e.g. 1.0.0-rc.1) use the
+          # pre-release identifier ("rc") as the dist-tag; stable versions
+          # use "latest" (npm's default, but we pass it explicitly).
+          version=$(node -p "require('./package.json').version")
+          if [[ "$version" == *-* ]]; then
+            # Extract identifier before any dot/digit suffix: rc.1 -> rc, beta.2 -> beta, alpha -> alpha
+            pre="${version#*-}"
+            pre="${pre%%[.0-9]*}"
+            tag_flag="--tag ${pre:-next}"
+            echo "Pre-release detected (${version}) — using: ${tag_flag}"
+          else
+            tag_flag="--tag latest"
+          fi
+
           echo "── Dry-run: verifying all packages can be published ──"
           for dir in npm/*/; do
             pkg_name=$(node -p "require('./${dir}/package.json').name")
             pkg_version=$(node -p "require('./${dir}/package.json').version")
             echo "  📦 ${pkg_name}@${pkg_version} ..."
-            npm publish "$dir" --dry-run --access public 2>&1 | tail -5
+            npm publish "$dir" --dry-run --access public $tag_flag 2>&1 | tail -5
           done
           pkg_name=$(node -p "require('./packages/fast-fs-hash/package.json').name")
           pkg_version=$(node -p "require('./packages/fast-fs-hash/package.json').version")
           echo "  📦 ${pkg_name}@${pkg_version} ..."
-          npm publish packages/fast-fs-hash --dry-run --access public 2>&1 | tail -5
+          npm publish ./packages/fast-fs-hash --dry-run --access public $tag_flag 2>&1 | tail -5
           echo "── Dry-run passed ──"
 
       - name: Upload publish-ready packages
@@ -512,6 +526,17 @@ jobs:
       - name: Publish all packages
         shell: bash
         run: |
+          # Derive --tag flag (same logic as dry-run)
+          version=$(node -p "require('./package.json').version")
+          if [[ "$version" == *-* ]]; then
+            pre="${version#*-}"
+            pre="${pre%%[.0-9]*}"
+            tag_flag="--tag ${pre:-next}"
+            echo "Pre-release detected (${version}) — using: ${tag_flag}"
+          else
+            tag_flag="--tag latest"
+          fi
+
           publish_pkg() {
             local dir="$1"
             local pkg_name pkg_version
@@ -524,7 +549,7 @@ jobs:
             fi
 
             echo "📦 Publishing ${pkg_name}@${pkg_version}..."
-            npm publish "$dir" --provenance --access public
+            npm publish "$dir" --provenance --access public $tag_flag
           }
 
           echo " - Publishing platform packages"
@@ -534,7 +559,7 @@ jobs:
 
           echo ""
           echo " - Publishing main package"
-          publish_pkg packages/fast-fs-hash
+          publish_pkg ./packages/fast-fs-hash
 
           echo ""
           echo "✔ All packages published successfully."
