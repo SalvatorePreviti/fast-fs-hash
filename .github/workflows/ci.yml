@@ -5,15 +5,19 @@
 #   2. build-native    — Matrix: build + test native .node on each platform
 #   3. build-freebsd   — FreeBSD VM: build + test
 #   4. test-musl       — Download musl artifacts -> test inside Alpine Docker
-#   5. publish         — ONLY after ALL above pass: verify, dry-run, publish + deploy docs
+#   5. publish-dry-run — Verify all packages can be published (dry-run)
+#   6. publish         — Publish to npm + deploy docs (requires manual opt-in)
 #
 #   If ANY build or test fails, nothing is published.
 #
+# Workflow dispatch checkboxes:
+#   - publish:  Run dry-run verification (required for any publish)
+#   - deploy:   Actually publish to npm + deploy docs (requires publish too)
+#
 # Quick publish (reuse previous artifacts):
-#   Trigger workflow_dispatch with publish=true and reuse-run-id=<run-id>.
-#   This skips all build/test jobs and downloads artifacts from the specified
-#   CI run, then runs dry-run + publish. Use when the code hasn't changed
-#   since the last successful CI run.
+#   Trigger workflow_dispatch with publish=true, deploy=true, and
+#   reuse-run-id=<run-id>. This skips all build/test jobs and downloads
+#   artifacts from the specified CI run, then runs dry-run + publish.
 
 name: CI
 
@@ -25,7 +29,11 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: "Run publish pipeline (build, dry-run, publish)"
+        description: "Run publish dry-run (verify all packages)"
+        type: boolean
+        default: false
+      deploy:
+        description: "Actually publish to npm + deploy docs (requires publish to be checked too)"
         type: boolean
         default: false
       reuse-run-id:
@@ -474,10 +482,11 @@ jobs:
   #
   # Uses the "npm-publish" environment which must have "Required reviewers"
   # enabled in GitHub repo settings (Settings → Environments → npm-publish).
-  # After dry-run passes, a collaborator must approve this job to publish.
+  # Requires both 'publish' and 'deploy' checkboxes to be checked.
   #
   publish:
     name: Publish to npm + Deploy docs
+    if: ${{ inputs.deploy }}
     needs: [publish-dry-run]
     runs-on: ubuntu-latest
     permissions:
