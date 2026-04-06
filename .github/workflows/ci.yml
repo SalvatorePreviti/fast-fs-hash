@@ -93,7 +93,7 @@ jobs:
           - target: darwin-arm64
             os: macos-latest
             can-test: true
-          #  - macOS x64 (cross-compile + test under Rosetta 2)
+          #  - macOS x64 (cross-compile on arm64 runner + test under Rosetta 2)
           - target: darwin-x64
             os: macos-latest
             target-arch: x64
@@ -337,7 +337,7 @@ jobs:
           path: packages/fast-fs-hash/build/Release/fast_fs_hash*.node
           if-no-files-found: error
 
-  #  - Verify publish (runs automatically on publish branch)
+  #  - Verify publish (workflow_dispatch with publish=true)
   #
   # Downloads every platform artifact, packages binaries, injects optionalDeps,
   # and runs npm publish --dry-run on all packages. Uploads the fully prepared
@@ -373,7 +373,6 @@ jobs:
 
       - uses: actions/checkout@v6
         with:
-          submodules: true
           fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
@@ -474,8 +473,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          submodules: true
           fetch-depth: 0
+          persist-credentials: true
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
