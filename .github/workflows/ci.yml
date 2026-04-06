@@ -375,6 +375,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: true
+
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
@@ -476,6 +477,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: true
+
       - uses: actions/setup-node@v6
         with:
           node-version: "22"

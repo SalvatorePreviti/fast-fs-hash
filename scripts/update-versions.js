@@ -44,7 +44,12 @@ function syncFields(pkg) {
     pkg.engines = engines;
   }
   if (repository) {
-    pkg.repository = repository;
+    // Preserve existing directory field (e.g. workspace packages)
+    const existingDir = pkg.repository?.directory;
+    pkg.repository = { ...repository };
+    if (existingDir) {
+      pkg.repository.directory = existingDir;
+    }
   }
 }
 

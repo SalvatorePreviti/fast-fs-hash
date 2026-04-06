@@ -45,7 +45,8 @@
   "author": "Salvatore Previti",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SalvatorePreviti/fast-fs-hash.git"
+    "url": "git+https://github.com/SalvatorePreviti/fast-fs-hash.git",
+    "directory": "packages/fast-fs-hash"
   },
   "homepage": "https://github.com/SalvatorePreviti/fast-fs-hash#readme",
   "bugs": {
