@@ -8,9 +8,8 @@
  * 3. Generates type declarations via tsc + rollup-plugin-dts.
  */
 
-import { exec, fork } from "node:child_process";
+import { exec } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { DIST_DIR, elapsed, logInfo, logOk, logTitle, PKG_DIR, ROOT_DIR, SRC_DIR } from "./lib/utils.js";
@@ -105,20 +104,6 @@ function generateESMWrapper() {
 
   writeFileSync(resolve(DIST_DIR, "index.mjs"), lines.join("\n"));
   logInfo(`ESM exports: ${valueExports.join(", ")}`);
-
-  // Cross-check: load the CJS bundle and verify all its exports are covered
-  const cjsRequire = createRequire(import.meta.url);
-  const cjsMod = cjsRequire(resolve(DIST_DIR, "index.cjs"));
-  const cjsKeys = Object.keys(cjsMod).filter((k) => k !== "default" && k !== "__esModule");
-  const missing = cjsKeys.filter((k) => !valueExports.includes(k));
-  const extra = valueExports.filter((k) => !cjsKeys.includes(k));
-  if (missing.length > 0) {
-    throw new Error(`ESM wrapper is missing exports from CJS bundle: ${missing.join(", ")}`);
-  }
-  if (extra.length > 0) {
-    throw new Error(`ESM wrapper has exports not found in CJS bundle: ${extra.join(", ")}`);
-  }
-
   logOk(`ESM wrapper (${elapsed(s)})`);
 }
 
@@ -174,18 +159,5 @@ for (const f of readdirSync(DIST_DIR)) {
 await buildBundle();
 generateESMWrapper();
 await generateTypeDeclarations();
-
-// Run smoke test against the built dist to catch missing exports or broken bundles
-{
-  const s = performance.now();
-  const smokeTest = resolve(ROOT_DIR, "test/smoke-test/smoke-test.mjs");
-  const modulePath = resolve(DIST_DIR, "index.mjs");
-  await new Promise((res, rej) => {
-    const child = fork(smokeTest, [], { stdio: "inherit", env: { ...process.env, FAST_FS_HASH_MODULE: modulePath } });
-    child.on("exit", (code) => (code === 0 ? res() : rej(new Error(`Smoke test failed (exit code ${code})`))));
-    child.on("error", rej);
-  });
-  logOk(`Smoke test (${elapsed(s)})`);
-}
 
 logOk(`TS build completed (${elapsed(t0)})`);

@@ -16,17 +16,26 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const tmp = join(tmpdir(), `ffsh-smoke-${process.pid}-${Date.now()}`);
+const quiet = !!process.env.SMOKE_TEST_QUIET;
 
 let passed = 0;
 let failed = 0;
 
 function check(name, condition) {
   if (condition) {
-    console.log(`  \u2714 ${name}`);
+    if (!quiet) {
+      console.log(`  \u2714 ${name}`);
+    }
     passed++;
   } else {
     console.error(`  \u2718 ${name}`);
     failed++;
+  }
+}
+
+function heading(text) {
+  if (!quiet) {
+    console.log(text);
   }
 }
 
@@ -41,13 +50,13 @@ async function main() {
   writeFileSync(fileB, "hello world");
   writeFileSync(fileC, "different content");
 
-  console.log("Smoke test: fast-fs-hash\n");
-  console.log(`  platform: ${process.platform}-${process.arch}`);
-  console.log(`  node:     ${process.version}\n`);
+  heading("Smoke test: fast-fs-hash\n");
+  heading(`  platform: ${process.platform}-${process.arch}`);
+  heading(`  node:     ${process.version}\n`);
 
   // -- xxHash128: buffers --
 
-  console.log("xxHash128 — buffers:");
+  heading("xxHash128 — buffers:");
 
   const bufHash = ffsh.digestBuffer(Buffer.from("hello world"));
   check("digestBuffer returns 16-byte Buffer", Buffer.isBuffer(bufHash) && bufHash.length === 16);
@@ -65,7 +74,7 @@ async function main() {
 
   // -- xxHash128: files --
 
-  console.log("\nxxHash128 — files:");
+  heading("\nxxHash128 — files:");
 
   const fileHash = await ffsh.digestFile(fileA);
   check("digestFile returns 16-byte Buffer", Buffer.isBuffer(fileHash) && fileHash.length === 16);
@@ -87,7 +96,7 @@ async function main() {
 
   // -- LZ4: buffers --
 
-  console.log("\nLZ4 — buffers:");
+  heading("\nLZ4 — buffers:");
 
   const lz4Input = Buffer.from("hello world ".repeat(100));
   const compressed = ffsh.lz4CompressBlock(lz4Input);
@@ -98,7 +107,7 @@ async function main() {
 
   // -- LZ4: files --
 
-  console.log("\nLZ4 — files:");
+  heading("\nLZ4 — files:");
 
   const lz4File = join(tmp, "lz4-test.txt");
   const lz4Content = "lz4 file test content ".repeat(50);
@@ -117,7 +126,7 @@ async function main() {
 
   // -- FileHashCache: write → read → verify --
 
-  console.log("\nFileHashCache:");
+  heading("\nFileHashCache:");
 
   const cachePath = join(tmp, "cache.fsh");
   const cacheFiles = [fileA, fileB, fileC];
@@ -208,7 +217,9 @@ async function main() {
 
   // -- Summary --
 
-  console.log(`\n  ${passed} passed, ${failed} failed\n`);
+  if (!quiet) {
+    console.log(`\n  ${passed} passed, ${failed} failed\n`);
+  }
 }
 
 try {
