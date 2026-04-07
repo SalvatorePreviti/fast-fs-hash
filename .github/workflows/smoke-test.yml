@@ -10,14 +10,33 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Package version to install (e.g. 0.0.1, 0.0.1-rc1, latest)"
-        required: true
-        default: "latest"
+        description: "Package version to install (leave empty for version from package.json, or: 0.0.1, 0.0.1-rc1, latest)"
+        required: false
+        default: ""
         type: string
 
 jobs:
+  resolve-version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: package.json
+      - id: ver
+        run: |
+          input='${{ inputs.version }}'
+          if [ -z "$input" ]; then
+            input=$(node -p "require('./package.json').version")
+            echo "Defaulting to package.json version: ${input}"
+          fi
+          echo "version=${input}" >> "$GITHUB_OUTPUT"
+
   smoke:
     name: ${{ matrix.name }}
+    needs: [resolve-version]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -31,7 +50,8 @@ jobs:
           - name: darwin-arm64
             os: macos-latest
           - name: darwin-x64
-            os: macos-13
+            os: macos-latest
+            arch: x64
 
           # Linux glibc
           - name: linux-x64-gnu
@@ -41,19 +61,19 @@ jobs:
             use-docker: true
             use-qemu: true
             docker-platform: linux/arm64
-            docker-image: node:22-bookworm
+            docker-image: node:24-bookworm
 
           # Linux musl
           - name: linux-x64-musl
             os: ubuntu-24.04
             use-docker: true
-            docker-image: node:22-alpine
+            docker-image: node:24-alpine
           - name: linux-arm64-musl
             os: ubuntu-24.04
             use-docker: true
             use-qemu: true
             docker-platform: linux/arm64
-            docker-image: node:22-alpine
+            docker-image: node:24-alpine
 
     steps:
       - uses: actions/checkout@v6
@@ -62,16 +82,27 @@ jobs:
 
       # Direct (non-Docker) platforms
       - uses: actions/setup-node@v6
-        if: ${{ !matrix.use-docker }}
+        if: ${{ !matrix.use-docker && !matrix.arch }}
         with:
-          node-version: "22"
+          node-version: "24"
+
+      # x64 Node via Rosetta 2 (darwin-x64 on arm64 runner)
+      - name: Ensure Rosetta 2 is available
+        if: ${{ matrix.arch == 'x64' }}
+        run: softwareupdate --install-rosetta --agree-to-license 2>/dev/null || true
+
+      - uses: actions/setup-node@v6
+        if: ${{ matrix.arch == 'x64' }}
+        with:
+          node-version: "24"
+          architecture: x64
 
       - name: Install and test
         if: ${{ !matrix.use-docker }}
         shell: bash
         run: |
           cd test/smoke-test
-          npm install "fast-fs-hash@${{ inputs.version }}"
+          npm install "fast-fs-hash@${{ needs.resolve-version.outputs.version }}"
           node smoke-test.mjs
 
       # QEMU for cross-arch Docker
@@ -87,12 +118,13 @@ jobs:
         run: |
           docker run --rm ${{ matrix.docker-platform && format('--platform {0}', matrix.docker-platform) || '' }} \
             -v "$PWD/test/smoke-test:/smoke-test" -w /smoke-test ${{ matrix.docker-image }} sh -c '
-            npm install "fast-fs-hash@${{ inputs.version }}" &&
+            npm install "fast-fs-hash@${{ needs.resolve-version.outputs.version }}" &&
             node smoke-test.mjs
           '
 
   smoke-freebsd:
     name: freebsd-x64
+    needs: [resolve-version]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -111,5 +143,5 @@ jobs:
           run: |
             sudo pkg install -y node22 npm-node22
             cd test/smoke-test
-            npm install "fast-fs-hash@${{ inputs.version }}"
+            npm install "fast-fs-hash@${{ needs.resolve-version.outputs.version }}"
             node smoke-test.mjs

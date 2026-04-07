@@ -126,45 +126,65 @@ async function main() {
 
   // First open: cache does not exist -> status should be 'missing'
   {
-    using session = await cacheConfig.open();
-    check("first open: status is 'missing'", session.status === "missing");
-    check("first open: fileCount matches", session.fileCount === 3);
+    const session = await cacheConfig.open();
+    try {
+      check("first open: status is 'missing'", session.status === "missing");
+      check("first open: fileCount matches", session.fileCount === 3);
 
-    const written = await session.write();
-    check("write() returns true", written === true);
+      const written = await session.write();
+      check("write() returns true", written === true);
+    } finally {
+      session[Symbol.dispose]();
+    }
   }
 
   // Second open: cache exists and files unchanged -> status should be 'upToDate'
   {
     cacheConfig.invalidateAll();
-    using session = await cacheConfig.open();
-    check("second open: status is 'upToDate'", session.status === "upToDate");
-    check("second open: fileCount matches", session.fileCount === 3);
+    const session = await cacheConfig.open();
+    try {
+      check("second open: status is 'upToDate'", session.status === "upToDate");
+      check("second open: fileCount matches", session.fileCount === 3);
+    } finally {
+      session[Symbol.dispose]();
+    }
   }
 
   // Modify a file and re-open: status should be 'changed'
   writeFileSync(fileC, "modified content");
   {
     cacheConfig.invalidateAll();
-    using session = await cacheConfig.open();
-    check("after modify: status is 'changed'", session.status === "changed");
+    const session = await cacheConfig.open();
+    try {
+      check("after modify: status is 'changed'", session.status === "changed");
 
-    const written = await session.write();
-    check("re-write returns true", written === true);
+      const written = await session.write();
+      check("re-write returns true", written === true);
+    } finally {
+      session[Symbol.dispose]();
+    }
   }
 
   // Verify it's up-to-date again after re-write
   {
     cacheConfig.invalidateAll();
-    using session = await cacheConfig.open();
-    check("after re-write: status is 'upToDate'", session.status === "upToDate");
+    const session = await cacheConfig.open();
+    try {
+      check("after re-write: status is 'upToDate'", session.status === "upToDate");
+    } finally {
+      session[Symbol.dispose]();
+    }
   }
 
   // Version change -> stale
   {
     const staleConfig = new ffsh.FileHashCache({ cachePath, files: cacheFiles, rootPath: tmp, version: 2 });
-    using session = await staleConfig.open();
-    check("version bump: status is 'stale'", session.status === "stale");
+    const session = await staleConfig.open();
+    try {
+      check("version bump: status is 'stale'", session.status === "stale");
+    } finally {
+      session[Symbol.dispose]();
+    }
   }
 
   // overwrite convenience method
@@ -178,8 +198,12 @@ async function main() {
 
   {
     const wnConfig = new ffsh.FileHashCache({ cachePath: cachePathNew, files: cacheFiles, rootPath: tmp });
-    using session = await wnConfig.open();
-    check("after overwrite: status is 'upToDate'", session.status === "upToDate");
+    const session = await wnConfig.open();
+    try {
+      check("after overwrite: status is 'upToDate'", session.status === "upToDate");
+    } finally {
+      session[Symbol.dispose]();
+    }
   }
 
   // -- Summary --
