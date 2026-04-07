@@ -1,6 +1,6 @@
 {
   "private": true,
-  "version": "0.0.0-rc1",
+  "version": "0.0.0-rc2",
   "type": "module",
   "workspaces": [
     "packages/fast-fs-hash"
