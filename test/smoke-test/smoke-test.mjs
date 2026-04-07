@@ -13,7 +13,8 @@
 
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const tmp = join(tmpdir(), `ffsh-smoke-${process.pid}-${Date.now()}`);
 const quiet = !!process.env.SMOKE_TEST_QUIET;
@@ -40,7 +41,12 @@ function heading(text) {
 }
 
 async function main() {
-  const ffsh = await import(process.env.FAST_FS_HASH_MODULE || "fast-fs-hash");
+  // On Windows, ESM import() requires file:// URLs for absolute paths
+  let modSpec = process.env.FAST_FS_HASH_MODULE || "fast-fs-hash";
+  if (isAbsolute(modSpec)) {
+    modSpec = pathToFileURL(modSpec).href;
+  }
+  const ffsh = await import(modSpec);
 
   mkdirSync(tmp, { recursive: true });
   const fileA = join(tmp, "a.txt");
