@@ -30,39 +30,57 @@ if (failures.length > 0) {
 
 await writeBuildHash();
 
-// Cross-check: load the CJS bundle and verify all its exports appear in the ESM wrapper
-{
-  const { createRequire } = await import("node:module");
-  const { readFileSync } = await import("node:fs");
-  const { resolve } = await import("node:path");
-  const cjsRequire = createRequire(import.meta.url);
-  const cjsMod = cjsRequire(resolve(DIST_DIR, "index.cjs"));
-  const cjsKeys = Object.keys(cjsMod).filter((k) => k !== "default" && k !== "__esModule");
-  const esmSrc = readFileSync(resolve(DIST_DIR, "index.mjs"), "utf8");
-  const missing = cjsKeys.filter((k) => !esmSrc.includes(k));
-  if (missing.length > 0) {
-    logError(`ESM wrapper is missing exports from CJS bundle: ${missing.join(", ")}`);
-    process.exit(1);
+// Cross-check and smoke test require the native addon, so skip them during cross-compilation
+// (e.g. building arm64 .node under QEMU on an x86_64 host).
+const canLoadNative = await (async () => {
+  try {
+    const { createRequire } = await import("node:module");
+    const { resolve } = await import("node:path");
+    const cjsRequire = createRequire(import.meta.url);
+    cjsRequire(resolve(DIST_DIR, "index.cjs"));
+    return true;
+  } catch {
+    return false;
   }
-  logOk(`ESM/CJS export cross-check passed (${cjsKeys.length} exports)`);
-}
+})();
 
-// Smoke test: exercise the built dist end-to-end
-{
-  const s = performance.now();
-  const { fork } = await import("node:child_process");
-  const { resolve } = await import("node:path");
-  const smokeTest = resolve(ROOT_DIR, "test/smoke-test/smoke-test.mjs");
-  const modulePath = resolve(DIST_DIR, "index.mjs");
-  await new Promise((res, rej) => {
-    const child = fork(smokeTest, [], {
-      stdio: "inherit",
-      env: { ...process.env, FAST_FS_HASH_MODULE: modulePath, SMOKE_TEST_QUIET: "1" },
+if (canLoadNative) {
+  // Cross-check: verify all CJS exports appear in the ESM wrapper
+  {
+    const { createRequire } = await import("node:module");
+    const { readFileSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    const cjsRequire = createRequire(import.meta.url);
+    const cjsMod = cjsRequire(resolve(DIST_DIR, "index.cjs"));
+    const cjsKeys = Object.keys(cjsMod).filter((k) => k !== "default" && k !== "__esModule");
+    const esmSrc = readFileSync(resolve(DIST_DIR, "index.mjs"), "utf8");
+    const missing = cjsKeys.filter((k) => !esmSrc.includes(k));
+    if (missing.length > 0) {
+      logError(`ESM wrapper is missing exports from CJS bundle: ${missing.join(", ")}`);
+      process.exit(1);
+    }
+    logOk(`ESM/CJS export cross-check passed (${cjsKeys.length} exports)`);
+  }
+
+  // Smoke test: exercise the built dist end-to-end
+  {
+    const s = performance.now();
+    const { fork } = await import("node:child_process");
+    const { resolve } = await import("node:path");
+    const smokeTest = resolve(ROOT_DIR, "test/smoke-test/smoke-test.mjs");
+    const modulePath = resolve(DIST_DIR, "index.mjs");
+    await new Promise((res, rej) => {
+      const child = fork(smokeTest, [], {
+        stdio: "inherit",
+        env: { ...process.env, FAST_FS_HASH_MODULE: modulePath, SMOKE_TEST_QUIET: "1" },
+      });
+      child.on("exit", (code) => (code === 0 ? res() : rej(new Error(`Smoke test failed (exit code ${code})`))));
+      child.on("error", rej);
     });
-    child.on("exit", (code) => (code === 0 ? res() : rej(new Error(`Smoke test failed (exit code ${code})`))));
-    child.on("error", rej);
-  });
-  logOk(`Smoke test (${elapsed(s)})`);
+    logOk(`Smoke test (${elapsed(s)})`);
+  }
+} else {
+  logOk("Cross-compilation detected — skipping ESM/CJS cross-check and smoke test");
 }
 
 await Promise.all([runScript("build-readme.js"), runScript("update-versions.js")]);
