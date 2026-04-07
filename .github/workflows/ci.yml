@@ -1,23 +1,22 @@
 # fast-fs-hash CI
 #
-# Architecture:
-#   1. lint-and-test   — Lint, typecheck, JS-fallback tests
-#   2. build-native    — Matrix: build + test native .node on each platform
-#   3. build-freebsd   — FreeBSD VM: build + test
-#   4. test-musl       — Download musl artifacts -> test inside Alpine Docker
-#   5. publish-dry-run — Verify all packages can be published (dry-run)
-#   6. publish         — Publish to npm + deploy docs (requires manual opt-in)
+# Two flows:
 #
-#   If ANY build or test fails, nothing is published.
+#   1. PR / push on main (automatic)
+#      - lint-and-test: lint, typecheck, build, test+bench with Node 24
+#      - Lightweight gate for merging PRs
 #
-# Workflow dispatch checkboxes:
-#   - publish:  Run dry-run verification (required for any publish)
-#   - deploy:   Actually publish to npm + deploy docs (requires publish too)
+#   2. Manual workflow_dispatch: full release pipeline
+#      - lint-and-test (Node 22+24), build-native (all platforms),
+#        build-freebsd, test-musl
+#      - publish job (unified): always runs dry-run; optionally publishes
+#        to npm and/or deploys docs based on checkboxes
+#      - reuse-run-id: skip builds, reuse artifacts from a previous run
 #
-# Quick publish (reuse previous artifacts):
-#   Trigger workflow_dispatch with publish=true, deploy=true, and
-#   reuse-run-id=<run-id>. This skips all build/test jobs and downloads
-#   artifacts from the specified CI run, then runs dry-run + publish.
+# Checkboxes (workflow_dispatch):
+#   - dry-run:  Verify all packages can be published (no side effects)
+#   - npm:      Publish to npm (implies dry-run, admin-only)
+#   - docs:     Deploy API docs to GitHub Pages
 
 name: CI
 
@@ -28,12 +27,16 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
-      publish:
+      dry-run:
         description: "Run publish dry-run (verify all packages)"
         type: boolean
         default: false
-      deploy:
-        description: "Actually publish to npm + deploy docs (requires publish to be checked too)"
+      npm:
+        description: "Publish to npm (implies dry-run, admin-only)"
+        type: boolean
+        default: false
+      docs:
+        description: "Deploy API docs to GitHub Pages"
         type: boolean
         default: false
       reuse-run-id:
@@ -47,13 +50,17 @@ concurrency:
 
 jobs:
   #  - Lint, typecheck & test
+  #
+  # On push/PR: Node 24 only (lightweight gate).
+  # On workflow_dispatch (without reuse-run-id): Node 22 + 24.
+  #
   lint-and-test:
     if: ${{ !inputs.reuse-run-id }}
     name: Lint & Test (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node: ["22", "24"]
+        node: ${{ github.event_name == 'workflow_dispatch' && fromJSON('["22","24"]') || fromJSON('["24"]') }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -75,12 +82,13 @@ jobs:
 
   #  - Build + test native addon for every platform
   #
+  # Only runs on workflow_dispatch (manual trigger).
   # Every entry builds the .node file. Entries that can execute on the
   # runner also run the full test suite WITH the native binding loaded.
   # Cross-compiled targets (win32-arm64) can only verify the build succeeds.
   #
   build-native:
-    if: ${{ !inputs.reuse-run-id }}
+    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.reuse-run-id }}
     name: Build ${{ matrix.target }}
     needs: [lint-and-test]
     runs-on: ${{ matrix.os }}
@@ -251,7 +259,7 @@ jobs:
 
   #  - Test musl bindings (run test suite inside Alpine containers)
   test-musl:
-    if: ${{ !inputs.reuse-run-id }}
+    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.reuse-run-id }}
     name: Test ${{ matrix.target }}
     needs: [build-native]
     runs-on: ubuntu-24.04
@@ -304,7 +312,7 @@ jobs:
 
   #  - FreeBSD (build + test inside FreeBSD VMs)
   build-freebsd:
-    if: ${{ !inputs.reuse-run-id }}
+    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.reuse-run-id }}
     name: Build ${{ matrix.can-test && '& Test ' || '' }}freebsd-${{ matrix.arch }}
     needs: [lint-and-test]
     runs-on: ubuntu-latest
@@ -345,17 +353,25 @@ jobs:
           path: packages/fast-fs-hash/build/Release/fast_fs_hash*.node
           if-no-files-found: error
 
-  #  - Verify publish (workflow_dispatch with publish=true)
+  #  - Unified publish job
   #
-  # Downloads every platform artifact, packages binaries, injects optionalDeps,
-  # and runs npm publish --dry-run on all packages. Uploads the fully prepared
-  # publish-ready tree as an artifact for the real publish job.
+  # Runs when any publish-related checkbox is checked.
+  # Always performs dry-run verification first.
+  # Conditionally publishes to npm and/or deploys docs based on inputs.
   #
-  publish-dry-run:
-    name: Verify publish (dry-run)
+  # Uses the "npm-publish" environment (for npm publish gating via
+  # GitHub environment protection rules / required reviewers).
+  #
+  publish:
+    name: >-
+      Publish
+      ${{ inputs.npm && '→ npm' || '' }}
+      ${{ inputs.docs && '→ docs' || '' }}
+      ${{ !inputs.npm && !inputs.docs && '(dry-run only)' || '' }}
     if: |
       always() &&
-      github.event_name == 'workflow_dispatch' && inputs.publish &&
+      github.event_name == 'workflow_dispatch' &&
+      (inputs.dry-run || inputs.npm || inputs.docs) &&
       (inputs.reuse-run-id || (
         needs.lint-and-test.result == 'success' &&
         needs.build-native.result == 'success' &&
@@ -364,8 +380,15 @@ jobs:
       ))
     needs: [lint-and-test, build-native, build-freebsd, test-musl]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      pages: write
+    environment:
+      name: ${{ inputs.npm && 'npm-publish' || 'github-pages' }}
     steps:
-      - name: Check triggering actor is a repo admin
+      #  - Permission check: npm publish requires admin
+      - name: Check permissions
         uses: actions/github-script@v8
         with:
           script: |
@@ -373,10 +396,15 @@ jobs:
             const username = context.actor;
             const { data } = await github.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username });
             const perm = data.permission;
-            if (perm === 'admin') {
-              core.info(`User ${username} has admin permission`);
+            const isAdmin = perm === 'admin';
+            const wantNpm = '${{ inputs.npm }}' === 'true';
+
+            if (wantNpm && !isAdmin) {
+              core.setFailed(`User ${username} has '${perm}' permission — only admins can publish to npm.`);
+            } else if (!['admin', 'write'].includes(perm)) {
+              core.setFailed(`User ${username} has '${perm}' permission — only collaborators can trigger this.`);
             } else {
-              core.setFailed(`User ${username} has '${perm}' permission — only admins can publish.`);
+              core.info(`User ${username} has '${perm}' permission — OK`);
             }
 
       - uses: actions/checkout@v6
@@ -394,6 +422,7 @@ jobs:
 
       - name: Resolve release version
         id: release
+        shell: bash
         run: |
           version=$(node -p "require('./package.json').version")
           tag="v${version}"
@@ -402,13 +431,24 @@ jobs:
           echo "Release version: ${version}"
           echo "Release tag: ${tag}"
 
+          # Derive npm dist-tag for prerelease versions
+          if [[ "$version" == *-* ]]; then
+            pre="${version#*-}"
+            pre="${pre%%[.0-9]*}"
+            dist_tag="${pre:-next}"
+            echo "Pre-release detected — dist-tag: ${dist_tag}"
+          else
+            dist_tag="latest"
+          fi
+          echo "dist-tag=${dist_tag}" >> "$GITHUB_OUTPUT"
+
       - name: Ensure release tag does not already exist
+        if: ${{ inputs.npm }}
         run: |
           tag='${{ steps.release.outputs.tag }}'
           git fetch --tags --force
           if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
-            echo "Tag ${tag} already exists."
-            echo "Bump package.json version before merging into publish."
+            echo "::error::Tag ${tag} already exists. Bump package.json version first."
             exit 1
           fi
 
@@ -438,23 +478,11 @@ jobs:
       - name: Inject optionalDependencies for publish
         run: node scripts/prepublish.js
 
+      #  - Dry-run: always runs to verify packages are publishable
       - name: Dry-run publish (verify all packages)
         shell: bash
         run: |
-          # Derive --tag flag: prerelease versions (e.g. 1.0.0-rc.1) use the
-          # pre-release identifier ("rc") as the dist-tag; stable versions
-          # use "latest" (npm's default, but we pass it explicitly).
-          version=$(node -p "require('./package.json').version")
-          if [[ "$version" == *-* ]]; then
-            # Extract identifier before any dot/digit suffix: rc.1 -> rc, beta.2 -> beta, alpha -> alpha
-            pre="${version#*-}"
-            pre="${pre%%[.0-9]*}"
-            tag_flag="--tag ${pre:-next}"
-            echo "Pre-release detected (${version}) — using: ${tag_flag}"
-          else
-            tag_flag="--tag latest"
-          fi
-
+          tag_flag="--tag ${{ steps.release.outputs.dist-tag }}"
           echo "── Dry-run: verifying all packages can be published ──"
           for dir in npm/*/; do
             pkg_name=$(node -p "require('./${dir}/package.json').name")
@@ -468,83 +496,12 @@ jobs:
           npm publish ./packages/fast-fs-hash --dry-run --access public $tag_flag 2>&1 | tail -5
           echo "── Dry-run passed ──"
 
-      - name: Upload publish-ready packages
-        uses: actions/upload-artifact@v4
-        with:
-          name: publish-ready
-          path: |
-            npm/
-            packages/fast-fs-hash/dist/
-            packages/fast-fs-hash/package.json
-          if-no-files-found: error
-
-  #  - Publish (requires manual approval)
-  #
-  # Uses the "npm-publish" environment which must have "Required reviewers"
-  # enabled in GitHub repo settings (Settings → Environments → npm-publish).
-  # Requires both 'publish' and 'deploy' checkboxes to be checked.
-  #
-  publish:
-    name: Publish to npm + Deploy docs
-    if: ${{ inputs.deploy }}
-    needs: [publish-dry-run]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      id-token: write
-      pages: write
-    environment:
-      name: npm-publish
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          persist-credentials: true
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-          cache: npm
-          registry-url: "https://registry.npmjs.org"
-
-      - run: npm ci
-
-      - name: Build JS bundles
-        run: npm run build:ts
-
-      - name: Sync versions
-        run: node scripts/update-versions.js
-
-      - name: Download publish-ready packages
-        uses: actions/download-artifact@v4
-        with:
-          name: publish-ready
-          path: .
-
-      - name: Inject optionalDependencies for publish
-        run: node scripts/prepublish.js
-
-      - name: Resolve release version
-        id: release
-        run: |
-          version=$(node -p "require('./package.json').version")
-          tag="v${version}"
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-
-      - name: Publish all packages
+      #  - Publish to npm (only when 'npm' checkbox is checked)
+      - name: Publish all packages to npm
+        if: ${{ inputs.npm }}
         shell: bash
         run: |
-          # Derive --tag flag (same logic as dry-run)
-          version=$(node -p "require('./package.json').version")
-          if [[ "$version" == *-* ]]; then
-            pre="${version#*-}"
-            pre="${pre%%[.0-9]*}"
-            tag_flag="--tag ${pre:-next}"
-            echo "Pre-release detected (${version}) — using: ${tag_flag}"
-          else
-            tag_flag="--tag latest"
-          fi
+          tag_flag="--tag ${{ steps.release.outputs.dist-tag }}"
 
           publish_pkg() {
             local dir="$1"
@@ -574,6 +531,7 @@ jobs:
           echo "✔ All packages published successfully."
 
       - name: Create and push git tag
+        if: ${{ inputs.npm }}
         run: |
           tag='${{ steps.release.outputs.tag }}'
 
@@ -584,19 +542,22 @@ jobs:
           git tag -a "${tag}" -m "Release ${tag}"
           git push origin "${tag}"
 
-      #  - Deploy docs to GitHub Pages
-
+      #  - Deploy docs to GitHub Pages (only when 'docs' checkbox is checked)
       - name: Generate API docs
+        if: ${{ inputs.docs }}
         run: npm run docs
 
       - name: Setup Pages
+        if: ${{ inputs.docs }}
         uses: actions/configure-pages@v5
 
       - name: Upload Pages artifact
+        if: ${{ inputs.docs }}
         uses: actions/upload-pages-artifact@v3
         with:
           path: docs/api
 
       - name: Deploy to GitHub Pages
+        if: ${{ inputs.docs }}
         id: deployment
         uses: actions/deploy-pages@v4

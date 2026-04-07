@@ -38,7 +38,7 @@
     "@types/node": "^25.5.2",
     "ansis": "^4.2.0",
     "cmake-js": "^8.0.0",
-    "lefthook": "^2.1.4",
+    "lefthook": "^2.1.5",
     "node-addon-api": "^8.7.0",
     "prettier": "^3.8.1",
     "rolldown": "^1.0.0-rc.13",
