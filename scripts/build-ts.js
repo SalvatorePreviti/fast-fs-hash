@@ -10,6 +10,7 @@
 
 import { exec } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { DIST_DIR, elapsed, logInfo, logOk, logTitle, PKG_DIR, ROOT_DIR, SRC_DIR } from "./lib/utils.js";
@@ -79,7 +80,7 @@ function generateESMWrapper() {
     }
   }
 
-  for (const match of src.matchAll(/^export\s+(?:const|function|class)\s+(\w+)/gm)) {
+  for (const match of src.matchAll(/^export\s+(?:async\s+)?(?:const|function|class)\s+(\w+)/gm)) {
     const name = match[1];
     if (!valueExports.includes(name)) {
       valueExports.push(name);
@@ -104,6 +105,20 @@ function generateESMWrapper() {
 
   writeFileSync(resolve(DIST_DIR, "index.mjs"), lines.join("\n"));
   logInfo(`ESM exports: ${valueExports.join(", ")}`);
+
+  // Cross-check: load the CJS bundle and verify all its exports are covered
+  const cjsRequire = createRequire(import.meta.url);
+  const cjsMod = cjsRequire(resolve(DIST_DIR, "index.cjs"));
+  const cjsKeys = Object.keys(cjsMod).filter((k) => k !== "default" && k !== "__esModule");
+  const missing = cjsKeys.filter((k) => !valueExports.includes(k));
+  const extra = valueExports.filter((k) => !cjsKeys.includes(k));
+  if (missing.length > 0) {
+    throw new Error(`ESM wrapper is missing exports from CJS bundle: ${missing.join(", ")}`);
+  }
+  if (extra.length > 0) {
+    throw new Error(`ESM wrapper has exports not found in CJS bundle: ${extra.join(", ")}`);
+  }
+
   logOk(`ESM wrapper (${elapsed(s)})`);
 }
 
