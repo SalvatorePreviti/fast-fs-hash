@@ -1,6 +1,6 @@
 {
   "name": "@fast-fs-hash/fast-fs-hash-node-win32-arm64-msvc",
-  "version": "0.0.0-rc1",
+  "version": "0.0.0-rc2",
   "description": "fast-fs-hash native binding for Windows arm64",
   "os": [
     "win32"

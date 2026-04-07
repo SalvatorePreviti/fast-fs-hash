@@ -1,6 +1,6 @@
 {
   "name": "@fast-fs-hash/fast-fs-hash-node-darwin-arm64",
-  "version": "0.0.0-rc1",
+  "version": "0.0.0-rc2",
   "description": "fast-fs-hash native binding for macOS arm64",
   "os": [
     "darwin"

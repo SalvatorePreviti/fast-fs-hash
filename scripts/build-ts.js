@@ -8,7 +8,7 @@
  * 3. Generates type declarations via tsc + rollup-plugin-dts.
  */
 
-import { exec } from "node:child_process";
+import { exec, fork } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
@@ -174,5 +174,18 @@ for (const f of readdirSync(DIST_DIR)) {
 await buildBundle();
 generateESMWrapper();
 await generateTypeDeclarations();
+
+// Run smoke test against the built dist to catch missing exports or broken bundles
+{
+  const s = performance.now();
+  const smokeTest = resolve(ROOT_DIR, "test/smoke-test/smoke-test.mjs");
+  const modulePath = resolve(DIST_DIR, "index.mjs");
+  await new Promise((res, rej) => {
+    const child = fork(smokeTest, [], { stdio: "inherit", env: { ...process.env, FAST_FS_HASH_MODULE: modulePath } });
+    child.on("exit", (code) => (code === 0 ? res() : rej(new Error(`Smoke test failed (exit code ${code})`))));
+    child.on("error", rej);
+  });
+  logOk(`Smoke test (${elapsed(s)})`);
+}
 
 logOk(`TS build completed (${elapsed(t0)})`);

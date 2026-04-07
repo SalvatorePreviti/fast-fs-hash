@@ -31,7 +31,7 @@ function check(name, condition) {
 }
 
 async function main() {
-  const ffsh = await import("fast-fs-hash");
+  const ffsh = await import(process.env.FAST_FS_HASH_MODULE || "fast-fs-hash");
 
   mkdirSync(tmp, { recursive: true });
   const fileA = join(tmp, "a.txt");
@@ -110,7 +110,7 @@ async function main() {
   check("lz4ReadAndCompress compresses", lz4Data.length < uncompressedSize);
 
   const lz4OutFile = join(tmp, "lz4-out.txt");
-  await ffsh.lz4DecompressAndWrite(lz4OutFile, lz4Data, uncompressedSize);
+  await ffsh.lz4DecompressAndWrite(lz4Data, uncompressedSize, lz4OutFile);
 
   const roundTripEqual = await ffsh.filesEqual(lz4File, lz4OutFile);
   check("lz4DecompressAndWrite round-trips correctly", roundTripEqual === true);
