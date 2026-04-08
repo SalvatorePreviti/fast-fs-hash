@@ -27,8 +27,13 @@ namespace fast_fs_hash {
    *
    * Locking:
    *   open_locked() opens/creates the file and acquires an exclusive
-   *   fcntl byte-range lock. The lock is released when close() is called
-   *   or the fd is closed. Supports blocking, non-blocking, and timeout.
+   *   flock(2) lock. flock locks are per-open-file-description (per-OFD),
+   *   so two open() calls in the same process — including from different
+   *   worker_threads — get independent locks and serialize correctly.
+   *   (POSIX fcntl byte-range locks are per-PROCESS and would silently
+   *   collapse cross-thread serialization, so we cannot use them here.)
+   *   The lock is released when close() is called or the fd is closed.
+   *   Supports blocking, non-blocking, and timeout.
    *
    * On destruction: closes fd.
    */
@@ -44,12 +49,12 @@ namespace fast_fs_hash {
      *  located relative to an open directory (e.g. from fstatat). */
     FfshFile(int dir_fd, const char * rel_path) noexcept {
 #  ifdef __linux__
-      this->fd = ::openat(dir_fd, rel_path, O_RDONLY | O_CLOEXEC | O_NOATIME);
+      this->fd = openat_eintr_(dir_fd, rel_path, O_RDONLY | O_CLOEXEC | O_NOATIME);
       if (this->fd < 0 && errno == EPERM) [[unlikely]] {
-        this->fd = ::openat(dir_fd, rel_path, O_RDONLY | O_CLOEXEC);
+        this->fd = openat_eintr_(dir_fd, rel_path, O_RDONLY | O_CLOEXEC);
       }
 #  else
-      this->fd = ::openat(dir_fd, rel_path, O_RDONLY | O_CLOEXEC);
+      this->fd = openat_eintr_(dir_fd, rel_path, O_RDONLY | O_CLOEXEC);
 #  endif
     }
 
@@ -77,7 +82,7 @@ namespace fast_fs_hash {
     /** Returns true if the file was opened successfully. */
     FSH_FORCE_INLINE explicit operator bool() const noexcept { return this->fd >= 0; }
 
-    /** Close the fd (releases any fcntl lock). Safe to call multiple times. */
+    /** Close the fd (releases any flock). Safe to call multiple times. */
     inline void close() noexcept {
       if (this->fd >= 0) {
         close_fd(this->fd);
@@ -95,15 +100,14 @@ namespace fast_fs_hash {
     /**
      * Lock cancellation token — POSIX implementation.
      *
-     * All cancellable lock paths use poll_lock_ (non-blocking F_SETLK with
-     * exponential backoff). fire() sets fired_=true; poll_lock_ checks
+     * All cancellable lock paths use poll_lock_ (non-blocking flock(LOCK_NB)
+     * with exponential backoff). fire() sets fired_=true; poll_lock_ checks
      * is_fired() between attempts and exits promptly.
      *
-     * Why not close the fd to wake blocked fcntl(F_SETLKW)?
+     * Why not close the fd to wake a blocked flock?
      * POSIX doesn't guarantee that closing an fd from thread B wakes a
-     * blocked fcntl(F_SETLKW) on that fd in thread A. macOS in particular
-     * does not — the thread stays blocked indefinitely. Polling with
-     * non-blocking F_SETLK is the only portable approach.
+     * blocked flock() on that fd in thread A. Polling with non-blocking
+     * flock(LOCK_NB) is the only portable approach.
      */
     struct LockCancelList;
 
@@ -179,7 +183,7 @@ namespace fast_fs_hash {
     };
 
     /**
-     * Open-or-create a cache file and acquire an exclusive fcntl lock.
+     * Open-or-create a cache file and acquire an exclusive flock(2) lock.
      *
      * Returns an invalid FfshFile on failure (lock contention, timeout, cancel, I/O error).
      * Callers check `if (!file)` — lock failure is a normal status, not an exception.
@@ -208,26 +212,26 @@ namespace fast_fs_hash {
       }
 
       if (timeoutMs == 0) {
-        if (fcntl_lock_(f.fd, F_SETLK) != 0) [[unlikely]] {
+        if (flock_op_(f.fd, LOCK_EX | LOCK_NB) != 0) [[unlikely]] {
           f.close();
           return f;
         }
       } else if (cancel) {
-        // Cancel present: poll with non-blocking F_SETLK + exponential backoff.
+        // Cancel present: poll with non-blocking flock + exponential backoff.
         // cacheFireCancel (called from JS) sets fired_ flag; poll_lock_ checks
-        // is_fired() between attempts and exits within one sleep interval (≤50ms).
-        if (poll_lock_(f.fd, F_WRLCK, timeoutMs < 0 ? INT_MAX : timeoutMs, cancel) != 0) [[unlikely]] {
+        // is_fired() between attempts and exits within one sleep interval (≤25ms).
+        if (poll_lock_(f.fd, LOCK_EX, timeoutMs < 0 ? INT_MAX : timeoutMs, cancel) != 0) [[unlikely]] {
           f.close();
           return f;
         }
       } else if (timeoutMs < 0) {
-        if (fcntl_lock_(f.fd, F_SETLKW) != 0) [[unlikely]] {
+        if (flock_op_(f.fd, LOCK_EX) != 0) [[unlikely]] {
           f.close();
           return f;
         }
       } else {
         // Finite timeout, no cancel: poll with backoff.
-        if (poll_lock_(f.fd, F_WRLCK, timeoutMs, nullptr) != 0) [[unlikely]] {
+        if (poll_lock_(f.fd, LOCK_EX, timeoutMs, nullptr) != 0) [[unlikely]] {
           f.close();
           return f;
         }
@@ -246,34 +250,33 @@ namespace fast_fs_hash {
       return f;
     }
 
-    /** Non-blocking check: returns true if the file is currently locked by another holder. */
+    /** Non-blocking check: returns true if the file is currently locked by another holder.
+     *  Opens a fresh fd (a new OFD) and tries flock(LOCK_EX|LOCK_NB). Since flock locks
+     *  are per-OFD, this correctly competes with holders in this process *and* in others.
+     *  Releases the trial lock immediately on success (or via close on failure). */
     static inline bool is_locked(const char * cachePath) noexcept {
       if (!cachePath || cachePath[0] == '\0') [[unlikely]] {
         return false;
       }
-      const int fd = ::open(cachePath, O_RDONLY | O_CLOEXEC, 0);
+      const int fd = open_eintr_(cachePath, O_RDONLY | O_CLOEXEC);
       if (fd < 0) [[unlikely]] {
         return false;
       }
-      struct flock fl{};
-      fl.l_type = F_WRLCK;
-      fl.l_whence = SEEK_SET;
-      fl.l_start = 0;
-      fl.l_len = 1;
-      const int rc = ::fcntl(fd, F_GETLK, &fl);
-      ::close(fd);
-      if (rc != 0) [[unlikely]] {
-        return false;
+      const int rc = flock_op_(fd, LOCK_EX | LOCK_NB);
+      if (rc == 0) {
+        // Got the lock — file was unlocked. Release before closing for clarity.
+        flock_op_(fd, LOCK_UN);
       }
-      return fl.l_type != F_UNLCK;
+      ::close(fd);
+      return rc != 0;
     }
 
     /**
      * Wait until the file is no longer exclusively locked, or timeout/cancellation.
      *
-     * Without cancel: F_SETLKW (shared read lock) blocks with zero CPU until
-     * the exclusive holder releases. With cancel or finite timeout: poll_lock_
-     * with non-blocking F_SETLK + exponential backoff.
+     * Without cancel: blocking flock(LOCK_SH) blocks with zero CPU until the
+     * exclusive holder releases. With cancel or finite timeout: poll_lock_
+     * with non-blocking flock(LOCK_SH | LOCK_NB) + exponential backoff.
      *
      * @param cachePath  File path.
      * @param timeoutMs  -1 = block forever, 0 = non-blocking, >0 = timeout in ms.
@@ -285,25 +288,25 @@ namespace fast_fs_hash {
       if (!cachePath || cachePath[0] == '\0') [[unlikely]] {
         return true;
       }
-      const int fd = ::open(cachePath, O_RDONLY | O_CLOEXEC, 0);
+      const int fd = open_eintr_(cachePath, O_RDONLY | O_CLOEXEC);
       if (fd < 0) [[unlikely]] {
         return true;  // Can't open → not locked (or doesn't exist)
       }
 
       bool acquired = false;
       if (timeoutMs == 0) {
-        acquired = fcntl_lock_rd_(fd, F_SETLK) == 0;
+        acquired = flock_op_(fd, LOCK_SH | LOCK_NB) == 0;
       } else if (cancel) {
-        // Cancel present: poll with non-blocking F_SETLK + backoff.
-        // See open_locked comment — macOS doesn't wake blocked fcntl on fd close.
-        acquired = poll_lock_(fd, F_RDLCK, timeoutMs < 0 ? INT_MAX : timeoutMs, cancel) == 0;
+        // Cancel present: poll with non-blocking flock + backoff.
+        // See open_locked comment — POSIX doesn't guarantee fd-close wakes blocked flock.
+        acquired = poll_lock_(fd, LOCK_SH, timeoutMs < 0 ? INT_MAX : timeoutMs, cancel) == 0;
       } else if (timeoutMs < 0) {
-        acquired = fcntl_lock_rd_(fd, F_SETLKW) == 0;
+        acquired = flock_op_(fd, LOCK_SH) == 0;
       } else {
-        acquired = poll_lock_(fd, F_RDLCK, timeoutMs, nullptr) == 0;
+        acquired = poll_lock_(fd, LOCK_SH, timeoutMs, nullptr) == 0;
       }
 
-      // close() releases the fcntl lock — no explicit F_UNLCK needed.
+      // close() releases the flock — no explicit LOCK_UN needed.
       ::close(fd);
       return acquired;
     }
@@ -345,7 +348,7 @@ namespace fast_fs_hash {
     /** Return the file size in bytes, or -1 on error. */
     inline int64_t fsize() const noexcept {
       struct stat st{};
-      if (::fstat(this->fd, &st) != 0) {
+      if (fstat_eintr_(this->fd, st) != 0) {
         return -1;
       }
       return static_cast<int64_t>(st.st_size);
@@ -369,7 +372,7 @@ namespace fast_fs_hash {
     }
 
     /** Truncate the file to the given length. Returns true on success. */
-    inline bool truncate(size_t len) noexcept { return ::ftruncate(this->fd, static_cast<off_t>(len)) == 0; }
+    inline bool truncate(size_t len) noexcept { return ftruncate_eintr_(this->fd, static_cast<off_t>(len)) == 0; }
 
     /** Pre-allocate contiguous space. Best-effort, failure is ignored. */
     inline void preallocate(size_t len) noexcept {
@@ -397,12 +400,12 @@ namespace fast_fs_hash {
     static FSH_FORCE_INLINE bool stat_into_at(int dir_fd, const char * path, CacheEntry & entry) noexcept {
       struct stat st;
       if (dir_fd >= 0) {
-        if (::fstatat(dir_fd, path, &st, 0) != 0) [[unlikely]] {
+        if (fstatat_eintr_(dir_fd, path, st, 0) != 0) [[unlikely]] {
           entry.clearStat();
           return false;
         }
       } else {
-        if (::stat(path, &st) != 0) [[unlikely]] {
+        if (stat_eintr_(path, st) != 0) [[unlikely]] {
           entry.clearStat();
           return false;
         }
@@ -413,7 +416,7 @@ namespace fast_fs_hash {
     /** fstat: stat an already-open file descriptor. */
     static FSH_FORCE_INLINE bool fstat_into(int fd, CacheEntry & entry) noexcept {
       struct stat st;
-      if (::fstat(fd, &st) != 0) [[unlikely]] {
+      if (fstat_eintr_(fd, st) != 0) [[unlikely]] {
         entry.clearStat();
         return false;
       }
@@ -423,26 +426,24 @@ namespace fast_fs_hash {
     /** Open a file for reading only (no lock). Returns raw fd, -1 on error. */
     static inline int open_rd(const char * path) noexcept {
 #  ifdef __linux__
-      int f = ::open(path, O_RDONLY | O_CLOEXEC | O_NOATIME);
+      int f = open_eintr_(path, O_RDONLY | O_CLOEXEC | O_NOATIME);
       if (f < 0 && errno == EPERM) [[unlikely]] {
-        f = ::open(path, O_RDONLY | O_CLOEXEC);
+        f = open_eintr_(path, O_RDONLY | O_CLOEXEC);
       }
       return f;
 #  else
-      return ::open(path, O_RDONLY | O_CLOEXEC);
+      return open_eintr_(path, O_RDONLY | O_CLOEXEC);
 #  endif
     }
 
    private:
-    /** Apply or try a fcntl lock on byte 0 of fd. Retries on EINTR. */
-    static FSH_FORCE_INLINE int fcntl_lock_type_(int fd, int cmd, short lock_type) noexcept {
-      struct flock fl{};
-      fl.l_type = lock_type;
-      fl.l_whence = SEEK_SET;
-      fl.l_start = 0;
-      fl.l_len = 1;
+    /** Apply a flock(2) operation, retrying on EINTR.
+     *  `op` is one of LOCK_SH/LOCK_EX/LOCK_UN, optionally OR'd with LOCK_NB.
+     *  Returns 0 on success, -1 on error (errno set). For LOCK_NB contention,
+     *  errno is EWOULDBLOCK (== EAGAIN on every supported POSIX target). */
+    static FSH_FORCE_INLINE int flock_op_(int fd, int op) noexcept {
       for (;;) {
-        const int rc = ::fcntl(fd, cmd, &fl);
+        const int rc = ::flock(fd, op);
         if (rc == 0) [[likely]] {
           return 0;
         }
@@ -453,40 +454,155 @@ namespace fast_fs_hash {
       }
     }
 
-    static FSH_FORCE_INLINE int fcntl_lock_(int fd, int cmd) noexcept { return fcntl_lock_type_(fd, cmd, F_WRLCK); }
-    static FSH_FORCE_INLINE int fcntl_lock_rd_(int fd, int cmd) noexcept { return fcntl_lock_type_(fd, cmd, F_RDLCK); }
+    //
+    // EINTR-safe syscall wrappers.
+    //
+    // Node.js uses libuv which installs signal handlers (SIGCHLD, SIGPIPE,
+    // SIGWINCH, etc.), so any slow syscall we make can return -1/EINTR even
+    // though the user didn't do anything. Retry all interruptible syscalls.
+    //
 
-    /** Sleep for the given number of milliseconds via nanosleep. */
+    /** EINTR-safe fstat. */
+    static FSH_FORCE_INLINE int fstat_eintr_(int fd, struct stat & st) noexcept {
+      for (;;) {
+        const int rc = ::fstat(fd, &st);
+        if (rc == 0) [[likely]] {
+          return 0;
+        }
+        if (errno == EINTR) [[unlikely]] {
+          continue;
+        }
+        return -1;
+      }
+    }
+
+    /** EINTR-safe stat. */
+    static FSH_FORCE_INLINE int stat_eintr_(const char * path, struct stat & st) noexcept {
+      for (;;) {
+        const int rc = ::stat(path, &st);
+        if (rc == 0) [[likely]] {
+          return 0;
+        }
+        if (errno == EINTR) [[unlikely]] {
+          continue;
+        }
+        return -1;
+      }
+    }
+
+    /** EINTR-safe fstatat. */
+    static FSH_FORCE_INLINE int fstatat_eintr_(int dir_fd, const char * path, struct stat & st, int flags) noexcept {
+      for (;;) {
+        const int rc = ::fstatat(dir_fd, path, &st, flags);
+        if (rc == 0) [[likely]] {
+          return 0;
+        }
+        if (errno == EINTR) [[unlikely]] {
+          continue;
+        }
+        return -1;
+      }
+    }
+
+    /** EINTR-safe open(path, flags). */
+    static FSH_FORCE_INLINE int open_eintr_(const char * path, int flags) noexcept {
+      for (;;) {
+        const int rc = ::open(path, flags);
+        if (rc >= 0) [[likely]] {
+          return rc;
+        }
+        if (errno == EINTR) [[unlikely]] {
+          continue;
+        }
+        return -1;
+      }
+    }
+
+    /** EINTR-safe open(path, flags, mode). */
+    static FSH_FORCE_INLINE int open_eintr_(const char * path, int flags, mode_t mode) noexcept {
+      for (;;) {
+        const int rc = ::open(path, flags, mode);
+        if (rc >= 0) [[likely]] {
+          return rc;
+        }
+        if (errno == EINTR) [[unlikely]] {
+          continue;
+        }
+        return -1;
+      }
+    }
+
+    /** EINTR-safe openat. */
+    static FSH_FORCE_INLINE int openat_eintr_(int dir_fd, const char * rel_path, int flags) noexcept {
+      for (;;) {
+        const int rc = ::openat(dir_fd, rel_path, flags);
+        if (rc >= 0) [[likely]] {
+          return rc;
+        }
+        if (errno == EINTR) [[unlikely]] {
+          continue;
+        }
+        return -1;
+      }
+    }
+
+    /** EINTR-safe ftruncate. */
+    static FSH_FORCE_INLINE int ftruncate_eintr_(int fd, off_t len) noexcept {
+      for (;;) {
+        const int rc = ::ftruncate(fd, len);
+        if (rc == 0) [[likely]] {
+          return 0;
+        }
+        if (errno == EINTR) [[unlikely]] {
+          continue;
+        }
+        return -1;
+      }
+    }
+
+    /** Sleep for the given number of milliseconds via nanosleep.
+     *  EINTR-safe: nanosleep updates the remaining-time argument on EINTR,
+     *  so we loop until the full duration has elapsed. Without this, a stray
+     *  signal (libuv, SIGCHLD, etc.) would cut the backoff short and turn the
+     *  poll loop into a busy spin. */
     static FSH_NO_INLINE void poll_sleep_(int ms) noexcept {
       struct timespec ts{};
       ts.tv_sec = ms / 1000;
       ts.tv_nsec = (ms % 1000) * 1000000L;
-      ::nanosleep(&ts, nullptr);
+      while (::nanosleep(&ts, &ts) != 0) {
+        if (errno != EINTR) {
+          return;
+        }
+        // ts now contains the remaining time — loop and sleep the rest.
+      }
     }
 
     /**
      * Polling lock acquisition with timeout and optional cancellation.
-     * Non-blocking F_SETLK with exponential backoff (1ms → 50ms cap).
-     * Returns 0 on success, -1 on timeout/cancel/error.
+     * Non-blocking flock(LOCK_NB) with exponential backoff (1ms → 25ms cap).
+     * @param fd        File descriptor to lock.
+     * @param lock_type LOCK_EX or LOCK_SH (LOCK_NB is added internally).
+     * @param timeoutMs Maximum wait in ms.
+     * @param cancel    Optional cancellation token.
+     * @return 0 on success, -1 on timeout/cancel/error.
      */
     static FSH_NO_INLINE int poll_lock_(
-      int fd, short lock_type, int timeoutMs, LockCancel * cancel = nullptr) noexcept {
+      int fd, int lock_type, int timeoutMs, LockCancel * cancel = nullptr) noexcept {
       if (cancel && cancel->is_fired()) [[unlikely]] {
         return -1;
       }
       struct timespec start;
       clock_gettime(CLOCK_MONOTONIC, &start);
       int sleepMs = 1;
+      const int try_op = lock_type | LOCK_NB;
       for (;;) {
-        struct flock fl{};
-        fl.l_type = lock_type;
-        fl.l_whence = SEEK_SET;
-        fl.l_start = 0;
-        fl.l_len = 1;
-        if (::fcntl(fd, F_SETLK, &fl) == 0) {
+        if (::flock(fd, try_op) == 0) {
           return 0;
         }
-        if (errno != EAGAIN && errno != EACCES) [[unlikely]] {
+        // EWOULDBLOCK is the contention case. EAGAIN == EWOULDBLOCK on Linux/macOS/FreeBSD,
+        // but check both names defensively. Anything else is a real error.
+        const int e = errno;
+        if (e != EWOULDBLOCK && e != EAGAIN && e != EINTR) [[unlikely]] {
           return -1;
         }
         if (cancel && cancel->is_fired()) [[unlikely]] {
@@ -506,16 +622,18 @@ namespace fast_fs_hash {
         }
         poll_sleep_(actualSleep);
         // Advance the backoff interval (independent of clamping)
-        if (sleepMs < 50) {
+        if (sleepMs < 25) {
           sleepMs = sleepMs * 2;
-          if (sleepMs > 50) {
-            sleepMs = 50;
+          if (sleepMs > 25) {
+            sleepMs = 25;
           }
         }
       }
     }
 
-    static inline int open_rw_fd_(const char * path) noexcept { return ::open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0666); }
+    static inline int open_rw_fd_(const char * path) noexcept {
+      return open_eintr_(path, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+    }
 
     static inline int mkdir_p(const char * path, size_t len) noexcept {
       char buf[FSH_MAX_PATH];
@@ -576,13 +694,45 @@ namespace fast_fs_hash {
   struct DirFd : NonCopyable {
     int fd;
 
-    explicit DirFd(const char * root_path, size_t file_count) noexcept :
-      fd(file_count >= MIN_DIR_FD_FILES ? ::open(root_path, O_RDONLY | O_DIRECTORY | O_CLOEXEC) : -1) {}
+    /** Default-construct an invalid DirFd (fd = -1). Used when the actual open is deferred. */
+    DirFd() noexcept : fd(-1) {}
+
+    explicit DirFd(const char * root_path, size_t file_count) noexcept : fd(-1) {
+      if (file_count < MIN_DIR_FD_FILES) {
+        return;
+      }
+      // EINTR-safe open loop (libuv/Node may deliver signals mid-syscall).
+      for (;;) {
+        const int rc = ::open(root_path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (rc >= 0) {
+          this->fd = rc;
+          return;
+        }
+        if (errno != EINTR) {
+          return;
+        }
+      }
+    }
 
     ~DirFd() noexcept {
       if (fd >= 0) {
         ::close(fd);
       }
+    }
+
+    /** Move constructor — transfers ownership of the fd. */
+    DirFd(DirFd && other) noexcept : fd(other.fd) { other.fd = -1; }
+
+    /** Move assignment — closes any owned fd, then transfers ownership. */
+    DirFd & operator=(DirFd && other) noexcept {
+      if (this != &other) {
+        if (this->fd >= 0) {
+          ::close(this->fd);
+        }
+        this->fd = other.fd;
+        other.fd = -1;
+      }
+      return *this;
     }
   };
 

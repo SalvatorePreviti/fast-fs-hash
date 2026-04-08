@@ -36,6 +36,24 @@ if (!isMainThread && parentPort && workerData) {
     parentPort.postMessage({ acquired: true, disposed: session.disposed });
     // Hang forever — parent will terminate() us. setTimeout avoids vitest's unsettled-await warning.
     setTimeout(() => {}, 2147483647);
+  } else if (workerData.mode === "lock-then-release") {
+    // Acquire the lock, signal "ready", then wait for a "release" message and
+    // close the session. Used to verify cross-thread (OFD) lock serialization.
+    const cache = new FileHashCache({
+      cachePath: workerData.cachePath,
+      files: workerData.files,
+      rootPath: workerData.rootPath,
+      version: 1,
+    });
+    const session = await cache.open();
+    parentPort.postMessage({ acquired: true });
+    parentPort.on("message", (msg) => {
+      if (msg === "release") {
+        session.close();
+        parentPort.postMessage({ released: true });
+        // Let parent close us via terminate() after it observes the release.
+      }
+    });
   } else if (workerData.mode === "bulk") {
     const filePath = path.join(workerData.fixturesDir, "a.txt");
     const files = Array.from({ length: workerData.fileCount }, () => filePath);

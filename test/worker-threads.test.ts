@@ -11,7 +11,7 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Worker } from "node:worker_threads";
-import { digestFilesParallel, XxHash128Stream } from "fast-fs-hash";
+import { digestFilesParallel, FileHashCache, XxHash128Stream } from "fast-fs-hash";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 //  - Known values (same as xxhash128.test.ts)
@@ -130,5 +130,125 @@ describe("Worker Threads", () => {
     for (const result of workerResults) {
       expect(result.hex).toBe(mainHex);
     }
+  });
+
+  // ── Cross-thread FileHashCache lock serialization ─────────────────────
+  //
+  // Regression test for the worker_threads correctness bug:
+  //   POSIX fcntl byte-range locks are PER-PROCESS — two threads in the same
+  //   process can both "acquire" the lock simultaneously and corrupt the cache.
+  //   We use flock(2) on POSIX (and LockFileEx on Windows), both of which are
+  //   per-OFD / per-handle, so two open() calls in the same process get
+  //   independent OFDs and serialize correctly.
+  //
+  // This test would have silently passed against the old fcntl impl while
+  // racing both holders into the same critical section.
+
+  describe("FileHashCache lock serialization across threads", () => {
+    function lockInWorker(cachePath: string, files: string[], rootPath: string) {
+      return new Promise<{ worker: Worker; acquired: boolean }>((resolve, reject) => {
+        const worker = new Worker(WORKER_SCRIPT, {
+          workerData: { mode: "lock-then-release", cachePath, files, rootPath },
+        });
+        worker.once("message", (msg: { acquired: boolean }) => {
+          resolve({ worker, acquired: msg.acquired });
+        });
+        worker.on("error", reject);
+      });
+    }
+
+    function releaseAndTerminate(worker: Worker): Promise<void> {
+      return new Promise((resolve) => {
+        const onMsg = (msg: { released?: boolean }) => {
+          if (msg.released) {
+            worker.removeListener("message", onMsg);
+            void worker.terminate().then(() => resolve());
+          }
+        };
+        worker.on("message", onMsg);
+        worker.postMessage("release");
+      });
+    }
+
+    it("main thread observes lockFailed while a worker holds the lock", async () => {
+      const cp = path.join(FIXTURES_DIR, "thread-serialize-1.cache");
+      const files = [fileA()];
+
+      const { worker, acquired } = await lockInWorker(cp, files, FIXTURES_DIR);
+      try {
+        expect(acquired).toBe(true);
+
+        // While the worker holds the lock, a non-blocking try from the main
+        // thread MUST observe lockFailed. With the old per-process fcntl
+        // impl, the kernel would silently grant the lock to the main thread
+        // and we'd race two writers.
+        const cache = new FileHashCache({
+          cachePath: cp,
+          files,
+          rootPath: FIXTURES_DIR,
+          version: 1,
+          lockTimeoutMs: 0,
+        });
+        using s = await cache.open();
+        expect(s.status).toBe("lockFailed");
+      } finally {
+        await releaseAndTerminate(worker);
+      }
+
+      // After release, the main thread can take the lock normally.
+      const cache2 = new FileHashCache({ cachePath: cp, files, rootPath: FIXTURES_DIR, version: 1 });
+      using s2 = await cache2.open();
+      expect(s2.status).not.toBe("lockFailed");
+    }, 30_000);
+
+    it("FileHashCache.isLocked sees a lock held by a sibling worker", async () => {
+      const cp = path.join(FIXTURES_DIR, "thread-serialize-2.cache");
+      const files = [fileA()];
+
+      const { worker, acquired } = await lockInWorker(cp, files, FIXTURES_DIR);
+      try {
+        expect(acquired).toBe(true);
+        // The static checker uses a fresh OFD; flock(LOCK_EX|LOCK_NB) should
+        // fail because the worker's OFD already holds the lock.
+        expect(FileHashCache.isLocked(cp)).toBe(true);
+      } finally {
+        await releaseAndTerminate(worker);
+      }
+
+      expect(FileHashCache.isLocked(cp)).toBe(false);
+    }, 30_000);
+
+    it("main-thread open blocks until the worker releases (default timeout)", async () => {
+      const cp = path.join(FIXTURES_DIR, "thread-serialize-3.cache");
+      const files = [fileA()];
+
+      const { worker, acquired } = await lockInWorker(cp, files, FIXTURES_DIR);
+      expect(acquired).toBe(true);
+
+      // Default lockTimeoutMs = -1: blocks until the worker releases.
+      const cache = new FileHashCache({ cachePath: cp, files, rootPath: FIXTURES_DIR, version: 1 });
+      const openPromise = cache.open();
+
+      // Give the open() a moment — it must NOT have resolved yet, because
+      // the worker still holds the lock.
+      let resolvedEarly = false;
+      const guard = openPromise.then(
+        () => {
+          resolvedEarly = true;
+        },
+        () => {
+          resolvedEarly = true;
+        }
+      );
+      await new Promise((r) => setTimeout(r, 100));
+      expect(resolvedEarly).toBe(false);
+
+      // Now release. open() should resolve.
+      await releaseAndTerminate(worker);
+      const session = await openPromise;
+      await guard;
+      expect(session.status).not.toBe("lockFailed");
+      session.close();
+    }, 30_000);
   });
 });

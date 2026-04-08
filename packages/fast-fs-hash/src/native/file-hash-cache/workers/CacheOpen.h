@@ -159,6 +159,10 @@ namespace fast_fs_hash {
     const uint8_t * runPackedPaths_ = nullptr;
     size_t runPackedPathsSize_ = 0;
     size_t workBatch_ = 0;
+    /** Root directory fd shared by all stat workers. Opened once per CacheOpen call
+     *  on the libuv thread, instead of once per worker thread (saves ~3 openat
+     *  syscalls per call). Lifetime: from doOpen_ until ~CacheOpen. */
+    DirFd runDirFd_{};
 
     alignas(64) mutable std::atomic<size_t> nextIndex_{0};
     mutable std::atomic<MatchResult> matchResult_{MatchResult::OK};
@@ -279,9 +283,14 @@ namespace fast_fs_hash {
       CacheEntry * entries = entriesOf(buf);
 
       if (this->hasDirtyHint_ && this->dirtyCount_ == 0 && this->dirtyLen_ == 0) {
+        // Empty dirty hint: all entries trusted, no stat needed.
+        // Mark every entry DONE and short-circuit straight to UP_TO_DATE.
+        // Skips pool submission, fork-join overhead, and the entire stat loop.
         for (uint32_t i = 0; i < fc; ++i) {
           entries[i].ino = (entries[i].ino & INO_VALUE_MASK) | CACHE_S_DONE;
         }
+        this->finish_(CacheStatus::UP_TO_DATE);
+        return;
       } else if (this->hasDirtyHint_ && this->dirtyPaths_ && this->dirtyCount_ > 0) {
         std::unordered_set<std::string_view> dirtySet;
         dirtySet.reserve(this->dirtyCount_);
@@ -326,6 +335,11 @@ namespace fast_fs_hash {
       this->workBatch_ = computeBatchSize(threadCount, fc);
       this->nextIndex_.store(0, std::memory_order_relaxed);
       this->matchResult_.store(MatchResult::OK, std::memory_order_relaxed);
+
+      // Open the root directory fd ONCE on this thread, instead of once per
+      // worker thread. processStat_ workers read from runDirFd_ instead of
+      // opening their own DirFd. Saves (threadCount - 1) openat syscalls.
+      this->runDirFd_ = DirFd(this->rootPath_.c_str(), fc);
 
       this->job_.owner = this;
       this->addon->pool.submit(this->job_, threadCount);
@@ -451,9 +465,10 @@ namespace fast_fs_hash {
       const std::string & rootRef = this->rootPath_;
       const char * rootPath = rootRef.c_str();
       const size_t rootPathLen = rootRef.size();
-      DirFd dirFd(rootPath, fileCount);
+      // Use the shared root DirFd opened in doOpen_, instead of opening
+      // a per-thread one. Saves (threadCount - 1) openat syscalls per call.
       PathResolver resolver;
-      resolver.init(dirFd, rootPath, rootPathLen);
+      resolver.init(this->runDirFd_, rootPath, rootPathLen);
       const size_t maxSegCap = FSH_MAX_PATH > resolver.prefix_len + 1 ? FSH_MAX_PATH - resolver.prefix_len - 1 : 0;
 
       for (;;) {

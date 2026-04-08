@@ -106,7 +106,9 @@ export class FileHashCacheEntry {
     this.size = dataBuf.readUInt32LE(offset + 24) + dataBuf.readUInt32LE(offset + 28) * 0x100000000;
     this.mtimeMs = (dataBuf.readUInt32LE(offset + 8) + dataBuf.readUInt32LE(offset + 12) * 0x100000000) / 1e6;
     this.ctimeMs = (dataBuf.readUInt32LE(offset + 16) + dataBuf.readUInt32LE(offset + 20) * 0x100000000) / 1e6;
-    this.changed = (dataBuf.readUInt8(offset + 7) & 0x20) !== 0;
+    // Direct indexing is slightly faster than readUInt8 (skips bounds check);
+    // the offset is always in range because dataBuf was sized by C++ to fit fc entries.
+    this.changed = (dataBuf[offset + 7] & 0x20) !== 0;
     this.contentHash = dataBuf.subarray(offset + 32, offset + 48);
     this.#hashHex = null;
   }

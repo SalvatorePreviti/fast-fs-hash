@@ -25,7 +25,7 @@ namespace fast_fs_hash {
     napi_async_cleanup_hook_handle cleanup_hook_ = nullptr;
 
     /** Active lock cancels — JS-thread-only list. fire_all() before pool.shutdown()
-     *  to unblock threads stuck in fcntl(F_SETLKW). */
+     *  to unblock threads polling on flock(LOCK_NB) (POSIX) or LockFileEx (Win32). */
     FfshFile::LockCancelList active_cancels;
 
     /** RAII file handles held by JS for this env — closed on cleanup or erase.

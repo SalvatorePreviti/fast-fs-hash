@@ -18,20 +18,12 @@ import {
   H_PAYLOAD3_BYTE,
   S_CANCEL_FLAG,
   S_FILE_COUNT,
-  S_FINGERPRINT,
   S_FLAGS,
-  S_LOCK_TIMEOUT,
-  S_PAYLOAD0,
-  S_PAYLOAD1,
-  S_PAYLOAD2,
-  S_PAYLOAD3,
   S_STATUS,
-  S_VERSION,
 } from "./file-hash-cache-format";
 import {
   cacheClose,
   cacheWrite,
-  cacheWriteNew,
   decodeFilePathsFromBuf,
   readPayloadData,
   STATUS_MAP,
@@ -39,8 +31,6 @@ import {
   teardownCancel,
   toAbsolutePaths,
 } from "./file-hash-cache-internal";
-
-// ── FileHashCacheSession ─────────────────────────────────────────────
 
 /**
  * A file hash cache session holding an exclusive OS-level lock.
@@ -299,31 +289,20 @@ export class FileHashCacheSession {
     const fp = cache.fingerprint;
 
     if (this.status === "lockFailed") {
+      // The lockFailed session never acquired the JS path mutex or the OS lock,
+      // so we cannot write through it directly — that would race against any
+      // other in-isolate instance currently holding the slot. Delegate to
+      // cache.overwrite() which goes through #acquire and serializes correctly.
       this.close();
-      sb.writeUInt32LE(cache.version, S_VERSION);
-      sb.writeInt32LE(options?.lockTimeoutMs ?? this.#lockTimeoutMs, S_LOCK_TIMEOUT);
-      sb.writeUInt32LE(fc, S_FILE_COUNT);
-      if (fp) {
-        sb.set(fp, S_FINGERPRINT);
-      } else {
-        sb.fill(0, S_FINGERPRINT, S_FINGERPRINT + 16);
-      }
-      sb.writeDoubleLE(p0, S_PAYLOAD0);
-      sb.writeDoubleLE(p1, S_PAYLOAD1);
-      sb.writeDoubleLE(p2, S_PAYLOAD2);
-      sb.writeDoubleLE(p3, S_PAYLOAD3);
-
-      const cancelCb = setupCancel(sb, signal);
-      let result: number;
-      try {
-        result = await cacheWriteNew(sb, encoded, root, ud);
-      } finally {
-        teardownCancel(signal, cancelCb);
-      }
-      if (result === 0) {
-        cache._recordWriteSuccess();
-      }
-      return result === 0;
+      return cache.overwrite({
+        payloadValue0: p0,
+        payloadValue1: p1,
+        payloadValue2: p2,
+        payloadValue3: p3,
+        payloadData: ud,
+        signal,
+        lockTimeoutMs: options?.lockTimeoutMs ?? this.#lockTimeoutMs,
+      });
     }
 
     const dataBuf = this.#dataBuf;
@@ -333,10 +312,8 @@ export class FileHashCacheSession {
     dataBuf.writeDoubleLE(p2, H_PAYLOAD2_BYTE);
     dataBuf.writeDoubleLE(p3, H_PAYLOAD3_BYTE);
 
+    // fp is already validated (length === 16) by FileHashCache.fingerprint setter.
     if (fp) {
-      if (!(fp instanceof Uint8Array) || fp.length !== 16) {
-        throw new TypeError("FileHashCache: fingerprint must be a Uint8Array of exactly 16 bytes");
-      }
       dataBuf.set(fp, H_FINGERPRINT_BYTE);
     } else {
       dataBuf.fill(0, H_FINGERPRINT_BYTE, H_FINGERPRINT_BYTE + 16);

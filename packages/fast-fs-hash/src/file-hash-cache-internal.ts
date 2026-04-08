@@ -66,8 +66,6 @@ export function teardownCancel(signal: AbortSignal | null | undefined, cb: (() =
   }
 }
 
-// ── dataBuf helpers ─────────────────────────────────────────────────
-
 /** Decode relative file paths from a dataBuf. */
 export function decodeFilePathsFromBuf(buf: Buffer): string[] {
   const fc = buf.readUInt32LE(H_FILE_COUNT);
@@ -81,8 +79,9 @@ export function decodeFilePathsFromBuf(buf: Buffer): string[] {
   const result: string[] = new Array(fc);
   let prevEnd = 0;
   for (let i = 0; i < fc; i++) {
-    const end = buf.readUInt32LE(pathEndsStart + i * 4);
-    const clampedEnd = end > pathsLen ? pathsLen : end;
+    const raw = buf.readUInt32LE(pathEndsStart + i * 4);
+    // Clamp non-monotonic or out-of-range ends (defense-in-depth vs corrupt cache).
+    const clampedEnd = raw > pathsLen ? pathsLen : raw < prevEnd ? prevEnd : raw;
     result[i] = buf.toString("utf8", pathsStart + prevEnd, pathsStart + clampedEnd);
     prevEnd = clampedEnd;
   }
@@ -115,8 +114,9 @@ export function extractEncodedPaths(buf: Buffer, fc: number): Buffer {
   let prevEnd = 0;
   let w = 0;
   for (let i = 0; i < fc; i++) {
-    const end = buf.readUInt32LE(pathEndsStart + i * 4);
-    const clampedEnd = end > pathsLen ? pathsLen : end;
+    const raw = buf.readUInt32LE(pathEndsStart + i * 4);
+    // Clamp non-monotonic or out-of-range ends (defense-in-depth vs corrupt cache).
+    const clampedEnd = raw > pathsLen ? pathsLen : raw < prevEnd ? prevEnd : raw;
     const segLen = clampedEnd - prevEnd;
     if (segLen > 0) {
       buf.copy(encoded, w, pathsStart + prevEnd, pathsStart + clampedEnd);
@@ -134,11 +134,13 @@ export function decodeEncodedPaths(encoded: Buffer, fc: number): string[] {
     return [];
   }
   const result: string[] = new Array(fc);
+  const len = encoded.length;
   let start = 0;
   for (let i = 0; i < fc; i++) {
-    let end = start;
-    while (end < encoded.length && encoded[end] !== 0) {
-      end++;
+    // Buffer.indexOf is a native C++ memchr scan — much faster than a JS loop.
+    let end = encoded.indexOf(0, start);
+    if (end < 0) {
+      end = len;
     }
     result[i] = encoded.toString("utf8", start, end);
     start = end + 1;
@@ -164,9 +166,10 @@ export function readPayloadData(dataBuf: Buffer): readonly Buffer[] {
   const result: Buffer[] = new Array(udItemCount);
   let prevEnd = 0;
   for (let i = 0; i < udItemCount; i++) {
-    const end = dataBuf.readUInt32LE(udDirStart + i * 4);
-    const size = end - prevEnd;
-    if (size <= 0) {
+    const raw = dataBuf.readUInt32LE(udDirStart + i * 4);
+    // Clamp non-monotonic or out-of-range ends (defense-in-depth vs corrupt cache).
+    const end = raw > udPayloadsLen ? udPayloadsLen : raw < prevEnd ? prevEnd : raw;
+    if (end === prevEnd) {
       result[i] = emptyBuf();
     } else {
       result[i] = dataBuf.subarray(udPayloadsStart + prevEnd, udPayloadsStart + end);

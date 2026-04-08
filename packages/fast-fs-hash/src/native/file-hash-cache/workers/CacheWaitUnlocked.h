@@ -8,7 +8,7 @@ namespace fast_fs_hash {
   /**
    * Blocks a pool thread until the cache file is no longer exclusively locked.
    *
-   * POSIX: F_SETLKW (kernel blocks, zero CPU) without cancel; poll_lock_ with cancel.
+   * POSIX: blocking flock(LOCK_SH) (kernel blocks, zero CPU) without cancel; poll_lock_ with cancel.
    * Win32: LockFileEx shared lock with overlapped I/O + CancelIoEx for cancel.
    * Resolves true if unlocked, false on timeout or shutdown.
    */

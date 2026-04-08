@@ -1,8 +1,11 @@
 /**
- * Tests: FileHashCache.isLocked (cross-process).
+ * Tests: FileHashCache.isLocked.
  *
- * isLocked detects locks held by OTHER processes (POSIX fcntl semantics:
- * F_GETLK never reports the calling process's own locks).
+ * isLocked detects locks held by any holder, including the calling process,
+ * because flock(2) on POSIX is per-open-file-description (per-OFD): a fresh
+ * open() in the checker correctly competes with all existing OFDs, in this
+ * process and others. On Windows the per-handle LockFileEx semantics give
+ * the same result.
  */
 
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -67,12 +70,14 @@ describe("FileHashCache.isLocked", () => {
     expect(FileHashCache.isLocked(cp)).toBe(false);
   }, 30_000);
 
-  it("returns false on POSIX (fcntl limitation) and true on Windows when checking own process lock", async () => {
+  it("returns true when checking a lock held by the same process", async () => {
+    // flock(2) per-OFD semantics on POSIX (matching Windows LockFileEx) make
+    // the checker's fresh open() compete with our own held OFD, so we observe
+    // our own lock — which is the correct, useful behavior for worker_threads.
     const cp = cachePath("own-lock");
     const files = [fixtureFile("a.txt")];
 
     using _session = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
-    const expected = process.platform === "win32";
-    expect(FileHashCache.isLocked(cp)).toBe(expected);
+    expect(FileHashCache.isLocked(cp)).toBe(true);
   });
 });

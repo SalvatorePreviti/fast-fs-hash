@@ -158,7 +158,7 @@ namespace fast_fs_hash {
      * Lock cancellation token — Win32 implementation.
      * fire() sets fired_=true and calls CancelIoEx to interrupt a pending
      * overlapped LockFileEx. On POSIX, fire() sets fired_=true; poll_lock_
-     * checks is_fired() between non-blocking F_SETLK attempts.
+     * checks is_fired() between non-blocking flock(LOCK_NB) attempts.
      */
     struct LockCancelList;
 
@@ -823,7 +823,10 @@ namespace fast_fs_hash {
   /** Windows no-op: dir_fd is not used — all paths are absolute UTF-16. */
   struct DirFd : NonCopyable {
     static constexpr int fd = -1;
+    DirFd() noexcept = default;
     explicit DirFd(const char *, size_t) noexcept {}
+    DirFd(DirFd &&) noexcept = default;
+    DirFd & operator=(DirFd &&) noexcept = default;
   };
 
 #  include "hash-file-helpers.h"

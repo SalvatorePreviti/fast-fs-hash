@@ -135,6 +135,11 @@ namespace fast_fs_hash {
     uint32_t writerFc_ = 0;
     bool writeSuccess_ = false;
     double resultStat_[2] = {0, 0};
+    /** Root directory fd shared by all hash workers. Opened once per CacheWriter
+     *  run on the libuv thread, instead of once per worker thread (saves
+     *  (threadCount - 1) openat syscalls per call). Lifetime: from
+     *  completeAndWrite_ until ~CacheWriter. */
+    DirFd runDirFd_{};
 
     OwnedBuf<> newBuf_;
 
@@ -253,6 +258,11 @@ namespace fast_fs_hash {
       this->workBatch_ = computeBatchSize(threadCount, fc);
       this->nextIndex_.store(0, std::memory_order_relaxed);
 
+      // Open the root directory fd ONCE on this thread, instead of once per
+      // worker thread. processHash_ workers read from runDirFd_ instead of
+      // opening their own DirFd. Saves (threadCount - 1) openat syscalls.
+      this->runDirFd_ = DirFd(this->rootPath_.c_str(), fc);
+
       this->job_.owner = this;
       this->addon->pool.submit(this->job_, threadCount);
     }
@@ -344,9 +354,10 @@ namespace fast_fs_hash {
       const char * rootPath = rootRef.c_str();
       const size_t rootPathLen = rootRef.size();
 
-      DirFd dirFd(rootPath, fileCount);
+      // Use the shared root DirFd opened in completeAndWrite_, instead of
+      // opening a per-thread one. Saves (threadCount - 1) openat syscalls.
       PathResolver resolver;
-      resolver.init(dirFd, rootPath, rootPathLen);
+      resolver.init(this->runDirFd_, rootPath, rootPathLen);
       const size_t maxSegCap = FSH_MAX_PATH > resolver.prefix_len + 1 ? FSH_MAX_PATH - resolver.prefix_len - 1 : 0;
 
       for (;;) {
@@ -434,12 +445,9 @@ namespace fast_fs_hash {
             continue;
           }
 
-          // New entry (NOT_CHECKED) — always changed
-          if (resolver.stat_and_hash_file(entry, entry.contentHash, readBuf, readBufSize)) {
-            entry.ino |= INO_CHANGED_BIT;
-          } else {
-            entry.ino |= INO_CHANGED_BIT;  // stat failed → mark changed too
-          }
+          // New entry (NOT_CHECKED) — always changed regardless of stat/hash success
+          resolver.stat_and_hash_file(entry, entry.contentHash, readBuf, readBufSize);
+          entry.ino |= INO_CHANGED_BIT;
         }
       }
     }

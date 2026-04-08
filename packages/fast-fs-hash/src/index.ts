@@ -25,7 +25,6 @@ export type {
   FileHashCacheEntries,
   FileHashCacheEntry,
   FileHashCacheOptions,
-  FileHashCachePayloads,
   FileHashCacheSession,
   FileHashCacheWriteOptions,
 } from "./FileHashCache";
