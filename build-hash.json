@@ -1,11 +1,11 @@
 {
   "_description": "SHA-256 hashes of build artifacts and source code. Regenerated on every build.",
-  "generatedAt": "2026-04-08T09:44:35.122Z",
+  "generatedAt": "2026-04-08T09:56:04.114Z",
   "distArtifacts": {
     "index.cjs": {
-      "sha256": "d98f9ad74301da471fdb346b173229e3ae4bc3081c6af66de7d09aef462e7a60",
-      "bytes": 79435,
-      "lines": 2126
+      "sha256": "06ed014fcc3ab5600b0f30f41f66110ea9536abf8e6a0926293ea565c781f367",
+      "bytes": 79596,
+      "lines": 2131
     },
     "index.d.cts": {
       "sha256": "97e1818573679b5d3d697406abd3e5f1e9cd00da1f2783ab236912180462f5be",
@@ -28,9 +28,9 @@
     "files": 25,
     "ts": {
       "FileHashCache.ts": {
-        "sha256": "861b8eb4e17227d0b8e0ccae640e3c1322aa71c18a3b64f48dda369909031beb",
-        "bytes": 39062,
-        "lines": 1085
+        "sha256": "dbba418a30b604db9073b89f439e9ee3682617705c73f7c7a9b31a3ecfd35151",
+        "bytes": 39582,
+        "lines": 1101
       },
       "FileHashCacheEntries.ts": {
         "sha256": "1bf8d14b15a2498c47e71751cfe6f126f094c408d198126b25f063eb047a5beb",
@@ -38,9 +38,9 @@
         "lines": 126
       },
       "FileHashCacheSession.ts": {
-        "sha256": "407bd38fae3d5be7ed6968dcc54388e309b480644e29fd50bcc5dccfd98c6c11",
-        "bytes": 11398,
-        "lines": 338
+        "sha256": "1eaa06f5d0d8b5d26c812fd67b8e755635f0feb7ce5c53697959047eab17f64b",
+        "bytes": 11230,
+        "lines": 336
       },
       "XxHash128Stream.ts": {
         "sha256": "16c72e48e3878e3a0c13c5bac9fe348ef6cdf40c9a9b82580fdd4fad70018642",
