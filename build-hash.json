@@ -1,11 +1,11 @@
 {
   "_description": "SHA-256 hashes of build artifacts and source code. Regenerated on every build.",
-  "generatedAt": "2026-04-08T09:56:04.114Z",
+  "generatedAt": "2026-04-28T23:21:09.856Z",
   "distArtifacts": {
     "index.cjs": {
-      "sha256": "06ed014fcc3ab5600b0f30f41f66110ea9536abf8e6a0926293ea565c781f367",
-      "bytes": 79596,
-      "lines": 2131
+      "sha256": "3f4968f7c436c6aed1e0a720098b9857165e03d7813fd1800584b64ca6623870",
+      "bytes": 83545,
+      "lines": 2215
     },
     "index.d.cts": {
       "sha256": "97e1818573679b5d3d697406abd3e5f1e9cd00da1f2783ab236912180462f5be",
@@ -13,34 +13,34 @@
       "lines": 2
     },
     "index.d.ts": {
-      "sha256": "4d32120194a122798d015d04df33987e156049fb1591436464b11159d7d9cba2",
-      "bytes": 44352,
-      "lines": 952
+      "sha256": "c1a3027ea85b1f2b59aec04cdb903d6b6fdfdf6202af688cc0cbe48ec75e5ee8",
+      "bytes": 48149,
+      "lines": 1028
     },
     "index.mjs": {
-      "sha256": "f4f51584f2ebc1df9a3155be3fa2609fb5c1d3b8d78c9c52104d994c15c5b76d",
-      "bytes": 874,
-      "lines": 40
+      "sha256": "ce175b4464bc08913b17a14727835d3a1f59c77a6d8e451754d58ea9183203c7",
+      "bytes": 916,
+      "lines": 42
     }
   },
   "source": {
     "_description": "Source files by category. Discovered via glob, sorted alphabetically.",
-    "files": 25,
+    "files": 27,
     "ts": {
       "FileHashCache.ts": {
-        "sha256": "dbba418a30b604db9073b89f439e9ee3682617705c73f7c7a9b31a3ecfd35151",
-        "bytes": 39582,
-        "lines": 1101
+        "sha256": "409b7fd4462cdc208951b7012e6ce417ed80291cff5d6b5f62d70faee82c7b89",
+        "bytes": 39484,
+        "lines": 1116
       },
       "FileHashCacheEntries.ts": {
-        "sha256": "1bf8d14b15a2498c47e71751cfe6f126f094c408d198126b25f063eb047a5beb",
-        "bytes": 4500,
-        "lines": 126
+        "sha256": "b98bfc06864ab202220b220653ad485fd5eb3eeee99e2c0fb8ce49a73e7a0413",
+        "bytes": 4166,
+        "lines": 122
       },
       "FileHashCacheSession.ts": {
-        "sha256": "1eaa06f5d0d8b5d26c812fd67b8e755635f0feb7ce5c53697959047eab17f64b",
-        "bytes": 11230,
-        "lines": 336
+        "sha256": "5f129420489b4003eb9bfc2ef28db92ed313eb72ac9ea7decafd90c120cf1014",
+        "bytes": 12209,
+        "lines": 363
       },
       "XxHash128Stream.ts": {
         "sha256": "16c72e48e3878e3a0c13c5bac9fe348ef6cdf40c9a9b82580fdd4fad70018642",
@@ -48,14 +48,14 @@
         "lines": 405
       },
       "file-hash-cache-format.ts": {
-        "sha256": "1b518c8339db1a97d6f5412f25f80ca43599062b1dd4bcdbcd57d89c5fac5d03",
-        "bytes": 3720,
-        "lines": 123
+        "sha256": "d81e928d9dcbca956147e53cba7231f3ee948e6acb5ca9e364159d38e95faf64",
+        "bytes": 4386,
+        "lines": 141
       },
       "file-hash-cache-internal.ts": {
-        "sha256": "70433222c689a7a275fd8f3ad9f12beeea55e33c8e4d6a9f5bc36a165b9ac9ad",
-        "bytes": 6097,
-        "lines": 181
+        "sha256": "54e5a8a2662034c921dd37e7b697d4ed5d73dabf8e6de7218a02fc1bd7ec395f",
+        "bytes": 7538,
+        "lines": 218
       },
       "file-hash-cache-utils.ts": {
         "sha256": "1b2e5253266a1aa178c131e02f04555ac164bff2b542f415d2c6645913de0031",
@@ -68,19 +68,19 @@
         "lines": 222
       },
       "index.ts": {
-        "sha256": "2c53de2f065fff398dd2ab4f9a986fc3ad4fade64896336307840d73ea669146",
-        "bytes": 11713,
-        "lines": 331
+        "sha256": "a95e02687f7f12b3b662c636d19cf6c6b82a9227d1121558144078d86e78ca57",
+        "bytes": 13738,
+        "lines": 371
       },
       "init-native.ts": {
-        "sha256": "63772d3ced6bbf7f5848276ba93a93f461b916bc374882955eb296fdf1872719",
-        "bytes": 7072,
-        "lines": 210
+        "sha256": "d0329bd3aaa27b4c3c2eedae661f3654034b3330e194401a6d2c424b6affdec4",
+        "bytes": 7464,
+        "lines": 215
       },
       "public-types.ts": {
-        "sha256": "785c93c1466aab4837ffc0e1c4e1137b3b81ec6a8784060b788afea511e21edf",
-        "bytes": 1529,
-        "lines": 46
+        "sha256": "d1d3aea2ab8284e7286507f5d00eb1b6ee04d0543fc6a56d279cf1b1326459f3",
+        "bytes": 2841,
+        "lines": 73
       },
       "utils.ts": {
         "sha256": "dd84ca0265af01814043b97fc67cf1a35df4a7e08a33d5f99024142a85b0f787",
@@ -90,9 +90,9 @@
     },
     "native": {
       "binding.cpp": {
-        "sha256": "7d87d11ad2f0599eb504899ab24cf202e86091bbfc759a6cd7aa1b20e77cbb9c",
-        "bytes": 5429,
-        "lines": 113
+        "sha256": "de474511f0e7d7bcdd92f95df368df4b3d7973a0e92c9b3d6c903ef2278f16e8",
+        "bytes": 5695,
+        "lines": 118
       },
       "digest-functions.h": {
         "sha256": "c7bdd9366b169e98d10c890b71c4e96940ae99b8f33869b222a65d487ef531b8",
@@ -103,6 +103,16 @@
         "sha256": "1b175fabb9daed26fcf8132d8adbc207d6e1307275bef3a769161541593b07f5",
         "bytes": 592,
         "lines": 21
+      },
+      "find-project-root-binding.h": {
+        "sha256": "e09eb976d4857454672df221e84814eecbd7ed2e94c2450323bfa4d3c5a72b28",
+        "bytes": 2825,
+        "lines": 75
+      },
+      "find-project-root-core.h": {
+        "sha256": "f6511e9b7540f462b8a774ce69c912cbfce3eb18e43555f451a3f4cd2e5d0f72",
+        "bytes": 21052,
+        "lines": 573
       },
       "includes.h": {
         "sha256": "9b34a859966d5f24ac89ecba90fe509c64713cd930274b5a63f50481ae063975",

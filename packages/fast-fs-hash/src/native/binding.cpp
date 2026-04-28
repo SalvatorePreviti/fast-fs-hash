@@ -2,6 +2,7 @@
 #include "stream-functions.h"
 #include "lz4-functions.h"
 #include "files-equal-binding.h"
+#include "find-project-root-binding.h"
 #include "InstanceHashWorker_impl.h"
 #include "file-cache-binding.h"
 #include "AddonData_impl.h"
@@ -83,6 +84,10 @@ static Napi::Object Init(Napi::Env env, Napi::Object exports) {
 
   // File comparison
   exports.Set("filesEqual", Napi::Function::New(env, fast_fs_hash::bindFilesEqual));
+
+  // Project root discovery
+  exports.Set("findProjectRoot", Napi::Function::New(env, fast_fs_hash::bindFindProjectRoot));
+  exports.Set("findProjectRootSync", Napi::Function::New(env, fast_fs_hash::bindFindProjectRootSync));
 
   // Pool management
   exports.Set("poolTrim", Napi::Function::New(env, poolTrim));

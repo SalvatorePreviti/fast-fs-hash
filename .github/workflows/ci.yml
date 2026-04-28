@@ -483,7 +483,7 @@ jobs:
         shell: bash
         run: |
           tag_flag="--tag ${{ steps.release.outputs.dist-tag }}"
-          echo "── Dry-run: verifying all packages can be published ──"
+          echo " - Dry-run: verifying all packages can be published"
           for dir in npm/*/; do
             pkg_name=$(node -p "require('./${dir}/package.json').name")
             pkg_version=$(node -p "require('./${dir}/package.json').version")
@@ -494,7 +494,7 @@ jobs:
           pkg_version=$(node -p "require('./packages/fast-fs-hash/package.json').version")
           echo "  📦 ${pkg_name}@${pkg_version} ..."
           npm publish ./packages/fast-fs-hash --dry-run --access public $tag_flag 2>&1 | tail -5
-          echo "── Dry-run passed ──"
+          echo " - Dry-run passed"
 
       #  - Publish to npm (only when 'npm' checkbox is checked)
       - name: Publish all packages to npm

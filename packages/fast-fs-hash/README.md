@@ -4,9 +4,6 @@
 [![GitHub](https://img.shields.io/github/license/SalvatorePreviti/fast-fs-hash)](https://github.com/SalvatorePreviti/fast-fs-hash)
 [![API Docs](https://img.shields.io/badge/docs-API-blue)](https://salvatorepreviti.github.io/fast-fs-hash/)
 
-> _"There are only two hard things in Computer Science: cache invalidation and naming things."_
-> — Phil Karlton
-
 If you ever needed to check whether a set of files changed — to invalidate a cache,
 skip redundant builds, or trigger incremental CI — **fast-fs-hash** is for you.
 
@@ -14,10 +11,7 @@ It hashes hundreds of files in milliseconds using [xxHash3-128](https://github.c
 via a native C++ addon with SIMD acceleration.
 
 [xxHash3](https://en.wikipedia.org/wiki/XxHash) is a **non-cryptographic** hash function — it is not
-suitable for security purposes, but it is more than enough for cache invalidation, deduplication, and
-change detection, which is what this library is designed for.
-
-_Note: Unfortunately this package will not help you naming things — if you don't like staring at hexadecimal hashes._
+suitable for security purposes, but it is more than enough for cache invalidation, deduplication, and change detection, which is what this library is designed for.
 
 **Zero external dependencies.** Requires Node.js >= 22.
 
@@ -93,11 +87,11 @@ changed stat are re-hashed. This makes cache validation **O(n × stat)** instead
 
 | Scenario           | Mean                | Hz         | Files/s           | Throughput |
 | ------------------ | ------------------- | ---------- | ----------------- | ---------- |
-| no change          | 0.6 ms (581.9 µs)   | 1 718 op/s | 1 211 488 files/s | —          |
-| 1 file changed     | 1.0 ms (1 039.7 µs) | 962 op/s   | 678 100 files/s   | —          |
-| many files changed | 2.5 ms (2 522.6 µs) | 396 op/s   | 279 476 files/s   | 9.8 GB/s   |
-| no existing cache  | 7.8 ms (7 814.1 µs) | 128 op/s   | 90 222 files/s    | 3.2 GB/s   |
-| overwrite          | 7.8 ms (7 815.0 µs) | 128 op/s   | 90 211 files/s    | 3.2 GB/s   |
+| no change          | 0.6 ms (624.5 µs)   | 1 601 op/s | 1 128 991 files/s | —          |
+| 1 file changed     | 0.9 ms (922.7 µs)   | 1 084 op/s | 764 054 files/s   | —          |
+| many files changed | 2.5 ms (2 517.0 µs) | 397 op/s   | 280 094 files/s   | 9.8 GB/s   |
+| no existing cache  | 8.0 ms (8 015.1 µs) | 125 op/s   | 87 959 files/s    | 3.1 GB/s   |
+| overwrite          | 7.9 ms (7 915.8 µs) | 126 op/s   | 89 062 files/s    | 3.1 GB/s   |
 
 <!-- FHC_BENCHMARKS:END -->
 
@@ -119,7 +113,9 @@ Create the instance once, then call `open()` on each build cycle. Configuration
 
 The typical usage: the file list is only known after a build step. Open without files
 (reuses the list from the previous cache on disk), then set the new file list before writing.
-Use `payloadData` to store arbitrary build metadata alongside the cache.
+Use `compressedPayloads` (LZ4-compressed inside the cache body) or
+`uncompressedPayloads` (stored raw, readable without decompression) to store
+arbitrary build metadata alongside the cache.
 
 ```ts
 import { FileHashCache } from "fast-fs-hash";
@@ -133,8 +129,8 @@ const cache = new FileHashCache({
 export async function build() {
   using session = await cache.open();
 
-  if (session.status === "upToDate" && session.payloadData.length > 0) {
-    return JSON.parse(session.payloadData[0].toString()); // cached result
+  if (session.status === "upToDate" && session.compressedPayloads.length > 0) {
+    return JSON.parse(session.compressedPayloads[0].toString()); // cached result
   }
 
   const result = await runBuild();
@@ -142,7 +138,7 @@ export async function build() {
   cache.configure({ files: result.getSourceFiles().map((f) => f.fileName) });
 
   await session.write({
-    payloadData: [Buffer.from(JSON.stringify(result.output))],
+    compressedPayloads: [Buffer.from(JSON.stringify(result.output))],
   });
 
   return result.output;
@@ -188,7 +184,7 @@ if (session.status === "upToDate") {
 **Cache methods:**
 
 - **`open(signal?)`** — acquires an exclusive lock, reads from disk, validates version/fingerprint, stat-matches entries. Returns a `FileHashCacheSession`.
-- **`overwrite(options?)`** — writes a brand-new cache without reading the old one. Options: `payloadValue0..3`, `payloadData`, `signal`, `lockTimeoutMs`.
+- **`overwrite(options?)`** — writes a brand-new cache without reading the old one. Options: `payloadValue0..3`, `compressedPayloads`, `uncompressedPayloads`, `signal`, `lockTimeoutMs`.
 - **`invalidate(paths)`** / **`invalidateAll()`** — mark files as dirty for the next open (watch mode).
 - **`isLocked()`** / **`waitUnlocked(timeout?, signal?)`** — check or wait for lock.
 - **`checkCacheFile()`** — sync stat check if the cache file on disk changed since last open.
@@ -202,11 +198,12 @@ if (session.status === "upToDate") {
 - `busy` / `disposed` — async operation state
 - `files`, `fileCount`, `version`, `rootPath`
 - `payloadValue0..3` — four f64 numeric values read from disk
-- `payloadData` — array of binary Buffer payloads read from disk
+- `compressedPayloads` — array of LZ4-compressed binary Buffer payloads read from disk
+- `uncompressedPayloads` — array of raw binary Buffer payloads readable without LZ4 decompression
 
 **Session methods:**
 
-- **`write(options?)`** — hashes unresolved entries, compresses, writes to disk, releases lock. Can only be called once. Options: `payloadValue0..3`, `payloadData`, `signal`.
+- **`write(options?)`** — hashes unresolved entries, compresses, writes to disk, releases lock. Can only be called once. Options: `payloadValue0..3`, `compressedPayloads`, `uncompressedPayloads`, `signal`.
 - **`resolve(signal?)`** — completes stat + hash for ALL files, returns `FileHashCacheEntries`. Can be called before `write()`. See below.
 - **`close()`** — releases the lock. Also called automatically by `using`.
 
@@ -280,22 +277,22 @@ hood, but they are fully usable on their own.
 
 | Scenario             | Mean              | Hz          | Throughput | Relative        |
 | -------------------- | ----------------- | ----------- | ---------- | --------------- |
-| native               | 0.04 ms (41.4 µs) | 24 167 op/s | 4.8 GB/s   | **6.6× faster** |
-| Node.js crypto (md5) | 0.3 ms (274.6 µs) | 3 641 op/s  | 718 MB/s   | baseline        |
+| native               | 0.04 ms (40.8 µs) | 24 489 op/s | 4.8 GB/s   | **6.8× faster** |
+| Node.js crypto (md5) | 0.3 ms (276.7 µs) | 3 614 op/s  | 713 MB/s   | baseline        |
 
 **medium file (~49.9 KB):**
 
 | Scenario             | Mean              | Hz          | Throughput | Relative        |
 | -------------------- | ----------------- | ----------- | ---------- | --------------- |
-| native               | 0.03 ms (27.5 µs) | 36 404 op/s | 1.8 GB/s   | **4.0× faster** |
-| Node.js crypto (md5) | 0.1 ms (110.8 µs) | 9 025 op/s  | 450 MB/s   | baseline        |
+| native               | 0.03 ms (25.9 µs) | 38 653 op/s | 1.9 GB/s   | **4.3× faster** |
+| Node.js crypto (md5) | 0.1 ms (111.4 µs) | 8 977 op/s  | 448 MB/s   | baseline        |
 
 **small file (~1.0 KB):**
 
-| Scenario             | Mean              | Hz          | Relative        |
-| -------------------- | ----------------- | ----------- | --------------- |
-| native               | 0.02 ms (23.1 µs) | 43 286 op/s | **2.4× faster** |
-| Node.js crypto (md5) | 0.06 ms (55.9 µs) | 17 888 op/s | baseline        |
+| Scenario             | Mean                  | Hz          | Relative          |
+| -------------------- | --------------------- | ----------- | ----------------- |
+| Node.js crypto (md5) | 0.06 ms (56.0 µs)     | 17 871 op/s | **266.1× faster** |
+| native               | 14.9 ms (14 891.2 µs) | 67 op/s     | baseline          |
 
 <!-- HASHFILE_BENCHMARKS:END -->
 
@@ -305,8 +302,8 @@ hood, but they are fully usable on their own.
 
 | Scenario             | Mean                  | Hz       | Throughput | Relative        |
 | -------------------- | --------------------- | -------- | ---------- | --------------- |
-| native               | 7.5 ms (7 544.8 µs)   | 133 op/s | 3.3 GB/s   | **4.6× faster** |
-| Node.js crypto (md5) | 34.4 ms (34 417.7 µs) | 29 op/s  | 718 MB/s   | baseline        |
+| native               | 7.9 ms (7 948.8 µs)   | 126 op/s | 3.1 GB/s   | **4.4× faster** |
+| Node.js crypto (md5) | 34.7 ms (34 657.6 µs) | 29 op/s  | 713 MB/s   | baseline        |
 
 <!-- BENCHMARKS:END -->
 
@@ -318,15 +315,15 @@ hood, but they are fully usable on their own.
 
 | Scenario           | Mean              | Hz           | Throughput | Relative         |
 | ------------------ | ----------------- | ------------ | ---------- | ---------------- |
-| native XXH3-128    | 0.001 ms (1.4 µs) | 713 833 op/s | 46.8 GB/s  | **47.5× faster** |
-| Node.js crypto md5 | 0.07 ms (66.5 µs) | 15 029 op/s  | 985 MB/s   | baseline         |
+| native XXH3-128    | 0.001 ms (1.4 µs) | 704 869 op/s | 46.2 GB/s  | **49.3× faster** |
+| Node.js crypto md5 | 0.07 ms (70.0 µs) | 14 288 op/s  | 936 MB/s   | baseline         |
 
 **1 MB buffer:**
 
 | Scenario           | Mean                | Hz          | Throughput | Relative         |
 | ------------------ | ------------------- | ----------- | ---------- | ---------------- |
-| native XXH3-128    | 0.02 ms (21.7 µs)   | 46 127 op/s | 48.4 GB/s  | **48.7× faster** |
-| Node.js crypto md5 | 1.1 ms (1 055.2 µs) | 948 op/s    | 994 MB/s   | baseline         |
+| native XXH3-128    | 0.02 ms (22.0 µs)   | 45 515 op/s | 47.7 GB/s  | **49.1× faster** |
+| Node.js crypto md5 | 1.1 ms (1 078.2 µs) | 927 op/s    | 973 MB/s   | baseline         |
 
 <!-- HASH_BUFFER_BENCHMARKS:END -->
 
@@ -431,29 +428,29 @@ compressed data and pass it to the decompression function.
 
 | Scenario                | Ratio | Mean              | Hz           | Throughput | Relative        |
 | ----------------------- | ----- | ----------------- | ------------ | ---------- | --------------- |
-| native LZ4              | 0.7%  | 0.003 ms (3.4 µs) | 293 803 op/s | 19.3 GB/s  | **7.3× faster** |
-| Node.js deflate level=1 | 1.0%  | 0.02 ms (25.0 µs) | 40 007 op/s  | 2.6 GB/s   | baseline        |
+| native LZ4              | 0.7%  | 0.004 ms (3.5 µs) | 285 548 op/s | 18.7 GB/s  | **7.5× faster** |
+| Node.js deflate level=1 | 1.0%  | 0.03 ms (26.3 µs) | 37 993 op/s  | 2.5 GB/s   | baseline        |
 
 **decompress 64 KB:**
 
 | Scenario        | Mean              | Hz           | Throughput | Relative        |
 | --------------- | ----------------- | ------------ | ---------- | --------------- |
-| native LZ4      | 0.002 ms (2.0 µs) | 505 270 op/s | 33.1 GB/s  | **3.8× faster** |
-| Node.js deflate | 0.007 ms (7.4 µs) | 134 551 op/s | 8.8 GB/s   | baseline        |
+| native LZ4      | 0.002 ms (2.4 µs) | 417 766 op/s | 27.4 GB/s  | **3.8× faster** |
+| Node.js deflate | 0.009 ms (9.2 µs) | 108 604 op/s | 7.1 GB/s   | baseline        |
 
 **compress 1 MB:**
 
 | Scenario                | Ratio | Mean              | Hz          | Throughput | Relative         |
 | ----------------------- | ----- | ----------------- | ----------- | ---------- | ---------------- |
-| native LZ4              | 0.4%  | 0.03 ms (34.0 µs) | 29 378 op/s | 30.8 GB/s  | **10.0× faster** |
-| Node.js deflate level=1 | 0.7%  | 0.3 ms (339.4 µs) | 2 947 op/s  | 3.1 GB/s   | baseline         |
+| native LZ4              | 0.4%  | 0.04 ms (35.2 µs) | 28 424 op/s | 29.8 GB/s  | **10.5× faster** |
+| Node.js deflate level=1 | 0.7%  | 0.4 ms (370.6 µs) | 2 698 op/s  | 2.8 GB/s   | baseline         |
 
 **decompress 1 MB:**
 
 | Scenario        | Mean              | Hz          | Throughput | Relative        |
 | --------------- | ----------------- | ----------- | ---------- | --------------- |
-| native LZ4      | 0.03 ms (31.8 µs) | 31 439 op/s | 33.0 GB/s  | **2.3× faster** |
-| Node.js deflate | 0.07 ms (73.6 µs) | 13 585 op/s | 14.2 GB/s  | baseline        |
+| native LZ4      | 0.03 ms (31.3 µs) | 31 923 op/s | 33.5 GB/s  | **2.6× faster** |
+| Node.js deflate | 0.08 ms (80.4 µs) | 12 432 op/s | 13.0 GB/s  | baseline        |
 
 <!-- LZ4_BENCHMARKS:END -->
 
@@ -521,31 +518,31 @@ either file cannot be opened/read or if sizes differ — never throws.
 
 **equal files (~49.9 KB):**
 
-| Scenario                           | Mean                | Hz         | Throughput | Relative         |
-| ---------------------------------- | ------------------- | ---------- | ---------- | ---------------- |
-| Node.js (fs.open + read + compare) | 0.1 ms (106.0 µs)   | 9 435 op/s | 471 MB/s   | **31.3× faster** |
-| native                             | 3.3 ms (3 319.4 µs) | 301 op/s   | 15 MB/s    | baseline         |
+| Scenario                           | Mean              | Hz          | Throughput | Relative        |
+| ---------------------------------- | ----------------- | ----------- | ---------- | --------------- |
+| native                             | 0.04 ms (40.5 µs) | 24 691 op/s | 1.2 GB/s   | **2.5× faster** |
+| Node.js (fs.open + read + compare) | 0.1 ms (101.0 µs) | 9 901 op/s  | 494 MB/s   | baseline        |
 
 **equal files (~197.3 KB):**
 
 | Scenario                           | Mean              | Hz          | Throughput | Relative        |
 | ---------------------------------- | ----------------- | ----------- | ---------- | --------------- |
-| native                             | 0.05 ms (48.3 µs) | 20 692 op/s | 4.1 GB/s   | **3.1× faster** |
-| Node.js (fs.open + read + compare) | 0.1 ms (148.0 µs) | 6 756 op/s  | 1.3 GB/s   | baseline        |
+| native                             | 0.05 ms (50.4 µs) | 19 832 op/s | 3.9 GB/s   | **2.9× faster** |
+| Node.js (fs.open + read + compare) | 0.1 ms (148.4 µs) | 6 737 op/s  | 1.3 GB/s   | baseline        |
 
 **different content, same size (~49.9 KB):**
 
-| Scenario                           | Mean              | Hz          | Throughput | Relative        |
-| ---------------------------------- | ----------------- | ----------- | ---------- | --------------- |
-| native                             | 0.04 ms (39.2 µs) | 25 490 op/s | 1.3 GB/s   | **2.8× faster** |
-| Node.js (fs.open + read + compare) | 0.1 ms (110.7 µs) | 9 031 op/s  | 451 MB/s   | baseline        |
+| Scenario                           | Mean                | Hz         | Throughput | Relative         |
+| ---------------------------------- | ------------------- | ---------- | ---------- | ---------------- |
+| Node.js (fs.open + read + compare) | 0.1 ms (100.7 µs)   | 9 935 op/s | 496 MB/s   | **15.6× faster** |
+| native                             | 1.6 ms (1 574.5 µs) | 635 op/s   | 32 MB/s    | baseline         |
 
 **different sizes (early exit):**
 
 | Scenario                           | Mean              | Hz          | Relative        |
 | ---------------------------------- | ----------------- | ----------- | --------------- |
-| native                             | 0.04 ms (36.7 µs) | 27 240 op/s | **2.4× faster** |
-| Node.js (fs.open + read + compare) | 0.09 ms (88.5 µs) | 11 297 op/s | baseline        |
+| native                             | 0.04 ms (35.7 µs) | 28 038 op/s | **2.5× faster** |
+| Node.js (fs.open + read + compare) | 0.09 ms (88.8 µs) | 11 261 op/s | baseline        |
 
 <!-- FILES_EQUAL_BENCHMARKS:END -->
 
@@ -562,6 +559,81 @@ if (await filesEqual("output.bin", "expected.bin")) {
 | Function                   | Description                                                   |
 | -------------------------- | ------------------------------------------------------------- |
 | `filesEqual(pathA, pathB)` | Async byte-equality check on pool thread → `Promise<boolean>` |
+
+---
+
+## Find Project Root
+
+Walk the parent chain from a start path and locate project markers in a single pass: `.git`,
+`package.json`, `tsconfig.json`, and `node_modules/`. Reports `nearest*` (first hit walking up)
+and `root*` (last hit, bounded by the enclosing `.git`) for each marker, plus `gitRoot` and
+`gitSuperRoot` for submodule/worktree awareness.
+
+The walk stops at the filesystem root, the user's home directory (or any ancestor of it), an
+optional `stopPath`, and a depth cap of 128 (symlink-loop defense). Tolerant of missing paths —
+if `startPath` doesn't exist, the walk begins from its longest existing ancestor and missing
+markers are returned as `null` rather than thrown.
+
+<!-- FIND_PROJECT_ROOT_BENCHMARKS:START -->
+
+**shallow (3 levels deep):**
+
+| Scenario                    | Mean              | Hz          | Relative        |
+| --------------------------- | ----------------- | ----------- | --------------- |
+| native (sync)               | 0.04 ms (42.5 µs) | 23 522 op/s | **6.5× faster** |
+| native (async)              | 0.05 ms (54.9 µs) | 18 226 op/s | **5.0× faster** |
+| Node.js (sync, fs.statSync) | 0.1 ms (115.2 µs) | 8 679 op/s  | **2.4× faster** |
+| Node.js (async, fs.stat)    | 0.3 ms (274.2 µs) | 3 647 op/s  | baseline        |
+
+**deep (12 levels deep):**
+
+| Scenario                    | Mean              | Hz          | Relative        |
+| --------------------------- | ----------------- | ----------- | --------------- |
+| native (sync)               | 0.09 ms (91.7 µs) | 10 911 op/s | **7.8× faster** |
+| native (async)              | 0.1 ms (101.0 µs) | 9 906 op/s  | **7.1× faster** |
+| Node.js (sync, fs.statSync) | 0.3 ms (331.5 µs) | 3 017 op/s  | **2.2× faster** |
+| Node.js (async, fs.stat)    | 0.7 ms (719.4 µs) | 1 390 op/s  | baseline        |
+
+**missing start path (tolerant fallback):**
+
+| Scenario                    | Mean              | Hz          | Relative        |
+| --------------------------- | ----------------- | ----------- | --------------- |
+| native (sync)               | 0.05 ms (50.3 µs) | 19 879 op/s | **2.7× faster** |
+| Node.js (sync, fs.statSync) | 0.1 ms (133.5 µs) | 7 489 op/s  | baseline        |
+
+<!-- FIND_PROJECT_ROOT_BENCHMARKS:END -->
+
+```ts
+import { findProjectRoot, findProjectRootSync } from "fast-fs-hash";
+
+// Sync (recommended for startup-time / build-tool use)
+const info = findProjectRootSync(import.meta.dirname);
+console.log(info.gitRoot, info.rootPackageJson, info.nearestTsconfigJson);
+
+// Async — runs on the native thread pool, useful on cold or networked filesystems
+const info2 = await findProjectRoot("/some/deep/file.ts");
+
+// Optional stopPath: halt when the walker reaches this directory (or any ancestor of it)
+const info3 = findProjectRootSync(start, "/workspace");
+```
+
+| Function                                   | Description                                                  |
+| ------------------------------------------ | ------------------------------------------------------------ |
+| `findProjectRootSync(startPath, stopPath)` | Walk parent chain for project markers (sync) → `ProjectRoot` |
+| `findProjectRoot(startPath, stopPath)`     | Walk parent chain on pool thread → `Promise<ProjectRoot>`    |
+
+The returned `ProjectRoot` object has these fields (each `string | null`):
+
+| Field                 | Description                                                                    |
+| --------------------- | ------------------------------------------------------------------------------ |
+| `gitRoot`             | Innermost `.git` (dir or file). Matches `git rev-parse --show-toplevel`.       |
+| `gitSuperRoot`        | Outermost `.git` _directory_. Non-null only in submodules / nested worktrees.  |
+| `nearestPackageJson`  | First `package.json` walking up.                                               |
+| `rootPackageJson`     | Last `package.json` walking up, bounded by `gitRoot`.                          |
+| `nearestTsconfigJson` | First `tsconfig.json` walking up.                                              |
+| `rootTsconfigJson`    | Last `tsconfig.json` walking up, bounded by `gitRoot`.                         |
+| `nearestNodeModules`  | First `node_modules/` directory walking up (also detects when started inside). |
+| `rootNodeModules`     | Last `node_modules/` walking up, bounded by `gitRoot`.                         |
 
 ---
 

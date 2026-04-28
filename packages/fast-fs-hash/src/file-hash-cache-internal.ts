@@ -10,10 +10,12 @@
 
 import {
   ENTRY_STRIDE,
+  H_COMPRESSED_PAYLOAD_ITEM_COUNT,
+  H_COMPRESSED_PAYLOADS_LEN,
   H_FILE_COUNT,
   H_PATHS_LEN,
-  H_UD_ITEM_COUNT,
-  H_UD_PAYLOADS_LEN,
+  H_UNCOMPRESSED_PAYLOAD_ITEM_COUNT,
+  H_UNCOMPRESSED_PAYLOADS_LEN,
   HEADER_SIZE,
   S_CANCEL_FLAG,
 } from "./file-hash-cache-format";
@@ -39,7 +41,7 @@ let _onceTrue: AddEventListenerOptions;
 
 export const STATUS_MAP = ["upToDate", "changed", "stale", "missing", "statsDirty", "lockFailed"] as const;
 
-// ── Cancel helpers ──────────────────────────────────────────────────
+// - Cancel helpers
 
 /** Write cancel flag + attach abort listener. Returns the listener for cleanup (or null). */
 export function setupCancel(stateBuf: Buffer, signal: AbortSignal | null | undefined): (() => void) | null {
@@ -66,6 +68,13 @@ export function teardownCancel(signal: AbortSignal | null | undefined, cb: (() =
   }
 }
 
+/** Offset of the body start in a dataBuf (past header + uncompressed section). */
+function bodyStart(buf: Buffer): number {
+  const uic = buf.readUInt32LE(H_UNCOMPRESSED_PAYLOAD_ITEM_COUNT);
+  const upl = buf.readUInt32LE(H_UNCOMPRESSED_PAYLOADS_LEN);
+  return HEADER_SIZE + uic * 4 + upl;
+}
+
 /** Decode relative file paths from a dataBuf. */
 export function decodeFilePathsFromBuf(buf: Buffer): string[] {
   const fc = buf.readUInt32LE(H_FILE_COUNT);
@@ -73,8 +82,8 @@ export function decodeFilePathsFromBuf(buf: Buffer): string[] {
   if (fc <= 0 || pathsLen <= 0) {
     return [];
   }
-  const udItemCount = buf.readUInt32LE(H_UD_ITEM_COUNT);
-  const pathEndsStart = HEADER_SIZE + fc * ENTRY_STRIDE + udItemCount * 4;
+  const compItemCount = buf.readUInt32LE(H_COMPRESSED_PAYLOAD_ITEM_COUNT);
+  const pathEndsStart = bodyStart(buf) + fc * ENTRY_STRIDE + compItemCount * 4;
   const pathsStart = pathEndsStart + fc * 4;
   const result: string[] = new Array(fc);
   let prevEnd = 0;
@@ -107,8 +116,8 @@ export function extractEncodedPaths(buf: Buffer, fc: number): Buffer {
   if (fc <= 0 || pathsLen <= 0) {
     return emptyBuf();
   }
-  const udItemCount = buf.readUInt32LE(H_UD_ITEM_COUNT);
-  const pathEndsStart = HEADER_SIZE + fc * ENTRY_STRIDE + udItemCount * 4;
+  const compItemCount = buf.readUInt32LE(H_COMPRESSED_PAYLOAD_ITEM_COUNT);
+  const pathEndsStart = bodyStart(buf) + fc * ENTRY_STRIDE + compItemCount * 4;
   const pathsStart = pathEndsStart + fc * 4;
   const encoded = Buffer.allocUnsafe(pathsLen + fc);
   let prevEnd = 0;
@@ -148,31 +157,59 @@ export function decodeEncodedPaths(encoded: Buffer, fc: number): string[] {
   return result;
 }
 
-/** Read payload data buffers from a dataBuf. Returns zero-copy slices. */
-export function readPayloadData(dataBuf: Buffer): readonly Buffer[] {
+/** Read compressed payload buffers from a dataBuf. Returns zero-copy slices. */
+export function readCompressedPayloads(dataBuf: Buffer): readonly Buffer[] {
   const fc = dataBuf.readUInt32LE(H_FILE_COUNT);
   const pathsLen = dataBuf.readUInt32LE(H_PATHS_LEN);
-  const udPayloadsLen = dataBuf.readUInt32LE(H_UD_PAYLOADS_LEN);
-  const udItemCount = dataBuf.readUInt32LE(H_UD_ITEM_COUNT);
-  if (udItemCount <= 0) {
+  const compPayloadsLen = dataBuf.readUInt32LE(H_COMPRESSED_PAYLOADS_LEN);
+  const compItemCount = dataBuf.readUInt32LE(H_COMPRESSED_PAYLOAD_ITEM_COUNT);
+  if (compItemCount <= 0) {
     return [];
   }
-  const udDirStart = HEADER_SIZE + fc * ENTRY_STRIDE;
-  const pathEndsStart = udDirStart + udItemCount * 4;
-  const udPayloadsStart = pathEndsStart + fc * 4 + pathsLen;
-  if (udPayloadsStart + udPayloadsLen > dataBuf.length) {
+  const compDirStart = bodyStart(dataBuf) + fc * ENTRY_STRIDE;
+  const pathEndsStart = compDirStart + compItemCount * 4;
+  const compPayloadsStart = pathEndsStart + fc * 4 + pathsLen;
+  if (compPayloadsStart + compPayloadsLen > dataBuf.length) {
     return [];
   }
-  const result: Buffer[] = new Array(udItemCount);
+  const result: Buffer[] = new Array(compItemCount);
   let prevEnd = 0;
-  for (let i = 0; i < udItemCount; i++) {
-    const raw = dataBuf.readUInt32LE(udDirStart + i * 4);
+  for (let i = 0; i < compItemCount; i++) {
+    const raw = dataBuf.readUInt32LE(compDirStart + i * 4);
     // Clamp non-monotonic or out-of-range ends (defense-in-depth vs corrupt cache).
-    const end = raw > udPayloadsLen ? udPayloadsLen : raw < prevEnd ? prevEnd : raw;
+    const end = raw > compPayloadsLen ? compPayloadsLen : raw < prevEnd ? prevEnd : raw;
     if (end === prevEnd) {
       result[i] = emptyBuf();
     } else {
-      result[i] = dataBuf.subarray(udPayloadsStart + prevEnd, udPayloadsStart + end);
+      result[i] = dataBuf.subarray(compPayloadsStart + prevEnd, compPayloadsStart + end);
+    }
+    prevEnd = end;
+  }
+  return result;
+}
+
+/** Read uncompressed payload buffers from a dataBuf. Returns zero-copy slices. */
+export function readUncompressedPayloads(dataBuf: Buffer): readonly Buffer[] {
+  const uncItemCount = dataBuf.readUInt32LE(H_UNCOMPRESSED_PAYLOAD_ITEM_COUNT);
+  if (uncItemCount <= 0) {
+    return [];
+  }
+  const uncPayloadsLen = dataBuf.readUInt32LE(H_UNCOMPRESSED_PAYLOADS_LEN);
+  const uncDirStart = HEADER_SIZE;
+  const uncPayloadsStart = uncDirStart + uncItemCount * 4;
+  if (uncPayloadsStart + uncPayloadsLen > dataBuf.length) {
+    return [];
+  }
+  const result: Buffer[] = new Array(uncItemCount);
+  let prevEnd = 0;
+  for (let i = 0; i < uncItemCount; i++) {
+    const raw = dataBuf.readUInt32LE(uncDirStart + i * 4);
+    // Clamp non-monotonic or out-of-range ends (defense-in-depth vs corrupt cache).
+    const end = raw > uncPayloadsLen ? uncPayloadsLen : raw < prevEnd ? prevEnd : raw;
+    if (end === prevEnd) {
+      result[i] = emptyBuf();
+    } else {
+      result[i] = dataBuf.subarray(uncPayloadsStart + prevEnd, uncPayloadsStart + end);
     }
     prevEnd = end;
   }

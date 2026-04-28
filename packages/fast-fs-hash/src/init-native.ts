@@ -6,6 +6,7 @@
  */
 
 import { resolve } from "node:path";
+import type { ProjectRoot } from "./public-types";
 import { DIST_DIR } from "./utils";
 
 /** Shape of the native binding export. */
@@ -65,13 +66,15 @@ export interface BindingExportNative {
     dataBuf: Uint8Array,
     encodedPaths: Uint8Array | null,
     rootPath: string,
-    payloadData: readonly Uint8Array[] | null | undefined
+    compressedPayloads: readonly Uint8Array[] | null | undefined,
+    uncompressedPayloads: readonly Uint8Array[] | null | undefined
   ): Promise<number>;
   cacheWriteNew(
     stateBuf: Uint8Array,
     encodedPaths: Uint8Array,
     rootPath: string,
-    payloadData: readonly Uint8Array[] | null | undefined
+    compressedPayloads: readonly Uint8Array[] | null | undefined,
+    uncompressedPayloads: readonly Uint8Array[] | null | undefined
   ): Promise<number>;
   cacheClose(stateBuf: Uint8Array): boolean;
   cacheIsLocked(cachePath: string): boolean;
@@ -80,6 +83,8 @@ export interface BindingExportNative {
   cacheStatHash(stateBuf: Uint8Array): boolean;
   cacheFileStatGet(stateBuf: Uint8Array): void;
   filesEqual(pathA: string, pathB: string): Promise<boolean>;
+  findProjectRoot(startPath: string, homePath?: string, stopPath?: string): Promise<ProjectRoot>;
+  findProjectRootSync(startPath: string, homePath?: string, stopPath?: string): ProjectRoot;
   poolTrim(): void;
   lz4CompressBlock(input: Uint8Array, offset?: number, length?: number): Buffer;
   lz4CompressBlockTo(

@@ -1,6 +1,6 @@
 {
   "name": "@fast-fs-hash/fast-fs-hash-node-freebsd-arm64",
-  "version": "0.0.0-rc3",
+  "version": "0.0.0-rc4",
   "description": "fast-fs-hash native binding for FreeBSD arm64",
   "os": [
     "freebsd"

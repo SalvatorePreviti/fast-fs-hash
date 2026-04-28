@@ -16,7 +16,7 @@ namespace fast_fs_hash {
    *
    * Two representations of the same file list:
    *   - `encoded`: NUL-separated flat buffer ("a.ts\0b.ts\0c.ts\0")
-   *   - `dataBuf`: header + entries + pathEnds[] + packed paths (no NULs)
+   *   - `dataBuf`: header + uncompressed section + body (entries + pathEnds[] + packed paths)
    *
    * Single pass using pathEnds offsets for O(1) per-segment length,
    * then memcmp + NUL-position verification. This double-checks that
@@ -47,8 +47,11 @@ namespace fast_fs_hash {
       return false;
     }
 
-    const uint32_t * pe = pathEndsOf(dataBuf, fileCount, hdr->udItemCount);
-    const uint8_t * paths = pathsOf(dataBuf, fileCount, hdr->udItemCount);
+    const size_t cic = hdr->compressedPayloadItemCount;
+    const size_t uic = hdr->uncompressedPayloadItemCount;
+    const size_t uplen = hdr->uncompressedPayloadsLen;
+    const uint32_t * pe = pathEndsOf(dataBuf, fileCount, cic, uic, uplen);
+    const uint8_t * paths = pathsOf(dataBuf, fileCount, cic, uic, uplen);
     const uint8_t * p = encoded;
     uint32_t prevEnd = 0;
 
@@ -73,18 +76,36 @@ namespace fast_fs_hash {
 
   /**
    * Build a new dataBuf from encoded paths. Allocates:
-   *   [header:80 bytes][entries:n×48][udDir:m×4][pathEnds:n×4][paths][udPayloads]
+   *   [header:80]
+   *   [uncompressedDir:uic×4][uncompressed bytes:uplen]
+   *   [entries:n×48][compressedDir:cic×4][pathEnds:n×4][paths][compressed bytes:cplen]
    *
-   * When udItemCount > 0, space is pre-allocated for udDir + udPayloads.
-   * Only fills header fields and path data. Entries, udDir, udPayloads are zeroed.
+   * Space is pre-allocated for both payload sections. Only fills header fields
+   * and path data. Entries, dirs, and payload bytes are zeroed.
    * On failure, returns an empty OwnedBuf.
    */
   inline OwnedBuf<> buildCacheDataBuf(
       const uint8_t * encoded_paths, size_t encoded_len, uint32_t fileCount,
-      uint32_t udItemCount = 0, uint32_t udPayloadsLen = 0) noexcept {
+      uint32_t compressedItemCount = 0, uint32_t compressedPayloadsLen = 0,
+      uint32_t uncompressedItemCount = 0, uint32_t uncompressedPayloadsLen = 0) noexcept {
 
     if (fileCount == 0) {
-      return OwnedBuf<>::calloc(CacheHeader::SIZE);
+      // Even with zero files we may still need to allocate space for the
+      // uncompressed payloads section so that the header slots match.
+      const size_t extras =
+        static_cast<size_t>(uncompressedItemCount) * 4 + uncompressedPayloadsLen;
+      if (extras == 0) {
+        return OwnedBuf<>::calloc(CacheHeader::SIZE);
+      }
+      auto buf = OwnedBuf<>::calloc(CacheHeader::SIZE + extras);
+      if (!buf) [[unlikely]] {
+        return {};
+      }
+      auto * hdr = headerOf(buf.ptr);
+      hdr->magic = CacheHeader::MAGIC;
+      hdr->uncompressedPayloadItemCount = uncompressedItemCount;
+      hdr->uncompressedPayloadsLen = uncompressedPayloadsLen;
+      return buf;
     }
 
     if (fileCount > CACHE_MAX_FILE_COUNT) {
@@ -102,18 +123,20 @@ namespace fast_fs_hash {
     }
 
     const size_t total = CacheHeader::SIZE
+      + static_cast<size_t>(uncompressedItemCount) * 4
+      + uncompressedPayloadsLen
       + static_cast<size_t>(fileCount) * (CacheEntry::STRIDE + CacheEntry::PATH_END_SIZE)
-      + static_cast<size_t>(udItemCount) * 4
+      + static_cast<size_t>(compressedItemCount) * 4
       + totalPathBytes
-      + udPayloadsLen;
+      + compressedPayloadsLen;
     auto * raw = static_cast<uint8_t *>(calloc(1, total));
     if (!raw) [[unlikely]] {
       return {};
     }
 
     auto * hdr = headerOf(raw);
-    uint32_t * pe = pathEndsOf(raw, fileCount, udItemCount);
-    uint8_t * pathsDst = pathsOf(raw, fileCount, udItemCount);
+    uint32_t * pe = pathEndsOf(raw, fileCount, compressedItemCount, uncompressedItemCount, uncompressedPayloadsLen);
+    uint8_t * pathsDst = pathsOf(raw, fileCount, compressedItemCount, uncompressedItemCount, uncompressedPayloadsLen);
     uint32_t cumulativeOffset = 0;
 
     const uint8_t * const encodedEnd = encoded_paths + encoded_len;
@@ -131,8 +154,10 @@ namespace fast_fs_hash {
     hdr->magic = CacheHeader::MAGIC;
     hdr->fileCount = fileCount;
     hdr->pathsLen = static_cast<uint32_t>(totalPathBytes);
-    hdr->udItemCount = udItemCount;
-    hdr->udPayloadsLen = udPayloadsLen;
+    hdr->compressedPayloadItemCount = compressedItemCount;
+    hdr->compressedPayloadsLen = compressedPayloadsLen;
+    hdr->uncompressedPayloadItemCount = uncompressedItemCount;
+    hdr->uncompressedPayloadsLen = uncompressedPayloadsLen;
 
     return OwnedBuf<>::take(raw, total);
   }

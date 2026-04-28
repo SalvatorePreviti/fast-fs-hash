@@ -54,13 +54,13 @@ namespace fast_fs_hash {
     }
 
    private:
-    // ── Pool-thread fields ──────────────────────────────────────────────
+    // - Pool-thread fields
     int timeoutMs_;
     bool result_ = false;
     const char * cachePath_;  // Points into stateBuf (pinned by cancelRef_)
     FfshFile::LockCancel cancel_;
 
-    // ── JS-thread-only fields ───────────────────────────────────────────
+    // - JS-thread-only fields
     Napi::ObjectReference cancelRef_;
   };
 

@@ -11,7 +11,12 @@ import path from "node:path";
 import type { FileHashCacheSession } from "fast-fs-hash";
 import { FileHashCache } from "fast-fs-hash";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { HEADER_SIZE, MAGIC } from "../../packages/fast-fs-hash/src/file-hash-cache-format";
+import {
+  H_UNCOMPRESSED_PAYLOAD_ITEM_COUNT,
+  H_UNCOMPRESSED_PAYLOADS_LEN,
+  HEADER_SIZE,
+  MAGIC,
+} from "../../packages/fast-fs-hash/src/file-hash-cache-format";
 
 //  - Fixture setup
 
@@ -93,6 +98,36 @@ describe("FileHashCache binary format [native]", () => {
 
     it("header size is 80 bytes", () => {
       expect(HEADER_SIZE).toBe(80);
+    });
+
+    it("uncompressed payloads are stored raw directly after the header", async () => {
+      const cp = cachePath("uncompressed-section");
+      const files = [fixtureFile("a.txt")];
+      const items = [Buffer.from("ALPHA"), Buffer.from("BETA-DATA"), Buffer.from("GAMMA-RAW")];
+      await withCache(cp, files, { version: 1 }, async (session) => {
+        await session.write({ uncompressedPayloads: items });
+      });
+
+      const data = readFileSync(cp);
+      // Header is uncompressed → fields readable directly from disk.
+      const uncCount = data.readUInt32LE(H_UNCOMPRESSED_PAYLOAD_ITEM_COUNT);
+      const uncLen = data.readUInt32LE(H_UNCOMPRESSED_PAYLOADS_LEN);
+      expect(uncCount).toBe(3);
+      const expectedLen = items.reduce((s, b) => s + b.byteLength, 0);
+      expect(uncLen).toBe(expectedLen);
+
+      // The uncompressed section sits directly after the header:
+      //   [dir: uncCount × 4][raw payload bytes]
+      // Each entry's bytes must appear verbatim — i.e. no LZ4 compression.
+      const dirStart = HEADER_SIZE;
+      const payloadsStart = dirStart + uncCount * 4;
+      let prevEnd = 0;
+      for (let i = 0; i < uncCount; i++) {
+        const end = data.readUInt32LE(dirStart + i * 4);
+        const slice = data.subarray(payloadsStart + prevEnd, payloadsStart + end);
+        expect(Buffer.from(slice).equals(items[i])).toBe(true);
+        prevEnd = end;
+      }
     });
   });
 

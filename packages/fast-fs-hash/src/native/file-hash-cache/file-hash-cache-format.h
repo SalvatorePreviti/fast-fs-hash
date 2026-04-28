@@ -7,16 +7,24 @@
  * ### On-disk file format
  *
  * ```
- * [header:80 bytes, uncompressed][LZ4 compressed body]
+ * [header:80 bytes, uncompressed]
+ * [uncompressed payloads section, uncompressed]
+ * [LZ4 compressed body]
  * ```
  *
  * The header is always uncompressed — magic, version, fingerprint, and file count
- * can be validated without decompression. The LZ4 body contains:
+ * can be validated without decompression. The uncompressed payloads section sits
+ * directly after the header and is also stored raw on disk:
  * ```
- * [entries:n×48][udDir:m×4][pathEnds:n×4][paths:pathsLen][udPayloads]
+ * [uncompressedPayloadDir: uncompressedPayloadItemCount × 4][uncompressed payload bytes]
+ * ```
+ * The LZ4 body contains:
+ * ```
+ * [entries:n×48][compressedPayloadDir:m×4][pathEnds:n×4][paths:pathsLen][compressedPayloads]
  * ```
  *
- * In-memory dataBuf layout is identical: [header:80][body].
+ * In-memory dataBuf layout is identical to disk:
+ * [header:80][uncompressed section][body].
  * No trailing data — rootPath/cachePath are passed separately.
  * Per-file state is encoded in the high 2 bits of CacheEntry::ino.
  *
@@ -27,15 +35,16 @@
  *     0      4    Magic: 0x00485346 — bytes 'F','S','H', 0x00
  *     4      4    User version (u32)
  *     8      4    File count (u32)
- *    12      4    User data item count (u32)
+ *    12      4    compressedPayloadItemCount (u32)
  *    16     16    Fingerprint (16-byte xxHash3-128, or all-zero)
  *    32      8    payloadValue0 (f64 LE, user-defined payload)
  *    40      8    payloadValue1 (f64 LE, user-defined payload)
  *    48      8    payloadValue2 (f64 LE, user-defined payload)
  *    56      8    payloadValue3 (f64 LE, user-defined payload)
  *    64      4    Paths section byte length (u32)
- *    68      4    User data total byte length (u32)
- *    72      8    Reserved (zero)
+ *    68      4    compressedPayloadsLen (u32, total byte length of compressed payloads)
+ *    72      4    uncompressedPayloadItemCount (u32)
+ *    76      4    uncompressedPayloadsLen (u32, total byte length of uncompressed payloads)
  *
  * ### CacheStateBuf (shared JS ↔ C++ per-instance communication buffer)
  *
@@ -112,32 +121,45 @@ namespace fast_fs_hash {
     uint32_t magic;  //  0: 'F','S','H',0x00 = 0x00485346
     uint32_t version;  //  4: user cache version
     uint32_t fileCount;  //  8: number of entries
-    uint32_t udItemCount;  // 12: number of user data items (0 = none)
+    uint32_t compressedPayloadItemCount;  // 12: number of compressed payload items
     Hash128 fingerprint;  // 16: 16-byte xxHash3-128 (or all-zero)
     double userValue0;  // 32: f64 LE, user-defined
     double userValue1;  // 40: f64 LE, user-defined
     double userValue2;  // 48: f64 LE, user-defined
     double userValue3;  // 56: f64 LE, user-defined
     uint32_t pathsLen;  // 64: byte length of packed paths section
-    uint32_t udPayloadsLen;  // 68: total byte length of user data payloads
-    uint64_t reserved;  // 72: reserved (zero on disk)
+    uint32_t compressedPayloadsLen;  // 68: total byte length of compressed payloads
+    uint32_t uncompressedPayloadItemCount;  // 72: number of uncompressed payload items
+    uint32_t uncompressedPayloadsLen;  // 76: total byte length of uncompressed payloads
 
     static constexpr size_t SIZE = 80;
     static constexpr uint32_t MAGIC = 0x00485346u;
 
-    /** Byte length of the decompressed body (entries+udDir+pathEnds+paths+udPayloads). */
-    FSH_FORCE_INLINE size_t bodySize() const noexcept {
-      return static_cast<size_t>(this->fileCount) * (CacheEntry::STRIDE + CacheEntry::PATH_END_SIZE) +
-        static_cast<size_t>(this->udItemCount) * 4 + this->pathsLen + this->udPayloadsLen;
+    /** Byte length of the uncompressed payloads section (dir + bytes).
+     *  Sits between the header and the LZ4 body on disk and in memory. */
+    FSH_FORCE_INLINE size_t uncompressedSectionSize() const noexcept {
+      return static_cast<size_t>(this->uncompressedPayloadItemCount) * 4 + this->uncompressedPayloadsLen;
     }
 
-    /** Full dataBuf length: header + body. */
-    FSH_FORCE_INLINE size_t totalSize() const noexcept { return SIZE + this->bodySize(); }
+    /** Byte length of the decompressed body
+     *  (entries + compressedPayloadDir + pathEnds + paths + compressedPayloads). */
+    FSH_FORCE_INLINE size_t bodySize() const noexcept {
+      return static_cast<size_t>(this->fileCount) * (CacheEntry::STRIDE + CacheEntry::PATH_END_SIZE) +
+        static_cast<size_t>(this->compressedPayloadItemCount) * 4 + this->pathsLen + this->compressedPayloadsLen;
+    }
+
+    /** Full dataBuf length: header + uncompressed section + body. */
+    FSH_FORCE_INLINE size_t totalSize() const noexcept {
+      return SIZE + this->uncompressedSectionSize() + this->bodySize();
+    }
 
     /** Validate header fields are within safe limits. */
     FSH_FORCE_INLINE bool validateLimits() const noexcept {
       return this->magic == MAGIC && this->fileCount <= CACHE_MAX_FILE_COUNT && this->pathsLen <= CACHE_MAX_PATHS_LEN &&
-        this->udItemCount <= CACHE_MAX_FILE_COUNT && this->udPayloadsLen <= CACHE_MAX_UD_PAYLOADS &&
+        this->compressedPayloadItemCount <= CACHE_MAX_FILE_COUNT &&
+        this->compressedPayloadsLen <= CACHE_MAX_COMPRESSED_PAYLOADS &&
+        this->uncompressedPayloadItemCount <= CACHE_MAX_FILE_COUNT &&
+        this->uncompressedPayloadsLen <= CACHE_MAX_UNCOMPRESSED_PAYLOADS &&
         this->bodySize() <= CACHE_MAX_BODY_SIZE;
     }
 
@@ -150,15 +172,16 @@ namespace fast_fs_hash {
   static_assert(offsetof(CacheHeader, magic) == 0);
   static_assert(offsetof(CacheHeader, version) == 4);
   static_assert(offsetof(CacheHeader, fileCount) == 8);
-  static_assert(offsetof(CacheHeader, udItemCount) == 12);
+  static_assert(offsetof(CacheHeader, compressedPayloadItemCount) == 12);
   static_assert(offsetof(CacheHeader, fingerprint) == 16);
   static_assert(offsetof(CacheHeader, userValue0) == 32);
   static_assert(offsetof(CacheHeader, userValue1) == 40);
   static_assert(offsetof(CacheHeader, userValue2) == 48);
   static_assert(offsetof(CacheHeader, userValue3) == 56);
   static_assert(offsetof(CacheHeader, pathsLen) == 64);
-  static_assert(offsetof(CacheHeader, udPayloadsLen) == 68);
-  static_assert(offsetof(CacheHeader, reserved) == 72);
+  static_assert(offsetof(CacheHeader, compressedPayloadsLen) == 68);
+  static_assert(offsetof(CacheHeader, uncompressedPayloadItemCount) == 72);
+  static_assert(offsetof(CacheHeader, uncompressedPayloadsLen) == 76);
 
   /** Shared JS ↔ C++ per-instance communication buffer. */
   struct CacheStateBuf {
@@ -219,7 +242,8 @@ namespace fast_fs_hash {
     LOCK_FAILED = 5,
   };
 
-  struct UserDataSlice {
+  /** Generic slice of a JS buffer (ptr + len), used for both payload arrays. */
+  struct PayloadSlice {
     const uint8_t * ptr = nullptr;
     size_t len = 0;
   };
@@ -233,39 +257,95 @@ namespace fast_fs_hash {
   FSH_FORCE_INLINE CacheHeader * headerOf(uint8_t * buf) { return reinterpret_cast<CacheHeader *>(buf); }
   FSH_FORCE_INLINE const CacheHeader * headerOf(const uint8_t * buf) { return reinterpret_cast<const CacheHeader *>(buf); }
 
-  FSH_FORCE_INLINE CacheEntry * entriesOf(uint8_t * buf) { return reinterpret_cast<CacheEntry *>(buf + CacheHeader::SIZE); }
-  FSH_FORCE_INLINE const CacheEntry * entriesOf(const uint8_t * buf) {
-    return reinterpret_cast<const CacheEntry *>(buf + CacheHeader::SIZE);
+  // - Uncompressed payloads section (sits directly after the header)
+
+  FSH_FORCE_INLINE uint32_t * uncompressedPayloadDirOf(uint8_t * buf) {
+    return reinterpret_cast<uint32_t *>(buf + CacheHeader::SIZE);
+  }
+  FSH_FORCE_INLINE const uint32_t * uncompressedPayloadDirOf(const uint8_t * buf) {
+    return reinterpret_cast<const uint32_t *>(buf + CacheHeader::SIZE);
   }
 
-  FSH_FORCE_INLINE uint8_t * udDirOf(uint8_t * buf, size_t fileCount) {
-    return buf + CacheHeader::SIZE + fileCount * CacheEntry::STRIDE;
+  FSH_FORCE_INLINE uint8_t * uncompressedPayloadBytesOf(uint8_t * buf, size_t uncompressedItemCount) {
+    return buf + CacheHeader::SIZE + uncompressedItemCount * 4;
   }
-  FSH_FORCE_INLINE const uint8_t * udDirOf(const uint8_t * buf, size_t fileCount) {
-    return buf + CacheHeader::SIZE + fileCount * CacheEntry::STRIDE;
-  }
-
-  FSH_FORCE_INLINE uint32_t * pathEndsOf(uint8_t * buf, size_t fileCount, size_t udItemCount) {
-    return reinterpret_cast<uint32_t *>(buf + CacheHeader::SIZE + fileCount * CacheEntry::STRIDE + udItemCount * 4);
-  }
-  FSH_FORCE_INLINE const uint32_t * pathEndsOf(const uint8_t * buf, size_t fileCount, size_t udItemCount) {
-    return reinterpret_cast<const uint32_t *>(buf + CacheHeader::SIZE + fileCount * CacheEntry::STRIDE + udItemCount * 4);
+  FSH_FORCE_INLINE const uint8_t * uncompressedPayloadBytesOf(const uint8_t * buf, size_t uncompressedItemCount) {
+    return buf + CacheHeader::SIZE + uncompressedItemCount * 4;
   }
 
-  FSH_FORCE_INLINE uint8_t * pathsOf(uint8_t * buf, size_t fileCount, size_t udItemCount) {
-    return buf + CacheHeader::SIZE + fileCount * (CacheEntry::STRIDE + CacheEntry::PATH_END_SIZE) + udItemCount * 4;
-  }
-  FSH_FORCE_INLINE const uint8_t * pathsOf(const uint8_t * buf, size_t fileCount, size_t udItemCount) {
-    return buf + CacheHeader::SIZE + fileCount * (CacheEntry::STRIDE + CacheEntry::PATH_END_SIZE) + udItemCount * 4;
+  /** Offset of the decompressed body start within the in-memory dataBuf:
+   *  past header and past the uncompressed payloads section. */
+  FSH_FORCE_INLINE size_t bodyOffset(size_t uncompressedItemCount, size_t uncompressedPayloadsLen) {
+    return CacheHeader::SIZE + uncompressedItemCount * 4 + uncompressedPayloadsLen;
   }
 
-  FSH_FORCE_INLINE uint8_t * udPayloadsOf(uint8_t * buf, size_t fileCount, size_t udItemCount, size_t pathsLen) {
-    return buf + CacheHeader::SIZE + fileCount * (CacheEntry::STRIDE + CacheEntry::PATH_END_SIZE) + udItemCount * 4 +
-      pathsLen;
+  // - Body accessors (inside the LZ4-decompressed body)
+
+  FSH_FORCE_INLINE uint8_t * bodyOf(uint8_t * buf, size_t uncompressedItemCount, size_t uncompressedPayloadsLen) {
+    return buf + bodyOffset(uncompressedItemCount, uncompressedPayloadsLen);
   }
-  FSH_FORCE_INLINE const uint8_t * udPayloadsOf(const uint8_t * buf, size_t fileCount, size_t udItemCount, size_t pathsLen) {
-    return buf + CacheHeader::SIZE + fileCount * (CacheEntry::STRIDE + CacheEntry::PATH_END_SIZE) + udItemCount * 4 +
-      pathsLen;
+  FSH_FORCE_INLINE const uint8_t * bodyOf(
+    const uint8_t * buf, size_t uncompressedItemCount, size_t uncompressedPayloadsLen) {
+    return buf + bodyOffset(uncompressedItemCount, uncompressedPayloadsLen);
+  }
+
+  FSH_FORCE_INLINE CacheEntry * entriesOf(
+    uint8_t * buf, size_t uncompressedItemCount, size_t uncompressedPayloadsLen) {
+    return reinterpret_cast<CacheEntry *>(bodyOf(buf, uncompressedItemCount, uncompressedPayloadsLen));
+  }
+  FSH_FORCE_INLINE const CacheEntry * entriesOf(
+    const uint8_t * buf, size_t uncompressedItemCount, size_t uncompressedPayloadsLen) {
+    return reinterpret_cast<const CacheEntry *>(bodyOf(buf, uncompressedItemCount, uncompressedPayloadsLen));
+  }
+
+  FSH_FORCE_INLINE uint8_t * compressedPayloadDirOf(
+    uint8_t * buf, size_t fileCount, size_t uncompressedItemCount, size_t uncompressedPayloadsLen) {
+    return bodyOf(buf, uncompressedItemCount, uncompressedPayloadsLen) + fileCount * CacheEntry::STRIDE;
+  }
+  FSH_FORCE_INLINE const uint8_t * compressedPayloadDirOf(
+    const uint8_t * buf, size_t fileCount, size_t uncompressedItemCount, size_t uncompressedPayloadsLen) {
+    return bodyOf(buf, uncompressedItemCount, uncompressedPayloadsLen) + fileCount * CacheEntry::STRIDE;
+  }
+
+  FSH_FORCE_INLINE uint32_t * pathEndsOf(
+    uint8_t * buf, size_t fileCount, size_t compressedItemCount,
+    size_t uncompressedItemCount, size_t uncompressedPayloadsLen) {
+    return reinterpret_cast<uint32_t *>(
+      bodyOf(buf, uncompressedItemCount, uncompressedPayloadsLen) + fileCount * CacheEntry::STRIDE +
+      compressedItemCount * 4);
+  }
+  FSH_FORCE_INLINE const uint32_t * pathEndsOf(
+    const uint8_t * buf, size_t fileCount, size_t compressedItemCount,
+    size_t uncompressedItemCount, size_t uncompressedPayloadsLen) {
+    return reinterpret_cast<const uint32_t *>(
+      bodyOf(buf, uncompressedItemCount, uncompressedPayloadsLen) + fileCount * CacheEntry::STRIDE +
+      compressedItemCount * 4);
+  }
+
+  FSH_FORCE_INLINE uint8_t * pathsOf(
+    uint8_t * buf, size_t fileCount, size_t compressedItemCount,
+    size_t uncompressedItemCount, size_t uncompressedPayloadsLen) {
+    return bodyOf(buf, uncompressedItemCount, uncompressedPayloadsLen) +
+      fileCount * (CacheEntry::STRIDE + CacheEntry::PATH_END_SIZE) + compressedItemCount * 4;
+  }
+  FSH_FORCE_INLINE const uint8_t * pathsOf(
+    const uint8_t * buf, size_t fileCount, size_t compressedItemCount,
+    size_t uncompressedItemCount, size_t uncompressedPayloadsLen) {
+    return bodyOf(buf, uncompressedItemCount, uncompressedPayloadsLen) +
+      fileCount * (CacheEntry::STRIDE + CacheEntry::PATH_END_SIZE) + compressedItemCount * 4;
+  }
+
+  FSH_FORCE_INLINE uint8_t * compressedPayloadBytesOf(
+    uint8_t * buf, size_t fileCount, size_t compressedItemCount, size_t pathsLen,
+    size_t uncompressedItemCount, size_t uncompressedPayloadsLen) {
+    return bodyOf(buf, uncompressedItemCount, uncompressedPayloadsLen) +
+      fileCount * (CacheEntry::STRIDE + CacheEntry::PATH_END_SIZE) + compressedItemCount * 4 + pathsLen;
+  }
+  FSH_FORCE_INLINE const uint8_t * compressedPayloadBytesOf(
+    const uint8_t * buf, size_t fileCount, size_t compressedItemCount, size_t pathsLen,
+    size_t uncompressedItemCount, size_t uncompressedPayloadsLen) {
+    return bodyOf(buf, uncompressedItemCount, uncompressedPayloadsLen) +
+      fileCount * (CacheEntry::STRIDE + CacheEntry::PATH_END_SIZE) + compressedItemCount * 4 + pathsLen;
   }
 
   inline bool CacheHeader::packedPathsValid(const uint8_t * buf) const noexcept {
@@ -274,8 +354,10 @@ namespace fast_fs_hash {
       return true;
     }
     const uint32_t pLen = this->pathsLen;
-    const uint32_t * pe = pathEndsOf(buf, fc, this->udItemCount);
-    const uint8_t * paths = pathsOf(buf, fc, this->udItemCount);
+    const size_t uic = this->uncompressedPayloadItemCount;
+    const size_t uplen = this->uncompressedPayloadsLen;
+    const uint32_t * pe = pathEndsOf(buf, fc, this->compressedPayloadItemCount, uic, uplen);
+    const uint8_t * paths = pathsOf(buf, fc, this->compressedPayloadItemCount, uic, uplen);
     uint32_t prevEnd = 0;
     for (uint32_t i = 0; i < fc; ++i) {
       const uint32_t endOff = pe[i];

@@ -33,7 +33,7 @@ afterAll(() => {
   rmSync(TEST_DIR, { recursive: true, force: true });
 });
 
-// ── Constructor ──────────────────────────────────────────────────────
+// - Constructor
 
 describe("constructor with files", () => {
   it("sets files and fileCount immediately", () => {
@@ -59,7 +59,7 @@ describe("constructor without files", () => {
   });
 });
 
-// ── Files setter ─────────────────────────────────────────────────────
+// - Files setter
 
 describe("files setter", () => {
   it("sets files after construction", () => {
@@ -95,8 +95,8 @@ describe("files setter", () => {
   });
 });
 
-// ── Files setter between open/write does not affect existing session files
-//    but DOES affect what gets written to disk ────────────────────────
+// Files setter between open/write does not affect existing session files
+// but DOES affect what gets written to disk
 
 describe("files setter during active session", () => {
   it("cache.files reflects setter value immediately", async () => {

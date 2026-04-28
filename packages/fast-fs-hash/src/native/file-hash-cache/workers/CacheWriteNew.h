@@ -3,7 +3,7 @@
 
 #include "../cache-build.h"
 #include "../cache-helpers.h"
-#include "../ParsedUserData.h"
+#include "../ParsedPayloads.h"
 #include "AddonWorker.h"
 
 namespace fast_fs_hash {
@@ -12,7 +12,7 @@ namespace fast_fs_hash {
    * Static write — acquires an exclusive lock, hashes all files,
    * LZ4-compresses, and writes a brand-new cache file without reading the old one.
    *
-   * On-disk format: [header:80 uncompressed][LZ4(body)]
+   * On-disk format: [header:80 uncompressed][uncompressed section][LZ4(body)]
    *
    * All config (version, fingerprint, lockTimeoutMs, userValues, fileCount)
    * is read from CacheStateBuf by the binding function and copied to member fields.
@@ -37,7 +37,8 @@ namespace fast_fs_hash {
       double userValue1,
       double userValue2,
       double userValue3,
-      ParsedUserData && ud,
+      ParsedPayloads && compressedPayloads,
+      ParsedPayloads && uncompressedPayloads,
       int timeoutMs) :
       AddonWorker(env, deferred),
       state_(state),
@@ -53,7 +54,8 @@ namespace fast_fs_hash {
       userValue3_(userValue3),
       cachePath_(cachePath),
       rootPath_(std::move(rootPath)),
-      ud_(std::move(ud)),
+      compressedPayloads_(std::move(compressedPayloads)),
+      uncompressedPayloads_(std::move(uncompressedPayloads)),
       pathsRef_(std::move(pathsRef)),
       stateRef_(std::move(stateRef)) {
       if (fingerprint) {
@@ -117,7 +119,8 @@ namespace fast_fs_hash {
     const char * cachePath_;  // Points into stateBuf (pinned by stateRef_)
     std::string rootPath_;
 
-    ParsedUserData ud_;
+    ParsedPayloads compressedPayloads_;
+    ParsedPayloads uncompressedPayloads_;
 
     FfshFile::LockCancel cancel_;
     FfshFile lockedFile_;
@@ -195,9 +198,11 @@ namespace fast_fs_hash {
 
       uint8_t * buf = this->dataBuf_.ptr;
       this->writerFc_ = fc;
-      this->runEntries_ = entriesOf(buf);
-      this->runPathEnds_ = pathEndsOf(buf, fc, 0);
-      this->runPackedPaths_ = pathsOf(buf, fc, 0);
+      // Fresh build: no uncompressed or compressed sections in dataBuf yet, so
+      // all offsets use 0 for those counts. writeFile_ fills them at write time.
+      this->runEntries_ = entriesOf(buf, 0, 0);
+      this->runPathEnds_ = pathEndsOf(buf, fc, 0, 0, 0);
+      this->runPackedPaths_ = pathsOf(buf, fc, 0, 0, 0);
       this->runPackedPathsSize_ = hdr->pathsLen;
 
       int threadCount = ThreadPool::compute_threads(0, fc, MAX_CACHE_IO_THREADS, 4);
@@ -222,7 +227,12 @@ namespace fast_fs_hash {
     }
 
     void writeFile_(uint8_t * buf, CacheHeader * hdr, uint32_t fc) noexcept {
-      this->writeSuccess_ = assembleAndWriteCache(buf, hdr, fc, 0, this->ud_, this->lockedFile_, this->resultStat_);
+      // Fresh dataBuf: no existing compressed/uncompressed sections, so the
+      // "previous" counts are all zero.
+      this->writeSuccess_ = assembleAndWriteCache(
+        buf, hdr, fc, 0, 0, 0,
+        this->compressedPayloads_, this->uncompressedPayloads_,
+        this->lockedFile_, this->resultStat_);
     }
 
     static void hashProc_(CacheWriteNew * self) {

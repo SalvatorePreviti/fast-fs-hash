@@ -12,8 +12,6 @@ import type { FileHashCacheSession } from "./FileHashCacheSession";
 import { ENTRY_STRIDE, HEADER_SIZE } from "./file-hash-cache-format";
 import { hashToHex } from "./functions";
 
-// ── FileHashCacheEntries ────────────────────────────────────────────
-
 /**
  * Readonly snapshot of all resolved file entries from a {@link FileHashCacheSession}.
  *
@@ -64,8 +62,6 @@ export class FileHashCacheEntries {
     return this.#items[Symbol.iterator]();
   }
 }
-
-// ── FileHashCacheEntry ──────────────────────────────────────────────
 
 /**
  * A single fully resolved file entry with stat metadata and content hash.

@@ -5,6 +5,33 @@
  */
 
 /**
+ * Result of {@link findProjectRoot} / {@link findProjectRootSync}.
+ *
+ * Every field is independently populated as the walker climbs the parent
+ * chain from the start path. A field is `null` when its marker was not
+ * found before the walk hit a stop boundary (filesystem root, user home,
+ * enclosing `.git`, or the depth cap of 128).
+ */
+export interface ProjectRoot {
+  /** Innermost directory containing a `.git` (directory OR file). Matches `git rev-parse --show-toplevel`. */
+  gitRoot: string | null;
+  /** Outermost directory containing a `.git` *directory*. `null` when not inside a submodule/worktree. */
+  gitSuperRoot: string | null;
+  /** First `package.json` encountered walking up from the start path. */
+  nearestPackageJson: string | null;
+  /** Last `package.json` walking up, bounded by `gitRoot` (does not cross into a superproject). */
+  rootPackageJson: string | null;
+  /** First `tsconfig.json` encountered walking up from the start path. */
+  nearestTsconfigJson: string | null;
+  /** Last `tsconfig.json` walking up, bounded by `gitRoot`. */
+  rootTsconfigJson: string | null;
+  /** First `node_modules/` directory encountered walking up. */
+  nearestNodeModules: string | null;
+  /** Last `node_modules/` walking up, bounded by `gitRoot`. */
+  rootNodeModules: string | null;
+}
+
+/**
  * Stateless xxHash128 digest functions — available as static methods on XxHash128Stream.
  */
 export interface IXxHash128Functions {

@@ -40,7 +40,7 @@ afterAll(() => {
   rmSync(TEST_DIR, { recursive: true, force: true });
 });
 
-// ── busy getter ─────────────────────────────────────────────────────
+// - busy getter
 
 describe("busy getter", () => {
   it("is false initially", () => {
@@ -77,7 +77,7 @@ describe("busy getter", () => {
   });
 });
 
-// ── Serialization of open() ─────────────────────────────────────────
+// - Serialization of open()
 
 describe("open() serialization", () => {
   it("second open() waits for first session to close", async () => {
@@ -155,7 +155,7 @@ describe("open() serialization", () => {
   });
 });
 
-// ── Serialization of write() ────────────────────────────────────────
+// - Serialization of write()
 
 describe("write() serialization", () => {
   it("session.write() blocks concurrent open()", async () => {
@@ -213,7 +213,7 @@ describe("write() serialization", () => {
   });
 });
 
-// ── Serialization of overwrite() ────────────────────────────────────
+// - Serialization of overwrite()
 
 describe("overwrite() serialization", () => {
   it("overwrite() waits for active session to close", async () => {
@@ -281,7 +281,7 @@ describe("overwrite() serialization", () => {
   });
 });
 
-// ── Mixed operations ────────────────────────────────────────────────
+// - Mixed operations
 
 describe("mixed operation serialization", () => {
   it("open + overwrite + open all serialize", async () => {
@@ -340,7 +340,7 @@ describe("mixed operation serialization", () => {
 
     const session = await cache.open();
 
-    // Write with payloadData, then queue an open
+    // Write with compressedPayloads, then queue an open
     const writePromise = session.write({ payloadValue0: 777 });
     const openPromise = cache.open();
 
@@ -359,7 +359,7 @@ describe("mixed operation serialization", () => {
   });
 });
 
-// ── Error handling ──────────────────────────────────────────────────
+// - Error handling
 
 describe("error handling with mutex", () => {
   it("bad fingerprint throws at construction time", () => {

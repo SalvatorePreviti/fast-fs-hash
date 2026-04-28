@@ -3,7 +3,7 @@
 
 #include "../cache-build.h"
 #include "../cache-helpers.h"
-#include "../ParsedUserData.h"
+#include "../ParsedPayloads.h"
 #include "AddonWorker.h"
 
 namespace fast_fs_hash {
@@ -15,9 +15,9 @@ namespace fast_fs_hash {
    *   1. If encodedPaths differs from dataBuf → build new dataBuf, remap old entries
    *   2. Count unresolved entries (ino state bits != DONE)
    *   3. If work needed → fork hash threads on pool
-   *   4. Assemble body, LZ4 compress, write directly to the locked cache fd
+   *   4. Assemble uncompressed section + body, LZ4 compress body, write directly to the locked cache fd
    *
-   * On-disk format: [header:80 uncompressed][LZ4(body)]
+   * On-disk format: [header:80 uncompressed][uncompressed section][LZ4(body)]
    */
   class CacheWriter final : public AddonWorker {
    public:
@@ -34,7 +34,8 @@ namespace fast_fs_hash {
       Napi::ObjectReference && pathsRef,
       uint32_t fileCount,
       std::string rootPath,
-      ParsedUserData && ud,
+      ParsedPayloads && compressedPayloads,
+      ParsedPayloads && uncompressedPayloads,
       FfshFile && lockedFile,
       bool resolveOnly = false) :
       AddonWorker(env, deferred),
@@ -47,7 +48,8 @@ namespace fast_fs_hash {
       fileCount_(fileCount),
       lockedFile_(std::move(lockedFile)),
       rootPath_(std::move(rootPath)),
-      ud_(std::move(ud)),
+      compressedPayloads_(std::move(compressedPayloads)),
+      uncompressedPayloads_(std::move(uncompressedPayloads)),
       dataRef_(std::move(dataRef)),
       pathsRef_(std::move(pathsRef)),
       stateRef_(std::move(stateRef)) {
@@ -123,7 +125,8 @@ namespace fast_fs_hash {
 
     std::string rootPath_;
 
-    ParsedUserData ud_;
+    ParsedPayloads compressedPayloads_;
+    ParsedPayloads uncompressedPayloads_;
 
     FfshFile::LockCancel cancel_;
 
@@ -171,10 +174,13 @@ namespace fast_fs_hash {
     }
 
     FSH_NO_INLINE bool buildRemappedBuf_(const CacheHeader * prevHdr, uint32_t oldFc, uint32_t newFc) noexcept {
-      const uint32_t udCount = prevHdr->udItemCount;
-      const uint32_t udPLen = prevHdr->udPayloadsLen;
+      const uint32_t compCount = prevHdr->compressedPayloadItemCount;
+      const uint32_t compLen = prevHdr->compressedPayloadsLen;
+      const uint32_t uncCount = prevHdr->uncompressedPayloadItemCount;
+      const uint32_t uncLen = prevHdr->uncompressedPayloadsLen;
 
-      this->newBuf_ = buildCacheDataBuf(this->encodedPaths_, this->encodedLen_, newFc, udCount, udPLen);
+      this->newBuf_ = buildCacheDataBuf(
+        this->encodedPaths_, this->encodedLen_, newFc, compCount, compLen, uncCount, uncLen);
 
       if (!this->newBuf_) {
         this->signalAndClose_("cacheWrite: failed to build dataBuf");
@@ -194,13 +200,26 @@ namespace fast_fs_hash {
         remapEntries_(this->dataBuf_, oldFc, newPtr, newFc);
       }
 
-      if (udCount > 0) {
-        memcpy(udDirOf(newPtr, newFc), udDirOf(this->dataBuf_, oldFc), static_cast<size_t>(udCount) * 4);
-        if (udPLen > 0) {
+      // Copy uncompressed section (identical offset in both old and new bufs:
+      // it's right after the header, same size since we rebuilt with same counts).
+      if (uncCount > 0 || uncLen > 0) {
+        const size_t uncSectionSize = static_cast<size_t>(uncCount) * 4 + uncLen;
+        if (uncSectionSize > 0) {
+          memcpy(newPtr + CacheHeader::SIZE, this->dataBuf_ + CacheHeader::SIZE, uncSectionSize);
+        }
+      }
+
+      // Copy compressed payloads (dir + bytes) from old body into new body.
+      if (compCount > 0) {
+        memcpy(
+          compressedPayloadDirOf(newPtr, newFc, uncCount, uncLen),
+          compressedPayloadDirOf(this->dataBuf_, oldFc, uncCount, uncLen),
+          static_cast<size_t>(compCount) * 4);
+        if (compLen > 0) {
           memcpy(
-            udPayloadsOf(newPtr, newFc, udCount, newHdr->pathsLen),
-            udPayloadsOf(this->dataBuf_, oldFc, udCount, prevHdr->pathsLen),
-            udPLen);
+            compressedPayloadBytesOf(newPtr, newFc, compCount, newHdr->pathsLen, uncCount, uncLen),
+            compressedPayloadBytesOf(this->dataBuf_, oldFc, compCount, prevHdr->pathsLen, uncCount, uncLen),
+            compLen);
         }
       }
 
@@ -222,12 +241,14 @@ namespace fast_fs_hash {
       }
 
       this->writerFc_ = fc;
-      const uint32_t udCount = hdr->udItemCount;
+      const uint32_t compCount = hdr->compressedPayloadItemCount;
+      const uint32_t uncCount = hdr->uncompressedPayloadItemCount;
+      const uint32_t uncLen = hdr->uncompressedPayloadsLen;
 
       // Count entries that still need stat/hash
       size_t workNeeded = 0;
       if (fc > 0) {
-        const CacheEntry * ents = entriesOf(dbuf);
+        const CacheEntry * ents = entriesOf(dbuf, uncCount, uncLen);
         for (uint32_t i = 0; i < fc; ++i) {
           if ((ents[i].ino & INO_STATE_MASK) != CACHE_S_DONE) {
             ++workNeeded;
@@ -248,9 +269,9 @@ namespace fast_fs_hash {
         return;
       }
 
-      this->runEntries_ = entriesOf(dbuf);
-      this->runPathEnds_ = pathEndsOf(dbuf, fc, udCount);
-      this->runPackedPaths_ = pathsOf(dbuf, fc, udCount);
+      this->runEntries_ = entriesOf(dbuf, uncCount, uncLen);
+      this->runPathEnds_ = pathEndsOf(dbuf, fc, compCount, uncCount, uncLen);
+      this->runPackedPaths_ = pathsOf(dbuf, fc, compCount, uncCount, uncLen);
       this->runPackedPathsSize_ = hdr->pathsLen;
       this->dataBuf_ = dbuf;
 
@@ -280,22 +301,33 @@ namespace fast_fs_hash {
     }
 
     void writeFile_(uint8_t * buf, CacheHeader * hdr, uint32_t fc) noexcept {
-      const uint32_t oldUdCount = hdr->udItemCount;
-      this->writeSuccess_ = assembleAndWriteCache(buf, hdr, fc, oldUdCount, this->ud_, this->lockedFile_, this->resultStat_);
+      const uint32_t prevCompCount = hdr->compressedPayloadItemCount;
+      const uint32_t prevUncCount = hdr->uncompressedPayloadItemCount;
+      const uint32_t prevUncLen = hdr->uncompressedPayloadsLen;
+      this->writeSuccess_ = assembleAndWriteCache(
+        buf, hdr, fc, prevCompCount, prevUncCount, prevUncLen,
+        this->compressedPayloads_, this->uncompressedPayloads_,
+        this->lockedFile_, this->resultStat_);
     }
 
     static void remapEntries_(
       const uint8_t * FSH_RESTRICT oldData, uint32_t oldFc, uint8_t * FSH_RESTRICT newData, uint32_t newFc) noexcept {
       const CacheHeader * oldHdr = headerOf(oldData);
-      const CacheEntry * FSH_RESTRICT oldEntries = entriesOf(oldData);
-      const uint32_t * FSH_RESTRICT oldPe = pathEndsOf(oldData, oldFc, oldHdr->udItemCount);
-      const uint8_t * FSH_RESTRICT oldPaths = pathsOf(oldData, oldFc, oldHdr->udItemCount);
+      const uint32_t oldCompCount = oldHdr->compressedPayloadItemCount;
+      const uint32_t oldUncCount = oldHdr->uncompressedPayloadItemCount;
+      const uint32_t oldUncLen = oldHdr->uncompressedPayloadsLen;
+      const CacheEntry * FSH_RESTRICT oldEntries = entriesOf(oldData, oldUncCount, oldUncLen);
+      const uint32_t * FSH_RESTRICT oldPe = pathEndsOf(oldData, oldFc, oldCompCount, oldUncCount, oldUncLen);
+      const uint8_t * FSH_RESTRICT oldPaths = pathsOf(oldData, oldFc, oldCompCount, oldUncCount, oldUncLen);
       const size_t oldPathsLen = oldHdr->pathsLen;
 
       const CacheHeader * newHdr = headerOf(newData);
-      CacheEntry * FSH_RESTRICT newEntries = entriesOf(newData);
-      const uint32_t * FSH_RESTRICT newPe = pathEndsOf(newData, newFc, newHdr->udItemCount);
-      const uint8_t * FSH_RESTRICT newPaths = pathsOf(newData, newFc, newHdr->udItemCount);
+      const uint32_t newCompCount = newHdr->compressedPayloadItemCount;
+      const uint32_t newUncCount = newHdr->uncompressedPayloadItemCount;
+      const uint32_t newUncLen = newHdr->uncompressedPayloadsLen;
+      CacheEntry * FSH_RESTRICT newEntries = entriesOf(newData, newUncCount, newUncLen);
+      const uint32_t * FSH_RESTRICT newPe = pathEndsOf(newData, newFc, newCompCount, newUncCount, newUncLen);
+      const uint8_t * FSH_RESTRICT newPaths = pathsOf(newData, newFc, newCompCount, newUncCount, newUncLen);
       const size_t newPathsLen = newHdr->pathsLen;
 
       uint32_t oldOff = 0, newOff = 0;
