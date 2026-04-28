@@ -1,6 +1,6 @@
 {
   "_description": "SHA-256 hashes of build artifacts and source code. Regenerated on every build.",
-  "generatedAt": "2026-04-28T23:21:09.856Z",
+  "generatedAt": "2026-04-28T23:57:00.178Z",
   "distArtifacts": {
     "index.cjs": {
       "sha256": "3f4968f7c436c6aed1e0a720098b9857165e03d7813fd1800584b64ca6623870",
@@ -110,9 +110,9 @@
         "lines": 75
       },
       "find-project-root-core.h": {
-        "sha256": "f6511e9b7540f462b8a774ce69c912cbfce3eb18e43555f451a3f4cd2e5d0f72",
-        "bytes": 21052,
-        "lines": 573
+        "sha256": "a574fa4ef9bcf9492631fe156d3f863da9e7342c597db4845a65397aeb0bf4ed",
+        "bytes": 21810,
+        "lines": 587
       },
       "includes.h": {
         "sha256": "9b34a859966d5f24ac89ecba90fe509c64713cd930274b5a63f50481ae063975",
