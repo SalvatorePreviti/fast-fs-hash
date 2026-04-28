@@ -65,6 +65,20 @@ namespace fast_fs_hash {
     static constexpr size_t PKG_LEN = 12;        // "/package.json"
     static constexpr size_t TSCFG_LEN = 13;      // "/tsconfig.json"
 
+    /** Probe suffixes — the leading separator is platform-native so emitted
+     *  paths match what Node's `path.join` produces (backslash on Win32). */
+#ifdef _WIN32
+    static constexpr const char * SUFFIX_GIT = "\\.git";
+    static constexpr const char * SUFFIX_PACKAGE_JSON = "\\package.json";
+    static constexpr const char * SUFFIX_TSCONFIG_JSON = "\\tsconfig.json";
+    static constexpr const char * SUFFIX_NODE_MODULES = "\\node_modules";
+#else
+    static constexpr const char * SUFFIX_GIT = "/.git";
+    static constexpr const char * SUFFIX_PACKAGE_JSON = "/package.json";
+    static constexpr const char * SUFFIX_TSCONFIG_JSON = "/tsconfig.json";
+    static constexpr const char * SUFFIX_NODE_MODULES = "/node_modules";
+#endif
+
     // Forward declarations (used by resolve_tolerant before their definitions).
     inline size_t trim_to_parent(char * buf, size_t len) noexcept;
     inline int stat_kind(const char * path) noexcept;
@@ -465,7 +479,7 @@ namespace fast_fs_hash {
 
       // Probe .git
       {
-        const size_t tip = append_suffix(buf, buf_len, "/.git", 5);
+        const size_t tip = append_suffix(buf, buf_len, SUFFIX_GIT, 5);
         if (tip != buf_len) {
           const int kind = stat_kind(buf);
           if (kind > 0) {
@@ -495,7 +509,7 @@ namespace fast_fs_hash {
       if (in_repo) {
         // Probe package.json
         {
-          const size_t tip = append_suffix(buf, buf_len, "/package.json", 13);
+          const size_t tip = append_suffix(buf, buf_len, SUFFIX_PACKAGE_JSON, 13);
           if (tip != buf_len) {
             if (stat_kind(buf) == 1) {
               if (out.nearestPackageJson.empty()) {
@@ -509,7 +523,7 @@ namespace fast_fs_hash {
 
         // Probe tsconfig.json
         {
-          const size_t tip = append_suffix(buf, buf_len, "/tsconfig.json", 14);
+          const size_t tip = append_suffix(buf, buf_len, SUFFIX_TSCONFIG_JSON, 14);
           if (tip != buf_len) {
             if (stat_kind(buf) == 1) {
               if (out.nearestTsconfigJson.empty()) {
@@ -534,7 +548,7 @@ namespace fast_fs_hash {
           }
           out.rootNodeModules.assign(buf, buf_len);
         } else {
-          const size_t tip = append_suffix(buf, buf_len, "/node_modules", 13);
+          const size_t tip = append_suffix(buf, buf_len, SUFFIX_NODE_MODULES, 13);
           if (tip != buf_len) {
             if (stat_kind(buf) == 2) {
               if (out.nearestNodeModules.empty()) {
