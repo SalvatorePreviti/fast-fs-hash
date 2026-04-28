@@ -39,7 +39,7 @@ afterAll(() => {
   rmSync(TEST_DIR, { recursive: true, force: true });
 });
 
-// ── needsOpen / checkCacheFile ──────────────────────────────────────
+// - needsOpen / checkCacheFile
 
 describe("needsOpen", () => {
   it("true before first open", () => {
@@ -155,7 +155,7 @@ describe("checkCacheFile", () => {
   });
 });
 
-// ── Multiple open/write cycles (watch mode simulation) ───────────────
+// - Multiple open/write cycles (watch mode simulation)
 
 describe("watch mode simulation", () => {
   it("invalidate with absolute paths, re-open, write cycle", async () => {
@@ -267,7 +267,7 @@ describe("watch mode simulation", () => {
   });
 });
 
-// ── write({ files }) on a kept-alive cache instance ────────────────
+// - write({ files }) on a kept-alive cache instance
 
 describe("write({ files }) updates same cache instance", () => {
   it("write({ files }) changes file list and subsequent open sees it", async () => {
@@ -337,7 +337,7 @@ describe("write({ files }) updates same cache instance", () => {
     }
   });
 
-  it("write({ files, payloadValue0, payloadData }) all together on same instance", async () => {
+  it("write({ files, payloadValue0, compressedPayloads }) all together on same instance", async () => {
     const cacheFile = cp();
     const filesV1 = [fx("a.txt")];
     const filesV2 = [fx("a.txt"), fx("b.txt")];
@@ -346,7 +346,7 @@ describe("write({ files }) updates same cache instance", () => {
     // Seed
     {
       using s = await cache.open();
-      await s.write({ payloadValue0: 10, payloadData: [Buffer.from("initial")] });
+      await s.write({ payloadValue0: 10, compressedPayloads: [Buffer.from("initial")] });
     }
 
     // Write with new files + new user values via options
@@ -354,11 +354,11 @@ describe("write({ files }) updates same cache instance", () => {
       cache.invalidateAll();
       const s = await cache.open();
       expect(s.payloadValue0).toBe(10);
-      expect(s.payloadData[0].toString()).toBe("initial");
+      expect(s.compressedPayloads[0].toString()).toBe("initial");
       cache.configure({ files: filesV2, rootPath: FIXTURE_DIR });
       await s.write({
         payloadValue0: 99,
-        payloadData: [Buffer.from("updated")],
+        compressedPayloads: [Buffer.from("updated")],
       });
     }
 
@@ -370,8 +370,8 @@ describe("write({ files }) updates same cache instance", () => {
       expect(cache.fileCount).toBe(2);
       expect(s.fileCount).toBe(2);
       expect(s.payloadValue0).toBe(99);
-      expect(s.payloadData.length).toBe(1);
-      expect(s.payloadData[0].toString()).toBe("updated");
+      expect(s.compressedPayloads.length).toBe(1);
+      expect(s.compressedPayloads[0].toString()).toBe("updated");
     }
   });
 

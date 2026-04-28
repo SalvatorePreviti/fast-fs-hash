@@ -228,17 +228,17 @@ describe("FileHashCache [native]", () => {
       const testData = Buffer.from("test user data payload");
       {
         using s1 = await cache.open();
-        await s1.write({ payloadData: [testData] });
+        await s1.write({ compressedPayloads: [testData] });
       }
 
       // Read user data back
       {
         cache.invalidateAll();
         using s2 = await cache.open();
-        expect(s2.payloadData.length).toBe(1);
-        const totalSize = s2.payloadData.reduce((s, item) => s + item.byteLength, 0);
+        expect(s2.compressedPayloads.length).toBe(1);
+        const totalSize = s2.compressedPayloads.reduce((s, item) => s + item.byteLength, 0);
         expect(totalSize).toBe(testData.length);
-        const item0 = s2.payloadData[0];
+        const item0 = s2.compressedPayloads[0];
         expect(item0.byteLength).toBe(testData.length);
         expect(Buffer.from(item0).equals(testData)).toBe(true);
       }
@@ -327,9 +327,9 @@ describe("FileHashCache [native]", () => {
     });
   });
 
-  //  - payloadData (indexed array)
+  //  - compressedPayloads (indexed array)
 
-  describe("payloadData", () => {
+  describe("compressedPayloads", () => {
     it("writes multiple items and reads each back by index", async () => {
       const cp = cachePath("ud-multi");
       const files = [fixtureFile("a.txt")];
@@ -339,39 +339,39 @@ describe("FileHashCache [native]", () => {
 
       {
         using s1 = await cache.open();
-        await s1.write({ payloadData: items });
+        await s1.write({ compressedPayloads: items });
       }
 
       // Read back
       {
         cache.invalidateAll();
         using s2 = await cache.open();
-        expect(s2.payloadData.length).toBe(3);
-        const totalSize = s2.payloadData.reduce((s, item) => s + item.byteLength, 0);
+        expect(s2.compressedPayloads.length).toBe(3);
+        const totalSize = s2.compressedPayloads.reduce((s, item) => s + item.byteLength, 0);
         expect(totalSize).toBe(10 + 16 + 5);
 
         for (let i = 0; i < 3; i++) {
           const item = items[i] ?? Buffer.alloc(0);
-          const readItem = s2.payloadData[i];
+          const readItem = s2.compressedPayloads[i];
           expect(Buffer.from(readItem).equals(item)).toBe(true);
         }
       }
     });
 
-    it("empty array produces zero payloadData items", async () => {
+    it("empty array produces zero compressedPayloads items", async () => {
       const cp = cachePath("ud-empty");
       const files = [fixtureFile("a.txt")];
       const cache = makeCache(cp, files);
 
       {
         using s1 = await cache.open();
-        await s1.write({ payloadData: [] });
+        await s1.write({ compressedPayloads: [] });
       }
 
       {
         cache.invalidateAll();
         using s2 = await cache.open();
-        expect(s2.payloadData.length).toBe(0);
+        expect(s2.compressedPayloads.length).toBe(0);
       }
     });
 
@@ -383,10 +383,10 @@ describe("FileHashCache [native]", () => {
       // Write user data
       {
         using s1 = await cache.open();
-        await s1.write({ payloadData: [Buffer.from("some data")] });
+        await s1.write({ compressedPayloads: [Buffer.from("some data")] });
       }
 
-      // Modify to trigger write, clear payloadData
+      // Modify to trigger write, clear compressedPayloads
       writeFileSync(fixtureFile("a.txt"), "modified for ud-null\n");
       const t = new Date(Date.now() + 2000);
       utimesSync(fixtureFile("a.txt"), t, t);
@@ -394,14 +394,14 @@ describe("FileHashCache [native]", () => {
       {
         cache.invalidateAll();
         using s2 = await cache.open();
-        await s2.write({ payloadData: null });
+        await s2.write({ compressedPayloads: null });
       }
 
       // Read back — should have no data
       {
         cache.invalidateAll();
         using s3 = await cache.open();
-        expect(s3.payloadData.length).toBe(0);
+        expect(s3.compressedPayloads.length).toBe(0);
       }
 
       // Restore
@@ -416,7 +416,7 @@ describe("FileHashCache [native]", () => {
       // Seed with user data
       {
         using s1 = await cache.open();
-        await s1.write({ payloadData: [Buffer.from("original")] });
+        await s1.write({ compressedPayloads: [Buffer.from("original")] });
       }
 
       // Modify file to trigger changed status
@@ -428,10 +428,10 @@ describe("FileHashCache [native]", () => {
       {
         cache.invalidateAll();
         using s2 = await cache.open();
-        expect(s2.payloadData.length).toBe(1);
-        const old = s2.payloadData[0];
+        expect(s2.compressedPayloads.length).toBe(1);
+        const old = s2.compressedPayloads[0];
         await s2.write({
-          payloadData: [Buffer.from("prefix:"), old],
+          compressedPayloads: [Buffer.from("prefix:"), old],
         });
       }
 
@@ -439,9 +439,9 @@ describe("FileHashCache [native]", () => {
       {
         cache.invalidateAll();
         using s3 = await cache.open();
-        expect(s3.payloadData.length).toBe(2);
-        const item0 = s3.payloadData[0];
-        const item1 = s3.payloadData[1];
+        expect(s3.compressedPayloads.length).toBe(2);
+        const item0 = s3.compressedPayloads[0];
+        const item1 = s3.compressedPayloads[1];
         expect(item0.toString()).toBe("prefix:");
         expect(item1.toString()).toBe("original");
       }
@@ -450,19 +450,19 @@ describe("FileHashCache [native]", () => {
       writeFileSync(fixtureFile("a.txt"), "hello world\n");
     });
 
-    it("no old cache means empty payloadData", async () => {
+    it("no old cache means empty compressedPayloads", async () => {
       const cp = cachePath("ud-noold");
       const files = [fixtureFile("a.txt")];
       const cache = makeCache(cp, files);
 
       using session = await cache.open();
-      expect(session.payloadData.length).toBe(0);
+      expect(session.compressedPayloads.length).toBe(0);
     });
   });
 
-  //  - payloadData buffer tests
+  //  - compressedPayloads buffer tests
 
-  describe("payloadData buffer items", () => {
+  describe("compressedPayloads buffer items", () => {
     it("writes and reads a single buffer item", async () => {
       const cp = cachePath("ud-str-single");
       const files = [fixtureFile("a.txt")];
@@ -470,15 +470,15 @@ describe("FileHashCache [native]", () => {
 
       {
         using s1 = await cache.open();
-        await s1.write({ payloadData: [Buffer.from("hello world")] });
+        await s1.write({ compressedPayloads: [Buffer.from("hello world")] });
       }
 
       {
         cache.invalidateAll();
         using s2 = await cache.open();
-        expect(s2.payloadData.length).toBe(1);
-        expect(Buffer.isBuffer(s2.payloadData[0])).toBe(true);
-        expect(s2.payloadData[0].toString("utf8")).toBe("hello world");
+        expect(s2.compressedPayloads.length).toBe(1);
+        expect(Buffer.isBuffer(s2.compressedPayloads[0])).toBe(true);
+        expect(s2.compressedPayloads[0].toString("utf8")).toBe("hello world");
       }
     });
 
@@ -490,16 +490,16 @@ describe("FileHashCache [native]", () => {
       const bufs = [Buffer.from("first"), Buffer.from("second item"), Buffer.from("third")];
       {
         using s1 = await cache.open();
-        await s1.write({ payloadData: bufs });
+        await s1.write({ compressedPayloads: bufs });
       }
 
       {
         cache.invalidateAll();
         using s2 = await cache.open();
-        expect(s2.payloadData.length).toBe(3);
+        expect(s2.compressedPayloads.length).toBe(3);
         for (let i = 0; i < bufs.length; i++) {
-          expect(Buffer.isBuffer(s2.payloadData[i])).toBe(true);
-          expect(s2.payloadData[i].toString("utf8")).toBe(bufs[i].toString("utf8"));
+          expect(Buffer.isBuffer(s2.compressedPayloads[i])).toBe(true);
+          expect(s2.compressedPayloads[i].toString("utf8")).toBe(bufs[i].toString("utf8"));
         }
       }
     });
@@ -517,25 +517,25 @@ describe("FileHashCache [native]", () => {
       ];
       {
         using s1 = await cache.open();
-        await s1.write({ payloadData: items });
+        await s1.write({ compressedPayloads: items });
       }
 
       {
         cache.invalidateAll();
         using s2 = await cache.open();
-        expect(s2.payloadData.length).toBe(4);
+        expect(s2.compressedPayloads.length).toBe(4);
 
-        expect(Buffer.isBuffer(s2.payloadData[0])).toBe(true);
-        expect(s2.payloadData[0].toString()).toBe("binary data");
+        expect(Buffer.isBuffer(s2.compressedPayloads[0])).toBe(true);
+        expect(s2.compressedPayloads[0].toString()).toBe("binary data");
 
-        expect(Buffer.isBuffer(s2.payloadData[1])).toBe(true);
-        expect(s2.payloadData[1].toString()).toBe("string item");
+        expect(Buffer.isBuffer(s2.compressedPayloads[1])).toBe(true);
+        expect(s2.compressedPayloads[1].toString()).toBe("string item");
 
-        expect(Buffer.isBuffer(s2.payloadData[2])).toBe(true);
-        expect(Buffer.from(s2.payloadData[2]).equals(Buffer.from([0x00, 0xff, 0x42]))).toBe(true);
+        expect(Buffer.isBuffer(s2.compressedPayloads[2])).toBe(true);
+        expect(Buffer.from(s2.compressedPayloads[2]).equals(Buffer.from([0x00, 0xff, 0x42]))).toBe(true);
 
-        expect(Buffer.isBuffer(s2.payloadData[3])).toBe(true);
-        expect(s2.payloadData[3].toString()).toBe("another string");
+        expect(Buffer.isBuffer(s2.compressedPayloads[3])).toBe(true);
+        expect(s2.compressedPayloads[3].toString()).toBe("another string");
       }
     });
 
@@ -546,16 +546,16 @@ describe("FileHashCache [native]", () => {
 
       {
         using s1 = await cache.open();
-        await s1.write({ payloadData: [Buffer.alloc(0), Buffer.from("non-empty"), Buffer.alloc(0)] });
+        await s1.write({ compressedPayloads: [Buffer.alloc(0), Buffer.from("non-empty"), Buffer.alloc(0)] });
       }
 
       {
         cache.invalidateAll();
         using s2 = await cache.open();
-        expect(s2.payloadData.length).toBe(3);
-        expect(s2.payloadData[0].length).toBe(0);
-        expect(s2.payloadData[1].toString()).toBe("non-empty");
-        expect(s2.payloadData[2].length).toBe(0);
+        expect(s2.compressedPayloads.length).toBe(3);
+        expect(s2.compressedPayloads[0].length).toBe(0);
+        expect(s2.compressedPayloads[1].toString()).toBe("non-empty");
+        expect(s2.compressedPayloads[2].length).toBe(0);
       }
     });
 
@@ -567,15 +567,15 @@ describe("FileHashCache [native]", () => {
       const utf8Str = "日本語テスト 🚀 émojis";
       {
         using s1 = await cache.open();
-        await s1.write({ payloadData: [Buffer.from(utf8Str)] });
+        await s1.write({ compressedPayloads: [Buffer.from(utf8Str)] });
       }
 
       {
         cache.invalidateAll();
         using s2 = await cache.open();
-        expect(s2.payloadData.length).toBe(1);
-        expect(Buffer.isBuffer(s2.payloadData[0])).toBe(true);
-        expect(s2.payloadData[0].toString("utf8")).toBe(utf8Str);
+        expect(s2.compressedPayloads.length).toBe(1);
+        expect(Buffer.isBuffer(s2.compressedPayloads[0])).toBe(true);
+        expect(s2.compressedPayloads[0].toString("utf8")).toBe(utf8Str);
       }
     });
 
@@ -586,19 +586,19 @@ describe("FileHashCache [native]", () => {
 
       {
         using s1 = await cache.open();
-        await s1.write({ payloadData: [Buffer.from("test data")] });
+        await s1.write({ compressedPayloads: [Buffer.from("test data")] });
       }
 
       {
         cache.invalidateAll();
         using s2 = await cache.open();
-        const item = s2.payloadData[0];
+        const item = s2.compressedPayloads[0];
         expect(Buffer.isBuffer(item)).toBe(true);
         expect(item.toString("utf8")).toBe("test data");
       }
     });
 
-    it("payloadData survives preserve (write without payloadData)", async () => {
+    it("compressedPayloads survives preserve (write without compressedPayloads)", async () => {
       const cp = cachePath("ud-str-preserve");
       const files = [fixtureFile("a.txt")];
       const cache = makeCache(cp, files);
@@ -606,7 +606,7 @@ describe("FileHashCache [native]", () => {
       {
         using s1 = await cache.open();
         await s1.write({
-          payloadData: [Buffer.from("preserved first"), Buffer.from("preserved second")],
+          compressedPayloads: [Buffer.from("preserved first"), Buffer.from("preserved second")],
         });
       }
 
@@ -624,17 +624,17 @@ describe("FileHashCache [native]", () => {
         cache.invalidateAll();
         using s3 = await cache.open();
         expect(s3.payloadValue0).toBe(99);
-        expect(s3.payloadData.length).toBe(2);
-        expect(Buffer.isBuffer(s3.payloadData[0])).toBe(true);
-        expect(s3.payloadData[0].toString()).toBe("preserved first");
-        expect(Buffer.isBuffer(s3.payloadData[1])).toBe(true);
-        expect(s3.payloadData[1].toString()).toBe("preserved second");
+        expect(s3.compressedPayloads.length).toBe(2);
+        expect(Buffer.isBuffer(s3.compressedPayloads[0])).toBe(true);
+        expect(s3.compressedPayloads[0].toString()).toBe("preserved first");
+        expect(Buffer.isBuffer(s3.compressedPayloads[1])).toBe(true);
+        expect(s3.compressedPayloads[1].toString()).toBe("preserved second");
       }
 
       writeFileSync(fixtureFile("a.txt"), "hello world\n");
     });
 
-    it("payloadData with changing files in write", async () => {
+    it("compressedPayloads with changing files in write", async () => {
       const cp = cachePath("ud-str-chgfiles");
       const files1 = [fixtureFile("a.txt")];
       const files2 = [fixtureFile("a.txt"), fixtureFile("b.txt")];
@@ -644,7 +644,7 @@ describe("FileHashCache [native]", () => {
         using s1 = await cache1.open();
         cache1.configure({ files: files2, rootPath: FIXTURE_DIR });
         await s1.write({
-          payloadData: [Buffer.from("data for new files")],
+          compressedPayloads: [Buffer.from("data for new files")],
         });
       }
 
@@ -652,13 +652,13 @@ describe("FileHashCache [native]", () => {
         const cache2 = makeCache(cp, files2);
         using s2 = await cache2.open();
         expect(s2.status).toBe("upToDate");
-        expect(s2.payloadData.length).toBe(1);
-        expect(Buffer.isBuffer(s2.payloadData[0])).toBe(true);
-        expect(s2.payloadData[0].toString()).toBe("data for new files");
+        expect(s2.compressedPayloads.length).toBe(1);
+        expect(Buffer.isBuffer(s2.compressedPayloads[0])).toBe(true);
+        expect(s2.compressedPayloads[0].toString()).toBe("data for new files");
       }
     });
 
-    it("payloadData total size is correct with multiple items", async () => {
+    it("compressedPayloads total size is correct with multiple items", async () => {
       const cp = cachePath("ud-str-totalsize");
       const files = [fixtureFile("a.txt")];
       const cache = makeCache(cp, files);
@@ -668,25 +668,25 @@ describe("FileHashCache [native]", () => {
 
       {
         using s1 = await cache.open();
-        await s1.write({ payloadData: items });
+        await s1.write({ compressedPayloads: items });
       }
 
       {
         cache.invalidateAll();
         using s2 = await cache.open();
-        const totalSize = s2.payloadData.reduce((s, item) => s + item.byteLength, 0);
+        const totalSize = s2.compressedPayloads.reduce((s, item) => s + item.byteLength, 0);
         expect(totalSize).toBe(expectedSize);
       }
     });
 
-    it("null payloadData clears user data", async () => {
+    it("null compressedPayloads clears user data", async () => {
       const cp = cachePath("ud-str-clear");
       const files = [fixtureFile("a.txt")];
       const cache = makeCache(cp, files);
 
       {
         using s1 = await cache.open();
-        await s1.write({ payloadData: [Buffer.from("will be cleared")] });
+        await s1.write({ compressedPayloads: [Buffer.from("will be cleared")] });
       }
 
       writeFileSync(fixtureFile("a.txt"), "modified for str-clear\n");
@@ -695,16 +695,262 @@ describe("FileHashCache [native]", () => {
       {
         cache.invalidateAll();
         using s2 = await cache.open();
-        await s2.write({ payloadData: null });
+        await s2.write({ compressedPayloads: null });
       }
 
       {
         cache.invalidateAll();
         using s3 = await cache.open();
-        expect(s3.payloadData.length).toBe(0);
+        expect(s3.compressedPayloads.length).toBe(0);
       }
 
       writeFileSync(fixtureFile("a.txt"), "hello world\n");
+    });
+  });
+
+  //  - uncompressedPayloads (raw, stored after the header — readable without LZ4)
+
+  describe("uncompressedPayloads", () => {
+    it("write can set single uncompressed item", async () => {
+      const cp = cachePath("uud-single");
+      const files = [fixtureFile("a.txt")];
+      const cache = makeCache(cp, files);
+
+      const testData = Buffer.from("raw uncompressed payload");
+      {
+        using s1 = await cache.open();
+        await s1.write({ uncompressedPayloads: [testData] });
+      }
+
+      {
+        cache.invalidateAll();
+        using s2 = await cache.open();
+        expect(s2.uncompressedPayloads.length).toBe(1);
+        expect(Buffer.isBuffer(s2.uncompressedPayloads[0])).toBe(true);
+        expect(s2.uncompressedPayloads[0].byteLength).toBe(testData.length);
+        expect(Buffer.from(s2.uncompressedPayloads[0]).equals(testData)).toBe(true);
+      }
+    });
+
+    it("writes multiple items and reads each back by index", async () => {
+      const cp = cachePath("uud-multi");
+      const files = [fixtureFile("a.txt")];
+      const cache = makeCache(cp, files);
+
+      const items = [Buffer.from("first raw"), Buffer.from("second raw item"), Buffer.from("third")];
+
+      {
+        using s1 = await cache.open();
+        await s1.write({ uncompressedPayloads: items });
+      }
+
+      {
+        cache.invalidateAll();
+        using s2 = await cache.open();
+        expect(s2.uncompressedPayloads.length).toBe(3);
+        const totalSize = s2.uncompressedPayloads.reduce((s, item) => s + item.byteLength, 0);
+        expect(totalSize).toBe(9 + 15 + 5);
+
+        for (let i = 0; i < 3; i++) {
+          const expected = items[i] ?? Buffer.alloc(0);
+          const actual = s2.uncompressedPayloads[i];
+          expect(Buffer.from(actual).equals(expected)).toBe(true);
+        }
+      }
+    });
+
+    it("empty array produces zero uncompressedPayloads items", async () => {
+      const cp = cachePath("uud-empty");
+      const files = [fixtureFile("a.txt")];
+      const cache = makeCache(cp, files);
+
+      {
+        using s1 = await cache.open();
+        await s1.write({ uncompressedPayloads: [] });
+      }
+
+      {
+        cache.invalidateAll();
+        using s2 = await cache.open();
+        expect(s2.uncompressedPayloads.length).toBe(0);
+      }
+    });
+
+    it("null clears uncompressed payloads", async () => {
+      const cp = cachePath("uud-null");
+      const files = [fixtureFile("a.txt")];
+      const cache = makeCache(cp, files);
+
+      {
+        using s1 = await cache.open();
+        await s1.write({ uncompressedPayloads: [Buffer.from("some raw data")] });
+      }
+
+      writeFileSync(fixtureFile("a.txt"), "modified for uud-null\n");
+      const t = new Date(Date.now() + 2000);
+      utimesSync(fixtureFile("a.txt"), t, t);
+
+      {
+        cache.invalidateAll();
+        using s2 = await cache.open();
+        await s2.write({ uncompressedPayloads: null });
+      }
+
+      {
+        cache.invalidateAll();
+        using s3 = await cache.open();
+        expect(s3.uncompressedPayloads.length).toBe(0);
+      }
+
+      writeFileSync(fixtureFile("a.txt"), "hello world\n");
+    });
+
+    it("preserves uncompressed payloads when not specified in write", async () => {
+      const cp = cachePath("uud-preserve");
+      const files = [fixtureFile("a.txt")];
+      const cache = makeCache(cp, files);
+
+      {
+        using s1 = await cache.open();
+        await s1.write({
+          uncompressedPayloads: [Buffer.from("preserve me 1"), Buffer.from("preserve me 2")],
+        });
+      }
+
+      writeFileSync(fixtureFile("a.txt"), "modified for uud-preserve\n");
+      const t = new Date(Date.now() + 3000);
+      utimesSync(fixtureFile("a.txt"), t, t);
+
+      {
+        cache.invalidateAll();
+        using s2 = await cache.open();
+        await s2.write({ payloadValue0: 42 });
+      }
+
+      {
+        cache.invalidateAll();
+        using s3 = await cache.open();
+        expect(s3.payloadValue0).toBe(42);
+        expect(s3.uncompressedPayloads.length).toBe(2);
+        expect(s3.uncompressedPayloads[0].toString()).toBe("preserve me 1");
+        expect(s3.uncompressedPayloads[1].toString()).toBe("preserve me 2");
+      }
+
+      writeFileSync(fixtureFile("a.txt"), "hello world\n");
+    });
+
+    it("compressed and uncompressed payloads are independent", async () => {
+      const cp = cachePath("uud-both");
+      const files = [fixtureFile("a.txt")];
+      const cache = makeCache(cp, files);
+
+      const compItems = [Buffer.from("compressed A"), Buffer.from("compressed B")];
+      const uncItems = [Buffer.from("uncompressed X"), Buffer.from("uncompressed Y"), Buffer.from("uncompressed Z")];
+
+      {
+        using s1 = await cache.open();
+        await s1.write({
+          compressedPayloads: compItems,
+          uncompressedPayloads: uncItems,
+        });
+      }
+
+      {
+        cache.invalidateAll();
+        using s2 = await cache.open();
+        expect(s2.compressedPayloads.length).toBe(2);
+        expect(s2.uncompressedPayloads.length).toBe(3);
+        expect(s2.compressedPayloads[0].toString()).toBe("compressed A");
+        expect(s2.compressedPayloads[1].toString()).toBe("compressed B");
+        expect(s2.uncompressedPayloads[0].toString()).toBe("uncompressed X");
+        expect(s2.uncompressedPayloads[1].toString()).toBe("uncompressed Y");
+        expect(s2.uncompressedPayloads[2].toString()).toBe("uncompressed Z");
+      }
+    });
+
+    it("clearing one side leaves the other intact", async () => {
+      const cp = cachePath("uud-clear-one");
+      const files = [fixtureFile("a.txt")];
+      const cache = makeCache(cp, files);
+
+      {
+        using s1 = await cache.open();
+        await s1.write({
+          compressedPayloads: [Buffer.from("keep me")],
+          uncompressedPayloads: [Buffer.from("drop me")],
+        });
+      }
+
+      writeFileSync(fixtureFile("a.txt"), "modified for uud-clear-one\n");
+      const t = new Date(Date.now() + 5000);
+      utimesSync(fixtureFile("a.txt"), t, t);
+
+      {
+        cache.invalidateAll();
+        using s2 = await cache.open();
+        // Drop only the uncompressed side; compressed should be preserved.
+        await s2.write({ uncompressedPayloads: null });
+      }
+
+      {
+        cache.invalidateAll();
+        using s3 = await cache.open();
+        expect(s3.uncompressedPayloads.length).toBe(0);
+        expect(s3.compressedPayloads.length).toBe(1);
+        expect(s3.compressedPayloads[0].toString()).toBe("keep me");
+      }
+
+      writeFileSync(fixtureFile("a.txt"), "hello world\n");
+    });
+
+    it("handles empty buffer items in uncompressed payloads", async () => {
+      const cp = cachePath("uud-empty-items");
+      const files = [fixtureFile("a.txt")];
+      const cache = makeCache(cp, files);
+
+      {
+        using s1 = await cache.open();
+        await s1.write({
+          uncompressedPayloads: [Buffer.alloc(0), Buffer.from("middle"), Buffer.alloc(0)],
+        });
+      }
+
+      {
+        cache.invalidateAll();
+        using s2 = await cache.open();
+        expect(s2.uncompressedPayloads.length).toBe(3);
+        expect(s2.uncompressedPayloads[0].length).toBe(0);
+        expect(s2.uncompressedPayloads[1].toString()).toBe("middle");
+        expect(s2.uncompressedPayloads[2].length).toBe(0);
+      }
+    });
+
+    it("handles binary content correctly in uncompressed payloads", async () => {
+      const cp = cachePath("uud-binary");
+      const files = [fixtureFile("a.txt")];
+      const cache = makeCache(cp, files);
+
+      const binary = Buffer.from([0x00, 0xff, 0x42, 0x7f, 0x80, 0xde, 0xad, 0xbe, 0xef]);
+      {
+        using s1 = await cache.open();
+        await s1.write({ uncompressedPayloads: [binary] });
+      }
+
+      {
+        cache.invalidateAll();
+        using s2 = await cache.open();
+        expect(s2.uncompressedPayloads.length).toBe(1);
+        expect(Buffer.from(s2.uncompressedPayloads[0]).equals(binary)).toBe(true);
+      }
+    });
+
+    it("no old cache means empty uncompressedPayloads", async () => {
+      const cp = cachePath("uud-noold");
+      const files = [fixtureFile("a.txt")];
+      const cache = makeCache(cp, files);
+
+      using session = await cache.open();
+      expect(session.uncompressedPayloads.length).toBe(0);
     });
   });
 
@@ -735,7 +981,7 @@ describe("FileHashCache [native]", () => {
   //  - write preserves old user data
 
   describe("write preserves old user data", () => {
-    it("writes cache and preserves old user data when no payloadData in write options", async () => {
+    it("writes cache and preserves old user data when no compressedPayloads in write options", async () => {
       const cp = cachePath("cb-true");
       const files = [fixtureFile("a.txt")];
       const cache = makeCache(cp, files);
@@ -744,7 +990,7 @@ describe("FileHashCache [native]", () => {
       {
         using s1 = await cache.open();
         await s1.write({
-          payloadData: [Buffer.from("preserved data")],
+          compressedPayloads: [Buffer.from("preserved data")],
           payloadValue0: 42,
         });
       }
@@ -754,7 +1000,7 @@ describe("FileHashCache [native]", () => {
       const t = new Date(Date.now() + 2000);
       utimesSync(fixtureFile("a.txt"), t, t);
 
-      // Open and write without specifying payloadData — should preserve old
+      // Open and write without specifying compressedPayloads — should preserve old
       {
         cache.invalidateAll();
         using s2 = await cache.open();
@@ -768,8 +1014,8 @@ describe("FileHashCache [native]", () => {
         using s3 = await cache.open();
         expect(s3.status).toBe("upToDate");
         expect(s3.payloadValue0).toBe(42);
-        expect(s3.payloadData.length).toBe(1);
-        const item = s3.payloadData[0];
+        expect(s3.compressedPayloads.length).toBe(1);
+        const item = s3.compressedPayloads[0];
         expect(item.toString()).toBe("preserved data");
       }
 
@@ -885,7 +1131,7 @@ describe("FileHashCache [native]", () => {
         const cache1 = makeCache(cp, files);
         using s1 = await cache1.open();
         await s1.write({
-          payloadData: [Buffer.from("reuse data")],
+          compressedPayloads: [Buffer.from("reuse data")],
           payloadValue0: 99,
         });
       }
@@ -896,7 +1142,7 @@ describe("FileHashCache [native]", () => {
         using s2 = await cache2.open();
         expect(s2.status).toBe("upToDate");
         expect(s2.payloadValue0).toBe(99);
-        expect(s2.payloadData.length).toBe(1);
+        expect(s2.compressedPayloads.length).toBe(1);
       }
     });
 
@@ -947,7 +1193,7 @@ describe("FileHashCache [native]", () => {
   //  - user data preservation (undefined = keep old)
 
   describe("user data preservation", () => {
-    it("undefined payloadData keeps old user data", async () => {
+    it("undefined compressedPayloads keeps old user data", async () => {
       const cp = cachePath("ud-preserve");
       const files = [fixtureFile("a.txt")];
       const cache = makeCache(cp, files);
@@ -956,7 +1202,7 @@ describe("FileHashCache [native]", () => {
       {
         using s1 = await cache.open();
         await s1.write({
-          payloadData: [Buffer.from("keep me"), Buffer.from("and me")],
+          compressedPayloads: [Buffer.from("keep me"), Buffer.from("and me")],
           payloadValue0: 7,
         });
       }
@@ -966,7 +1212,7 @@ describe("FileHashCache [native]", () => {
       const t = new Date(Date.now() + 2000);
       utimesSync(fixtureFile("a.txt"), t, t);
 
-      // Write with changed userValue but payloadData: undefined → preserve old
+      // Write with changed userValue but compressedPayloads: undefined → preserve old
       {
         cache.invalidateAll();
         using s2 = await cache.open();
@@ -978,10 +1224,10 @@ describe("FileHashCache [native]", () => {
         cache.invalidateAll();
         using s3 = await cache.open();
         expect(s3.payloadValue0).toBe(77);
-        expect(s3.payloadData.length).toBe(2);
-        const item0 = s3.payloadData[0];
+        expect(s3.compressedPayloads.length).toBe(2);
+        const item0 = s3.compressedPayloads[0];
         expect(item0.toString()).toBe("keep me");
-        const item1 = s3.payloadData[1];
+        const item1 = s3.compressedPayloads[1];
         expect(item1.toString()).toBe("and me");
       }
 
@@ -1249,7 +1495,7 @@ describe("FileHashCache [native]", () => {
   //  - update file list preserves user data
 
   describe("update file list preserves user data", () => {
-    it("changing files in write preserves user data when payloadData is undefined", async () => {
+    it("changing files in write preserves user data when compressedPayloads is undefined", async () => {
       const cp = cachePath("files-preserve-ud");
       const files1 = [fixtureFile("a.txt")];
       const files2 = [fixtureFile("a.txt"), fixtureFile("b.txt")];
@@ -1259,12 +1505,12 @@ describe("FileHashCache [native]", () => {
       {
         using s1 = await cache.open();
         await s1.write({
-          payloadData: [Buffer.from("keep this")],
+          compressedPayloads: [Buffer.from("keep this")],
           payloadValue0: 42,
         });
       }
 
-      // Update file list, don't set payloadData → should preserve
+      // Update file list, don't set compressedPayloads → should preserve
       {
         cache.invalidateAll();
         using s2 = await cache.open();
@@ -1278,8 +1524,8 @@ describe("FileHashCache [native]", () => {
         using s3 = await cache2.open();
         expect(s3.status).toBe("upToDate");
         expect(s3.payloadValue0).toBe(42);
-        expect(s3.payloadData.length).toBe(1);
-        const item = s3.payloadData[0];
+        expect(s3.compressedPayloads.length).toBe(1);
+        const item = s3.compressedPayloads[0];
         expect(item.toString()).toBe("keep this");
       }
     });
@@ -1357,7 +1603,7 @@ describe("FileHashCache [native]", () => {
       }
     });
 
-    it("changing files + payloadData replaces user data", async () => {
+    it("changing files + compressedPayloads replaces user data", async () => {
       const cp = cachePath("files-ud-replace");
       const files1 = [fixtureFile("a.txt")];
       const files2 = [fixtureFile("a.txt"), fixtureFile("b.txt")];
@@ -1366,7 +1612,7 @@ describe("FileHashCache [native]", () => {
       {
         const cache1 = makeCache(cp, files1);
         using s1 = await cache1.open();
-        await s1.write({ payloadData: [Buffer.from("old data")] });
+        await s1.write({ compressedPayloads: [Buffer.from("old data")] });
       }
 
       // Change files and replace user data
@@ -1375,7 +1621,7 @@ describe("FileHashCache [native]", () => {
         using s2 = await cache2.open();
         cache2.configure({ files: files2, rootPath: FIXTURE_DIR });
         await s2.write({
-          payloadData: [Buffer.from("new item 1"), Buffer.from("new item 2")],
+          compressedPayloads: [Buffer.from("new item 1"), Buffer.from("new item 2")],
         });
       }
 
@@ -1384,15 +1630,15 @@ describe("FileHashCache [native]", () => {
         const cache3 = makeCache(cp, files2);
         using s3 = await cache3.open();
         expect(s3.status).toBe("upToDate");
-        expect(s3.payloadData.length).toBe(2);
-        const item0 = s3.payloadData[0];
+        expect(s3.compressedPayloads.length).toBe(2);
+        const item0 = s3.compressedPayloads[0];
         expect(item0.toString()).toBe("new item 1");
-        const item1 = s3.payloadData[1];
+        const item1 = s3.compressedPayloads[1];
         expect(item1.toString()).toBe("new item 2");
       }
     });
 
-    it("changing files + null payloadData clears user data", async () => {
+    it("changing files + null compressedPayloads clears user data", async () => {
       const cp = cachePath("files-ud-clear");
       const files1 = [fixtureFile("a.txt")];
       const files2 = [fixtureFile("b.txt")];
@@ -1402,7 +1648,7 @@ describe("FileHashCache [native]", () => {
         const cache1 = makeCache(cp, files1);
         using s1 = await cache1.open();
         await s1.write({
-          payloadData: [Buffer.from("remove me")],
+          compressedPayloads: [Buffer.from("remove me")],
           payloadValue0: 55,
         });
       }
@@ -1413,7 +1659,7 @@ describe("FileHashCache [native]", () => {
         using s2 = await cache2.open();
         cache2.configure({ files: files2, rootPath: FIXTURE_DIR });
         await s2.write({
-          payloadData: null,
+          compressedPayloads: null,
         });
       }
 
@@ -1422,12 +1668,12 @@ describe("FileHashCache [native]", () => {
         const cache3 = makeCache(cp, files2);
         using s3 = await cache3.open();
         expect(s3.status).toBe("upToDate");
-        expect(s3.payloadData.length).toBe(0);
+        expect(s3.compressedPayloads.length).toBe(0);
         expect(s3.payloadValue0).toBe(55);
       }
     });
 
-    it("changing files + userValues + payloadData + fingerprint all together", async () => {
+    it("changing files + userValues + compressedPayloads + fingerprint all together", async () => {
       const cp = cachePath("files-all");
       const files1 = [fixtureFile("a.txt")];
       const files2 = [fixtureFile("a.txt"), fixtureFile("b.txt")];
@@ -1439,7 +1685,7 @@ describe("FileHashCache [native]", () => {
         const cache1 = makeCache(cp, files1, { fingerprint: fp1 });
         using s1 = await cache1.open();
         await s1.write({
-          payloadData: [Buffer.from("old")],
+          compressedPayloads: [Buffer.from("old")],
           payloadValue0: 1,
           payloadValue1: 2,
         });
@@ -1453,7 +1699,7 @@ describe("FileHashCache [native]", () => {
         await s2.write({
           payloadValue0: 100,
           payloadValue3: 300,
-          payloadData: [Buffer.from("alpha"), Buffer.from("beta")],
+          compressedPayloads: [Buffer.from("alpha"), Buffer.from("beta")],
         });
       }
 
@@ -1467,10 +1713,10 @@ describe("FileHashCache [native]", () => {
         expect(s3.payloadValue1).toBe(2);
         expect(s3.payloadValue2).toBe(0);
         expect(s3.payloadValue3).toBe(300);
-        expect(s3.payloadData.length).toBe(2);
-        const item0 = s3.payloadData[0];
+        expect(s3.compressedPayloads.length).toBe(2);
+        const item0 = s3.compressedPayloads[0];
         expect(item0.toString()).toBe("alpha");
-        const item1 = s3.payloadData[1];
+        const item1 = s3.compressedPayloads[1];
         expect(item1.toString()).toBe("beta");
       }
 

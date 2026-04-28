@@ -3,7 +3,7 @@
 
 #include "file-hash-cache-format.h"
 #include "OwnedBuf.h"
-#include "ParsedUserData.h"
+#include "ParsedPayloads.h"
 #include "cache-constants.h"
 
 #include <algorithm>
@@ -49,46 +49,65 @@ namespace fast_fs_hash {
   }
 
   /**
-   * LZ4-compress and write a cache file body to a locked fd.
-   * Sets header magic, compresses body, writes header+body, truncates.
-   * Closes the fd when done (or on error).
+   * Write [header][uncompressed section][LZ4(body)] to a locked fd.
+   *
+   * Sets header magic, compresses body, writes header + uncompressed section +
+   * compressed body, truncates. Closes the fd when done (or on error).
    * On success, writes cache file stat hash to statOut[0..1].
-   * Returns true on success.
+   *
+   * @param hdr          Header (magic + reserved updated in place).
+   * @param uncompressed Pointer to the uncompressed payloads section (may be null if uncSize==0).
+   * @param uncSize      Byte length of the uncompressed section (dir + payload bytes).
+   * @param body         Pointer to the body to LZ4-compress (may be empty).
+   * @param bodyLen      Byte length of the body.
+   * @param file         Locked fd — closed by this function.
+   * @param statOut      Output: cache file stat hash [stat0, stat1].
    */
   inline bool compressAndWriteCache(
-    CacheHeader * hdr, const uint8_t * body, size_t bodyLen, FfshFile & file, double * statOut) noexcept {
+    CacheHeader * hdr,
+    const uint8_t * uncompressed,
+    size_t uncSize,
+    const uint8_t * body,
+    size_t bodyLen,
+    FfshFile & file,
+    double * statOut) noexcept {
     if (bodyLen > CACHE_MAX_BODY_SIZE) [[unlikely]] {
       file.close();
       return false;
     }
 
     hdr->magic = CacheHeader::MAGIC;
-    hdr->reserved = 0;
 
     const int srcSize = static_cast<int>(bodyLen);
-    const int maxCompressed = LZ4_compressBound(srcSize);
-    const size_t totalFileSize = CacheHeader::SIZE + static_cast<size_t>(maxCompressed);
-    OwnedBuf<> outBuf = OwnedBuf<>::alloc(totalFileSize);
+    const int maxCompressed = bodyLen > 0 ? LZ4_compressBound(srcSize) : 0;
+    const size_t totalFileSize = CacheHeader::SIZE + uncSize + static_cast<size_t>(maxCompressed);
+    OwnedBuf<> outBuf = OwnedBuf<>::alloc(totalFileSize > 0 ? totalFileSize : CacheHeader::SIZE);
     if (!outBuf) [[unlikely]] {
       file.close();
       return false;
     }
 
     memcpy(outBuf.ptr, hdr, CacheHeader::SIZE);
-
-    const int compressedSize = LZ4_compress_fast(
-      reinterpret_cast<const char *>(body),
-      reinterpret_cast<char *>(outBuf.ptr + CacheHeader::SIZE),
-      srcSize,
-      maxCompressed,
-      2);
-
-    if (compressedSize <= 0) [[unlikely]] {
-      file.close();
-      return false;
+    if (uncSize > 0 && uncompressed) {
+      memcpy(outBuf.ptr + CacheHeader::SIZE, uncompressed, uncSize);
     }
 
-    const size_t actualFileSize = CacheHeader::SIZE + static_cast<size_t>(compressedSize);
+    int compressedSize = 0;
+    if (bodyLen > 0) {
+      compressedSize = LZ4_compress_fast(
+        reinterpret_cast<const char *>(body),
+        reinterpret_cast<char *>(outBuf.ptr + CacheHeader::SIZE + uncSize),
+        srcSize,
+        maxCompressed,
+        2);
+
+      if (compressedSize <= 0) [[unlikely]] {
+        file.close();
+        return false;
+      }
+    }
+
+    const size_t actualFileSize = CacheHeader::SIZE + uncSize + static_cast<size_t>(compressedSize);
 
     if (!file) [[unlikely]] {
       return false;
@@ -106,60 +125,123 @@ namespace fast_fs_hash {
   }
 
   /**
-   * Assemble the on-disk body (entries + ud directory + pathEnds + paths + ud payloads),
-   * then LZ4-compress and write to the locked fd.
+   * Assemble the uncompressed section and compressed body from the in-memory
+   * dataBuf, then write them to the locked fd.
    *
-   * The in-memory dataBuf layout depends on how many user data items were present
-   * when it was built (this affects where pathEnds and paths are located, because
-   * the udDir sits between entries and pathEnds). When writing, the new udCount
-   * may differ — so this function reads pathEnds/paths using the OLD layout offset
-   * (prevUdCount) and assembles a fresh body with the NEW udCount layout.
+   * The in-memory dataBuf layout depends on how many uncompressed/compressed
+   * items were present when it was built (this affects where the body starts
+   * and where pathEnds/paths live inside the body). When writing, the new
+   * counts may differ — so this function reads the body using the OLD layout
+   * offsets and assembles a fresh uncompressed section + fresh body using the
+   * NEW counts.
    *
-   * @param buf          In-memory dataBuf (header + entries + paths).
-   * @param hdr          Header within buf. Updated in-place (udItemCount, udPayloadsLen, magic).
+   * @param buf          In-memory dataBuf.
+   * @param hdr          Header within buf. Updated in-place.
    * @param fc           File count.
-   * @param prevUdCount  The udItemCount used when the in-memory layout was built.
-   * @param ud           Parsed user data to embed (may have different count than prevUdCount).
-   * @param file         Locked fd — closed by this function regardless of success/failure.
+   * @param prevCompCount     Previous compressed item count (for reading current body).
+   * @param prevUncCount      Previous uncompressed item count (for reading current body).
+   * @param prevUncBytesLen   Previous uncompressed payload bytes length (for reading current body).
+   * @param compressed   New compressed payloads to embed (may differ from previous).
+   * @param uncompressed New uncompressed payloads to embed (may differ from previous).
+   * @param file         Locked fd — closed by this function.
    * @param statOut      Output: cache file stat hash [stat0, stat1]. Written on success.
-   * @return true on successful write.
    */
   inline bool assembleAndWriteCache(
     uint8_t * buf,
     CacheHeader * hdr,
     uint32_t fc,
-    uint32_t prevUdCount,
-    const ParsedUserData & ud,
+    uint32_t prevCompCount,
+    uint32_t prevUncCount,
+    uint32_t prevUncBytesLen,
+    const ParsedPayloads & compressed,
+    const ParsedPayloads & uncompressed,
     FfshFile & file,
     double * statOut) noexcept {
-    const size_t udCount = ud.count();
-    const auto * udItems = ud.data();
-    const bool hasUd = udCount > 0 && udCount <= CACHE_MAX_FILE_COUNT && udItems;
+    // - Compute new compressed section sizes
+    const size_t newCompCount = compressed.count();
+    const auto * compItems = compressed.data();
+    const bool hasComp = newCompCount > 0 && newCompCount <= CACHE_MAX_FILE_COUNT && compItems;
 
-    size_t dirSize = 0;
-    size_t udPayloadsLen = 0;
-    if (hasUd) {
-      dirSize = udCount * 4;
-      uint32_t cumulative = 0;
-      for (size_t i = 0; i < udCount; ++i) {
-        cumulative += static_cast<uint32_t>(udItems[i].len);
+    size_t compDirSize = 0;
+    size_t compBytesLen = 0;
+    if (hasComp) {
+      compDirSize = newCompCount * 4;
+      uint64_t cumulative = 0;
+      for (size_t i = 0; i < newCompCount; ++i) {
+        cumulative += compItems[i].len;
       }
-      udPayloadsLen = cumulative;
+      if (cumulative > CACHE_MAX_COMPRESSED_PAYLOADS) [[unlikely]] {
+        file.close();
+        return false;
+      }
+      compBytesLen = static_cast<size_t>(cumulative);
     }
 
-    hdr->udItemCount = static_cast<uint32_t>(udCount);
-    hdr->udPayloadsLen = static_cast<uint32_t>(udPayloadsLen);
+    // - Compute new uncompressed section sizes
+    const size_t newUncCount = uncompressed.count();
+    const auto * uncItems = uncompressed.data();
+    const bool hasUnc = newUncCount > 0 && newUncCount <= CACHE_MAX_FILE_COUNT && uncItems;
 
-    const uint32_t * inMemPe = pathEndsOf(buf, fc, prevUdCount);
-    const uint8_t * inMemPaths = pathsOf(buf, fc, prevUdCount);
+    size_t uncDirSize = 0;
+    size_t uncBytesLen = 0;
+    if (hasUnc) {
+      uncDirSize = newUncCount * 4;
+      uint64_t cumulative = 0;
+      for (size_t i = 0; i < newUncCount; ++i) {
+        cumulative += uncItems[i].len;
+      }
+      if (cumulative > CACHE_MAX_UNCOMPRESSED_PAYLOADS) [[unlikely]] {
+        file.close();
+        return false;
+      }
+      uncBytesLen = static_cast<size_t>(cumulative);
+    }
+
+    const size_t uncSectionSize = uncDirSize + uncBytesLen;
+
+    // - Update header
+    hdr->compressedPayloadItemCount = static_cast<uint32_t>(newCompCount);
+    hdr->compressedPayloadsLen = static_cast<uint32_t>(compBytesLen);
+    hdr->uncompressedPayloadItemCount = static_cast<uint32_t>(newUncCount);
+    hdr->uncompressedPayloadsLen = static_cast<uint32_t>(uncBytesLen);
+
+    // - Read source path data using PREVIOUS in-memory layout
+    const uint32_t * inMemPe = pathEndsOf(buf, fc, prevCompCount, prevUncCount, prevUncBytesLen);
+    const uint8_t * inMemPaths = pathsOf(buf, fc, prevCompCount, prevUncCount, prevUncBytesLen);
+    const CacheEntry * inMemEntries = entriesOf(buf, prevUncCount, prevUncBytesLen);
     const uint32_t inMemPathsLen = hdr->pathsLen;
     const size_t entriesLen = static_cast<size_t>(fc) * CacheEntry::STRIDE;
     const size_t peSize = static_cast<size_t>(fc) * 4;
 
-    const size_t bodyTotal = entriesLen + dirSize + peSize + inMemPathsLen + udPayloadsLen;
+    const size_t bodyTotal = entriesLen + compDirSize + peSize + inMemPathsLen + compBytesLen;
+
+    OwnedBuf<> uncBuf;
+    uint8_t * uncPtr = nullptr;
+    if (uncSectionSize > 0) {
+      uncBuf = OwnedBuf<>::alloc(uncSectionSize);
+      if (!uncBuf) [[unlikely]] {
+        file.close();
+        return false;
+      }
+      uncPtr = uncBuf.ptr;
+      if (hasUnc) {
+        auto * dir = reinterpret_cast<uint32_t *>(uncPtr);
+        uint8_t * bytesDst = uncPtr + uncDirSize;
+        uint32_t cumulative = 0;
+        for (size_t i = 0; i < newUncCount; ++i) {
+          const size_t itemLen = uncItems[i].len;
+          if (itemLen > 0) {
+            memcpy(bytesDst + cumulative, uncItems[i].ptr, itemLen);
+          }
+          cumulative += static_cast<uint32_t>(itemLen);
+          dir[i] = cumulative;
+        }
+      }
+    }
+
+    // - Assemble the new body
     if (bodyTotal == 0) {
-      uint8_t empty = 0;
-      return compressAndWriteCache(hdr, &empty, 0, file, statOut);
+      return compressAndWriteCache(hdr, uncPtr, uncSectionSize, nullptr, 0, file, statOut);
     }
     OwnedBuf<> body = OwnedBuf<>::alloc(bodyTotal);
     if (!body) [[unlikely]] {
@@ -168,20 +250,21 @@ namespace fast_fs_hash {
     }
 
     uint8_t * dst = body.ptr;
-    memcpy(dst, entriesOf(buf), entriesLen);
+    memcpy(dst, inMemEntries, entriesLen);
     auto * diskEntries = reinterpret_cast<CacheEntry *>(dst);
     for (uint32_t i = 0; i < fc; ++i) {
       diskEntries[i].ino &= INO_VALUE_MASK;
     }
     dst += entriesLen;
 
-    if (hasUd) {
+    if (hasComp) {
+      auto * dir = reinterpret_cast<uint32_t *>(dst);
       uint32_t cumulative = 0;
-      for (size_t i = 0; i < udCount; ++i) {
-        cumulative += static_cast<uint32_t>(udItems[i].len);
-        memcpy(dst + i * 4, &cumulative, 4);
+      for (size_t i = 0; i < newCompCount; ++i) {
+        cumulative += static_cast<uint32_t>(compItems[i].len);
+        dir[i] = cumulative;
       }
-      dst += dirSize;
+      dst += compDirSize;
     }
 
     memcpy(dst, inMemPe, peSize);
@@ -189,15 +272,15 @@ namespace fast_fs_hash {
     memcpy(dst, inMemPaths, inMemPathsLen);
     dst += inMemPathsLen;
 
-    for (size_t i = 0; i < udCount; ++i) {
-      const size_t itemLen = udItems[i].len;
+    for (size_t i = 0; i < newCompCount; ++i) {
+      const size_t itemLen = compItems[i].len;
       if (itemLen > 0) {
-        memcpy(dst, udItems[i].ptr, itemLen);
+        memcpy(dst, compItems[i].ptr, itemLen);
         dst += itemLen;
       }
     }
 
-    return compressAndWriteCache(hdr, body.ptr, bodyTotal, file, statOut);
+    return compressAndWriteCache(hdr, uncPtr, uncSectionSize, body.ptr, bodyTotal, file, statOut);
   }
 
 }  // namespace fast_fs_hash

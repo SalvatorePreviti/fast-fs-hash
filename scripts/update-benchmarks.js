@@ -55,6 +55,8 @@ const LZ4_BENCHMARKS_END = "<!-- LZ4_BENCHMARKS:END -->";
 
 const FILES_EQUAL_BENCHMARKS_START = "<!-- FILES_EQUAL_BENCHMARKS:START -->";
 const FILES_EQUAL_BENCHMARKS_END = "<!-- FILES_EQUAL_BENCHMARKS:END -->";
+const FIND_PROJECT_ROOT_BENCHMARKS_START = "<!-- FIND_PROJECT_ROOT_BENCHMARKS:START -->";
+const FIND_PROJECT_ROOT_BENCHMARKS_END = "<!-- FIND_PROJECT_ROOT_BENCHMARKS:END -->";
 
 //  - Benchmark data size
 
@@ -138,6 +140,7 @@ const README_BENCH_FILES = [
   "test/bench/lz4.bench.ts",
   "test/bench/files-equal.bench.ts",
   "test/bench/file-hash-cache-locked.bench.ts",
+  "test/bench/find-project-root.bench.ts",
 ];
 
 function runBenchmarks() {
@@ -562,6 +565,47 @@ function buildFilesEqualTables(benchData) {
 
 const filesEqualSections = buildFilesEqualTables(benchData);
 
+//  - findProjectRoot benchmarks
+
+function buildFindProjectRootTables(benchData) {
+  const lines = [];
+  for (const file of benchData.files ?? []) {
+    for (const group of file.groups ?? []) {
+      if (!group.fullName?.includes("findProjectRoot")) {
+        continue;
+      }
+      const benches = (group.benchmarks ?? []).filter((b) => b.mean != null);
+      if (benches.length === 0) {
+        continue;
+      }
+      benches.sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
+
+      const label = groupNameSegment(group.fullName);
+      // Skip the top-level "findProjectRoot" group itself (it contains the
+      // sub-describes, not benchmarks).
+      if (label === "findProjectRoot") {
+        continue;
+      }
+
+      const baseline = benches[benches.length - 1];
+      const rows = benches.map((b) => {
+        const speedup = baseline.mean / b.mean;
+        const relative = b === baseline ? "baseline" : `**${fmt(speedup, 1)}× faster**`;
+        const hzStr = b.hz != null ? `${fmt(b.hz, 0)} op/s` : "—";
+        return [b.name, fmtTime(b.mean), hzStr, relative];
+      });
+
+      if (lines.length > 0) {
+        lines.push("");
+      }
+      lines.push(`**${label}:**`, "", markdownTable(["Scenario", "Mean", "Hz", "Relative"], rows));
+    }
+  }
+  return lines.length > 0 ? lines : ["_No benchmark data available._"];
+}
+
+const findProjectRootSections = buildFindProjectRootTables(benchData);
+
 //  - Write README
 
 let readme = readFileSync(README, "utf8");
@@ -576,6 +620,12 @@ readme = updateReadmeSection(
   FILES_EQUAL_BENCHMARKS_START,
   FILES_EQUAL_BENCHMARKS_END,
   filesEqualSections.join("\n")
+);
+readme = updateReadmeSection(
+  readme,
+  FIND_PROJECT_ROOT_BENCHMARKS_START,
+  FIND_PROJECT_ROOT_BENCHMARKS_END,
+  findProjectRootSections.join("\n")
 );
 readme = formatMarkdown(readme, README);
 

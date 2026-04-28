@@ -39,7 +39,7 @@ afterAll(() => {
   rmSync(TEST_DIR, { recursive: true, force: true });
 });
 
-// ── open + write: basic flows ────────────────────────────────────────
+// - open + write: basic flows
 
 describe("open + write with files in constructor", () => {
   it("first open returns missing, write succeeds, re-open returns upToDate", async () => {
@@ -103,7 +103,7 @@ describe("open + write with files in constructor", () => {
   });
 });
 
-// ── Changing files between open and write (build step) ───────────────
+// - Changing files between open and write (build step)
 
 describe("change files between open and write", () => {
   it("write uses the new file list set via cache.files", async () => {
@@ -175,7 +175,7 @@ describe("change files between open and write", () => {
   });
 });
 
-// ── Close without write re-invalidates ───────────────────────────────
+// - Close without write re-invalidates
 
 describe("close without write", () => {
   it("re-invalidates so next open does full stat-match", async () => {
@@ -244,7 +244,7 @@ describe("close without write", () => {
   });
 });
 
-// ── overwrite ─────────────────────────────────────────────────────────
+// - overwrite
 
 describe("overwrite", () => {
   it("writes a new cache from scratch", async () => {
@@ -263,7 +263,7 @@ describe("overwrite", () => {
     }
   });
 
-  it("overwrite with payloadData", async () => {
+  it("overwrite with compressedPayloads", async () => {
     const cacheFile = cp();
     const files = [fx("a.txt")];
     const cache = new FileHashCache({ cachePath: cacheFile, files, rootPath: FIXTURE_DIR });
@@ -271,10 +271,10 @@ describe("overwrite", () => {
     await cache.overwrite({
       payloadValue0: 42,
       payloadValue1: 3.14,
-      payloadData: [Buffer.from("hello"), Buffer.from("world")],
+      compressedPayloads: [Buffer.from("hello"), Buffer.from("world")],
     });
 
-    // Verify payloadData are readable
+    // Verify compressedPayloads are readable
     {
       cache.invalidateAll();
       using s = await cache.open();
@@ -283,9 +283,9 @@ describe("overwrite", () => {
       expect(s.payloadValue1).toBe(3.14);
       expect(s.payloadValue2).toBe(0);
       expect(s.payloadValue3).toBe(0);
-      expect(s.payloadData).toHaveLength(2);
-      expect(Buffer.from(s.payloadData[0]).toString()).toBe("hello");
-      expect(Buffer.from(s.payloadData[1]).toString()).toBe("world");
+      expect(s.compressedPayloads).toHaveLength(2);
+      expect(Buffer.from(s.compressedPayloads[0]).toString()).toBe("hello");
+      expect(Buffer.from(s.compressedPayloads[1]).toString()).toBe("world");
     }
   });
 
@@ -310,7 +310,7 @@ describe("overwrite", () => {
   });
 });
 
-// ── cache.write convenience ──────────────────────────────────────────
+// - cache.write convenience
 
 describe("open + write + close pattern", () => {
   it("opens, writes if needed, closes", async () => {
@@ -331,7 +331,7 @@ describe("open + write + close pattern", () => {
     }
   });
 
-  it("write passes payloadData through", async () => {
+  it("write passes compressedPayloads through", async () => {
     const cacheFile = cp();
     const files = [fx("a.txt")];
     const cache = new FileHashCache({ cachePath: cacheFile, files, rootPath: FIXTURE_DIR });

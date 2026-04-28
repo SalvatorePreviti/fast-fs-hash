@@ -9,7 +9,7 @@
 
 namespace fast_fs_hash {
 
-  // ── Helper: parse stateBuf from arg[0] ──────────────────────────────
+  // - Helper: parse stateBuf from arg[0]
 
   inline CacheStateBuf * parseStateBuf(const Napi::CallbackInfo & info, Napi::ObjectReference & outRef) {
     if (info.Length() < 1 || !info[0].IsTypedArray()) [[unlikely]] {
@@ -88,7 +88,7 @@ namespace fast_fs_hash {
   }
 
   /**
-   * cacheWrite(stateBuf, dataBuf, encodedPaths, rootPath, userData)
+   * cacheWrite(stateBuf, dataBuf, encodedPaths, rootPath, compressedPayloads, uncompressedPayloads)
    *   → Promise<number>
    *
    * Reads fileHandle, fileCount, cachePath from stateBuf.
@@ -101,7 +101,7 @@ namespace fast_fs_hash {
     Napi::ObjectReference stateRef;
     CacheStateBuf * state = parseStateBuf(info, stateRef);
 
-    if (!state || info.Length() < 5 || !info[1].IsTypedArray()) [[unlikely]] {
+    if (!state || info.Length() < 6 || !info[1].IsTypedArray()) [[unlikely]] {
       deferred.Resolve(Napi::Number::New(env, -1));
       return deferred.Promise();
     }
@@ -123,8 +123,12 @@ namespace fast_fs_hash {
 
     std::string rootPath = info[3].IsString() ? info[3].As<Napi::String>().Utf8Value() : std::string();
 
-    ParsedUserData ud(info, 4);
-    if (ud.has_error) {
+    ParsedPayloads compressedPayloads(info, 4, CACHE_MAX_COMPRESSED_PAYLOADS, "compressed");
+    if (compressedPayloads.has_error) {
+      return env.Undefined();
+    }
+    ParsedPayloads uncompressedPayloads(info, 5, CACHE_MAX_UNCOMPRESSED_PAYLOADS, "uncompressed");
+    if (uncompressedPayloads.has_error) {
       return env.Undefined();
     }
 
@@ -147,13 +151,14 @@ namespace fast_fs_hash {
       dataPtr, dataLen, std::move(data_ref),
       encoded_paths, encoded_len, std::move(paths_ref),
       fileCount, std::move(rootPath),
-      std::move(ud), std::move(lockedFile), resolveOnly);
+      std::move(compressedPayloads), std::move(uncompressedPayloads),
+      std::move(lockedFile), resolveOnly);
     worker->Queue();
     return deferred.Promise();
   }
 
   /**
-   * cacheWriteNew(stateBuf, encodedPaths, rootPath, userData)
+   * cacheWriteNew(stateBuf, encodedPaths, rootPath, compressedPayloads, uncompressedPayloads)
    *   → Promise<number>
    *
    * Reads version, fingerprint, lockTimeoutMs, fileCount, userValue0-3, cachePath from stateBuf.
@@ -166,7 +171,7 @@ namespace fast_fs_hash {
     Napi::ObjectReference stateRef;
     CacheStateBuf * state = parseStateBuf(info, stateRef);
 
-    if (!state || info.Length() < 4 || !info[1].IsTypedArray() || !info[2].IsString()) [[unlikely]] {
+    if (!state || info.Length() < 5 || !info[1].IsTypedArray() || !info[2].IsString()) [[unlikely]] {
       deferred.Resolve(Napi::Number::New(env, -1));
       return deferred.Promise();
     }
@@ -175,8 +180,12 @@ namespace fast_fs_hash {
     auto paths_ref = Napi::ObjectReference::New(pathsBuf, 1);
     std::string rootPath = info[2].As<Napi::String>().Utf8Value();
 
-    ParsedUserData ud(info, 3);
-    if (ud.has_error) {
+    ParsedPayloads compressedPayloads(info, 3, CACHE_MAX_COMPRESSED_PAYLOADS, "compressed");
+    if (compressedPayloads.has_error) {
+      return env.Undefined();
+    }
+    ParsedPayloads uncompressedPayloads(info, 4, CACHE_MAX_UNCOMPRESSED_PAYLOADS, "uncompressed");
+    if (uncompressedPayloads.has_error) {
       return env.Undefined();
     }
 
@@ -193,7 +202,7 @@ namespace fast_fs_hash {
       fileCount, cachePath, std::move(rootPath),
       version, fingerprint,
       state->userValue0, state->userValue1, state->userValue2, state->userValue3,
-      std::move(ud), timeoutMs);
+      std::move(compressedPayloads), std::move(uncompressedPayloads), timeoutMs);
     worker->Start();
     return deferred.Promise();
   }

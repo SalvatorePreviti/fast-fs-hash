@@ -108,7 +108,7 @@ export interface FileHashCacheConfigOptions {
 /**
  * Options for {@link FileHashCacheSession.write} and {@link FileHashCache.overwrite}.
  *
- * Contains only per-write data (user values, payloadData, signal).
+ * Contains only per-write data (user values, payloads, signal).
  * To change files, version, fingerprint, or rootPath, use {@link FileHashCache.configure}
  * or the corresponding setters before calling write.
  */
@@ -121,8 +121,17 @@ export interface FileHashCacheWriteOptions {
   payloadValue2?: number;
   /** Payload f64 value (slot 3). Default: preserves old value (or `0` for overwrite). */
   payloadValue3?: number;
-  /** Opaque binary payloads stored alongside the cache. Default: preserves old value (or `null` for overwrite). */
-  payloadData?: readonly Uint8Array[] | null;
+  /**
+   * Opaque binary payloads stored LZ4-compressed inside the cache body.
+   * Default: preserves old value (or `null` for overwrite).
+   */
+  compressedPayloads?: readonly Uint8Array[] | null;
+  /**
+   * Opaque binary payloads stored raw (uncompressed) in a dedicated section
+   * directly after the header — readable without decompressing the body.
+   * Default: preserves old value (or `null` for overwrite).
+   */
+  uncompressedPayloads?: readonly Uint8Array[] | null;
   /** Optional AbortSignal to cancel the hash phase. */
   signal?: AbortSignal | null;
   /** Lock acquisition timeout in ms (overwrite/lockFailed only). `-1` = block forever, `0` = non-blocking. */
@@ -465,7 +474,7 @@ export class FileHashCache {
     }
   }
 
-  // ── Dirty marking ───────────────────────────────────────────────────
+  // - Dirty marking
 
   /**
    * Mark specific files as dirty. On the next {@link open}, the C++ stat-match
@@ -558,7 +567,7 @@ export class FileHashCache {
     return _pathMutexMap?.has(this.#cachePath) === true || cacheIsLocked(this.#cachePath);
   }
 
-  // ── Lock / session operations ───────────────────────────────────────
+  // - Lock / session operations
 
   /**
    * Open the cache with an exclusive OS-level lock.
@@ -632,7 +641,13 @@ export class FileHashCache {
       const cancelCb = setupCancel(sb, sig);
       let result: number;
       try {
-        result = await cacheWriteNew(sb, this.#encodedPaths, this.#rootPath, options?.payloadData ?? null);
+        result = await cacheWriteNew(
+          sb,
+          this.#encodedPaths,
+          this.#rootPath,
+          options?.compressedPayloads ?? null,
+          options?.uncompressedPayloads ?? null
+        );
       } finally {
         teardownCancel(sig, cancelCb);
       }
@@ -674,7 +689,7 @@ export class FileHashCache {
     }
   }
 
-  // ── Static API ──────────────────────────────────────────────────────
+  // - Static API
 
   /** Check whether another process currently holds an exclusive lock on `cachePath`. */
   public static isLocked(cachePath: string): boolean {
@@ -709,7 +724,7 @@ export class FileHashCache {
     }
   }
 
-  // ── Internal API (used by FileHashCacheSession) ─────────────────────
+  // - Internal API (used by FileHashCacheSession)
 
   /** @internal */
   public get _encodedPaths(): Buffer {

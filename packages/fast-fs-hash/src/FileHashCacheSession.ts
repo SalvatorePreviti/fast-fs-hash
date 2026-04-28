@@ -25,7 +25,8 @@ import {
   cacheClose,
   cacheWrite,
   decodeFilePathsFromBuf,
-  readPayloadData,
+  readCompressedPayloads,
+  readUncompressedPayloads,
   STATUS_MAP,
   setupCancel,
   teardownCancel,
@@ -71,7 +72,8 @@ export class FileHashCacheSession {
   readonly #stateBuf: Buffer;
   readonly #lockTimeoutMs: number;
   #files: readonly string[] | null;
-  #payloadData: readonly Buffer[] | null;
+  #compressedPayloads: readonly Buffer[] | null;
+  #uncompressedPayloads: readonly Buffer[] | null;
   #resolvedEntries: FileHashCacheEntries | null;
 
   /** @internal */
@@ -88,7 +90,8 @@ export class FileHashCacheSession {
     this.#stateBuf = stateBuf;
     this.#lockTimeoutMs = lockTimeoutMs;
     this.#files = null;
-    this.#payloadData = null;
+    this.#compressedPayloads = null;
+    this.#uncompressedPayloads = null;
     this.#resolvedEntries = null;
 
     this.status = STATUS_MAP[stateBuf.readUInt32LE(S_STATUS)] ?? "missing";
@@ -125,12 +128,29 @@ export class FileHashCacheSession {
     return this.#cache.fileCount;
   }
 
-  /** Opaque binary payloadData read from disk. Empty array if none. Lazily decoded, zero-copy. */
-  public get payloadData(): readonly Buffer[] {
-    let d = this.#payloadData;
+  /**
+   * LZ4-compressed opaque binary payloads read from disk. Empty array if none.
+   * Lazily decoded, zero-copy.
+   */
+  public get compressedPayloads(): readonly Buffer[] {
+    let d = this.#compressedPayloads;
     if (!d) {
-      d = readPayloadData(this.#dataBuf);
-      this.#payloadData = d;
+      d = readCompressedPayloads(this.#dataBuf);
+      this.#compressedPayloads = d;
+    }
+    return d;
+  }
+
+  /**
+   * Uncompressed opaque binary payloads read from disk — stored raw directly
+   * after the header and readable without decompressing the body. Empty array
+   * if none. Lazily decoded, zero-copy.
+   */
+  public get uncompressedPayloads(): readonly Buffer[] {
+    let d = this.#uncompressedPayloads;
+    if (!d) {
+      d = readUncompressedPayloads(this.#dataBuf);
+      this.#uncompressedPayloads = d;
     }
     return d;
   }
@@ -216,7 +236,7 @@ export class FileHashCacheSession {
     sb.writeUInt32LE(1, S_FLAGS); // resolveOnly
     const cancelCb = setupCancel(sb, signal);
     try {
-      await cacheWrite(sb, dataBuf, cache._encodedPaths, cache.rootPath, null);
+      await cacheWrite(sb, dataBuf, cache._encodedPaths, cache.rootPath, null, null);
     } finally {
       teardownCancel(signal, cancelCb);
       sb.writeUInt32LE(0, S_FLAGS);
@@ -276,11 +296,17 @@ export class FileHashCacheSession {
     const p1 = options?.payloadValue1 ?? this.payloadValue1;
     const p2 = options?.payloadValue2 ?? this.payloadValue2;
     const p3 = options?.payloadValue3 ?? this.payloadValue3;
-    const ud =
-      options?.payloadData !== undefined
-        ? (options.payloadData ?? null)
-        : this.payloadData.length > 0
-          ? this.payloadData
+    const compressed =
+      options?.compressedPayloads !== undefined
+        ? (options.compressedPayloads ?? null)
+        : this.compressedPayloads.length > 0
+          ? this.compressedPayloads
+          : null;
+    const uncompressed =
+      options?.uncompressedPayloads !== undefined
+        ? (options.uncompressedPayloads ?? null)
+        : this.uncompressedPayloads.length > 0
+          ? this.uncompressedPayloads
           : null;
     const encoded = cache._encodedPaths;
     const fc = cache.fileCount;
@@ -299,7 +325,8 @@ export class FileHashCacheSession {
         payloadValue1: p1,
         payloadValue2: p2,
         payloadValue3: p3,
-        payloadData: ud,
+        compressedPayloads: compressed,
+        uncompressedPayloads: uncompressed,
         signal,
         lockTimeoutMs: options?.lockTimeoutMs ?? this.#lockTimeoutMs,
       });
@@ -322,7 +349,7 @@ export class FileHashCacheSession {
     sb.writeUInt32LE(fc, S_FILE_COUNT);
     const cancelCb = setupCancel(sb, signal);
     try {
-      const result = await cacheWrite(sb, dataBuf, encoded, root, ud);
+      const result = await cacheWrite(sb, dataBuf, encoded, root, compressed, uncompressed);
       if (result === 0) {
         cache._recordWriteSuccess();
       }

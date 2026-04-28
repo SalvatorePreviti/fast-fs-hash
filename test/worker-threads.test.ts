@@ -132,7 +132,7 @@ describe("Worker Threads", () => {
     }
   });
 
-  // ── Cross-thread FileHashCache lock serialization ─────────────────────
+  // - Cross-thread FileHashCache lock serialization
   //
   // Regression test for the worker_threads correctness bug:
   //   POSIX fcntl byte-range locks are PER-PROCESS — two threads in the same

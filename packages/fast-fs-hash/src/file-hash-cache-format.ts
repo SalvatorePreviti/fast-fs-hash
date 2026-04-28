@@ -4,18 +4,27 @@
  * ### On-disk layout
  *
  * ```
- * [header: 80 bytes, uncompressed][LZ4 compressed body]
+ * [header: 80 bytes, uncompressed]
+ * [uncompressed payloads section, uncompressed]
+ * [LZ4 compressed body]
  * ```
  *
  * The header is 80 bytes (pure on-disk format, no in-memory-only fields).
- * The header is always readable without decompression. The LZ4 body contains:
+ * The header is always readable without decompression. The uncompressed
+ * payloads section sits directly after the header and is stored raw:
+ * ```
+ * [uncompressedPayloadDir: uncompressedPayloadItemCount × 4][uncompressed payload bytes]
+ * ```
+ * The LZ4 body contains:
  * ```
  * [entries: fileCount × 48 bytes]
- * [udDir: udItemCount × 4 bytes]
+ * [compressedPayloadDir: compressedPayloadItemCount × 4 bytes]
  * [pathEnds: fileCount × 4 bytes]
  * [paths: pathsLen bytes]
- * [user data payloadData]
+ * [compressed payload bytes]
  * ```
+ *
+ * In-memory dataBuf layout mirrors disk exactly.
  *
  * ### CacheStateBuf
  *
@@ -38,8 +47,8 @@ export const H_VERSION = 4;
 /** Header byte 8: Number of file entries (u32). */
 export const H_FILE_COUNT = 8;
 
-/** Header byte 12: Number of user data items (u32). */
-export const H_UD_ITEM_COUNT = 12;
+/** Header byte 12: Number of compressed payload items (u32). */
+export const H_COMPRESSED_PAYLOAD_ITEM_COUNT = 12;
 
 /** Header byte 16: Fingerprint (16 bytes xxHash3-128, or all-zero). */
 export const H_FINGERPRINT_BYTE = 16;
@@ -59,16 +68,25 @@ export const H_PAYLOAD3_BYTE = 56;
 /** Header byte 64: Byte length of the packed paths section (u32). */
 export const H_PATHS_LEN = 64;
 
-/** Header byte 68: Total byte length of user data payloadData (u32). */
-export const H_UD_PAYLOADS_LEN = 68;
+/** Header byte 68: Total byte length of compressed payloads (u32). */
+export const H_COMPRESSED_PAYLOADS_LEN = 68;
+
+/** Header byte 72: Number of uncompressed payload items (u32). */
+export const H_UNCOMPRESSED_PAYLOAD_ITEM_COUNT = 72;
+
+/** Header byte 76: Total byte length of uncompressed payloads (u32). */
+export const H_UNCOMPRESSED_PAYLOADS_LEN = 76;
 
 /** Fixed byte size of each file entry (48 bytes, 16-byte aligned). */
 export const ENTRY_STRIDE = 48;
 
-/** Maximum total user data payload size (128 MiB, matches C++ CACHE_MAX_UD_PAYLOADS). */
-export const CACHE_MAX_USER_DATA_SIZE = 128 * 1024 * 1024;
+/** Maximum total compressed payload size (128 MiB, matches C++ CACHE_MAX_COMPRESSED_PAYLOADS). */
+export const CACHE_MAX_COMPRESSED_PAYLOADS_SIZE = 128 * 1024 * 1024;
 
-// ── CacheStateBuf offsets ───────────────────────────────────────────
+/** Maximum total uncompressed payload size (128 MiB, matches C++ CACHE_MAX_UNCOMPRESSED_PAYLOADS). */
+export const CACHE_MAX_UNCOMPRESSED_PAYLOADS_SIZE = 128 * 1024 * 1024;
+
+// - CacheStateBuf offsets
 
 /** Fixed header size of the state buffer (excluding variable-length cachePath). */
 export const STATE_HEADER_SIZE = 96;

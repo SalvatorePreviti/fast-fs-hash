@@ -124,7 +124,7 @@ namespace fast_fs_hash {
     }
 
    private:
-    // ── Pool-thread hot fields ──────────────────────────────────────────
+    // - Pool-thread hot fields
 
     CacheStateBuf * state_;  // Only accessed in OnOK (JS thread)
 
@@ -174,7 +174,7 @@ namespace fast_fs_hash {
     };
     mutable Job job_;
 
-    // ── JS-thread-only fields ─────
+    // - JS-thread-only fields
 
     Napi::ObjectReference pathsRef_;
     Napi::ObjectReference stateRef_;
@@ -202,7 +202,6 @@ namespace fast_fs_hash {
       CacheHeader * hdr = headerOf(this->dataBuf_.ptr);
       hdr->magic = CacheHeader::MAGIC;
       hdr->version = this->version_;
-      hdr->reserved = 0;
       if (this->hasFingerprint_) {
         hdr->fingerprint = this->fingerprint_;
       }
@@ -278,9 +277,11 @@ namespace fast_fs_hash {
 
       uint8_t * buf = this->dataBuf_.ptr;
       CacheHeader * hdr = headerOf(buf);
-      const uint32_t udCount = hdr->udItemCount;
+      const uint32_t compCount = hdr->compressedPayloadItemCount;
+      const uint32_t uncCount = hdr->uncompressedPayloadItemCount;
+      const uint32_t uncLen = hdr->uncompressedPayloadsLen;
 
-      CacheEntry * entries = entriesOf(buf);
+      CacheEntry * entries = entriesOf(buf, uncCount, uncLen);
 
       if (this->hasDirtyHint_ && this->dirtyCount_ == 0 && this->dirtyLen_ == 0) {
         // Empty dirty hint: all entries trusted, no stat needed.
@@ -306,8 +307,8 @@ namespace fast_fs_hash {
           }
         }
 
-        const uint32_t * pathEnds = pathEndsOf(buf, fc, udCount);
-        const uint8_t * packedPaths = pathsOf(buf, fc, udCount);
+        const uint32_t * pathEnds = pathEndsOf(buf, fc, compCount, uncCount, uncLen);
+        const uint8_t * packedPaths = pathsOf(buf, fc, compCount, uncCount, uncLen);
         uint32_t prevEnd = 0;
         for (uint32_t i = 0; i < fc; ++i) {
           const uint32_t pEnd = pathEnds[i];
@@ -327,8 +328,8 @@ namespace fast_fs_hash {
       }
 
       this->runEntries_ = entries;
-      this->runPathEnds_ = pathEndsOf(buf, fc, udCount);
-      this->runPackedPaths_ = pathsOf(buf, fc, udCount);
+      this->runPathEnds_ = pathEndsOf(buf, fc, compCount, uncCount, uncLen);
+      this->runPackedPaths_ = pathsOf(buf, fc, compCount, uncCount, uncLen);
       this->runPackedPathsSize_ = hdr->pathsLen;
 
       int threadCount = ThreadPool::compute_threads(0, fc, MAX_OPEN_THREADS, 64);
@@ -394,9 +395,19 @@ namespace fast_fs_hash {
       }
 
       fc = diskHdr->fileCount;
+      const size_t uncSectionSize = diskHdr->uncompressedSectionSize();
       const size_t uncompBodySize = diskHdr->bodySize();
-      bodyLen = CacheHeader::SIZE + uncompBodySize;
+
+      // In-memory dataBuf layout mirrors disk:
+      //   [header][uncompressed section][decompressed body]
+      bodyLen = CacheHeader::SIZE + uncSectionSize + uncompBodySize;
       if (bodyLen > CACHE_MAX_BODY_SIZE) [[unlikely]] {
+        return false;
+      }
+
+      // Validate disk file has room for header + unc section + (at least) empty body.
+      const size_t diskPrefix = CacheHeader::SIZE + uncSectionSize;
+      if (diskSize < diskPrefix) [[unlikely]] {
         return false;
       }
 
@@ -416,16 +427,18 @@ namespace fast_fs_hash {
         return false;
       }
 
-      memcpy(oldBuf.ptr, fileBuf.ptr, CacheHeader::SIZE);
+      // Copy header + uncompressed section verbatim from disk.
+      memcpy(oldBuf.ptr, fileBuf.ptr, diskPrefix);
 
       if (uncompBodySize > 0) {
-        const int compressedSize = static_cast<int>(diskSize - CacheHeader::SIZE);
+        const int compressedSize = static_cast<int>(diskSize - diskPrefix);
         if (compressedSize <= 0) [[unlikely]] {
+          oldBuf.reset();
           return false;
         }
         const int decompressed = LZ4_decompress_safe(
-          reinterpret_cast<const char *>(fileBuf.ptr + CacheHeader::SIZE),
-          reinterpret_cast<char *>(oldBuf.ptr + CacheHeader::SIZE),
+          reinterpret_cast<const char *>(fileBuf.ptr + diskPrefix),
+          reinterpret_cast<char *>(oldBuf.ptr + diskPrefix),
           compressedSize,
           static_cast<int>(uncompBodySize));
         if (decompressed < 0 || static_cast<size_t>(decompressed) != uncompBodySize) [[unlikely]] {

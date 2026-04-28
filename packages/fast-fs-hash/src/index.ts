@@ -14,8 +14,10 @@
  * @module
  */
 
+import { homedir } from "node:os";
 import { hashesToHexArray, hashToHex } from "./functions";
 import { binding } from "./init-native";
+import type { ProjectRoot } from "./public-types";
 import { findCommonRootPath, normalizeFilePaths, toRelativePath } from "./utils";
 import { XxHash128Stream } from "./XxHash128Stream";
 
@@ -29,7 +31,7 @@ export type {
   FileHashCacheWriteOptions,
 } from "./FileHashCache";
 export { FileHashCache } from "./FileHashCache";
-export type { IXxHash128Functions } from "./public-types";
+export type { IXxHash128Functions, ProjectRoot } from "./public-types";
 export { XxHash128Stream };
 
 /**
@@ -254,6 +256,44 @@ export const lz4DecompressBlockAsync: (
  * @param pathB Second file path.
  */
 export const filesEqual: (pathA: string, pathB: string) => Promise<boolean> = binding.filesEqual;
+
+/**
+ * Walk the parent chain from `startPath` and locate project markers:
+ * `.git`, `package.json`, `tsconfig.json`, and `node_modules/`. For each
+ * marker the result contains `nearest*` (first hit walking up) and `root*`
+ * (last hit, bounded by the enclosing `.git`). Also reports `gitRoot`
+ * (innermost, matching `git rev-parse --show-toplevel`) and `gitSuperRoot`
+ * (outermost `.git` directory when nested in a submodule or worktree,
+ * otherwise `null`).
+ *
+ * The walk stops at the filesystem root, at the user's home directory (or
+ * any ancestor of it), at `stopPath` (same rule — if provided), and at a
+ * depth cap of 128 (symlink-loop defense).
+ *
+ * Tolerant of missing paths and mid-walk stat errors — missing fields are
+ * returned as `null` rather than throwing. If `startPath` doesn't exist, the
+ * walk begins from its longest existing ancestor.
+ *
+ * Runs asynchronously on the compute thread pool.
+ * @param startPath Starting path — may be a file or a directory.
+ * @param stopPath Optional directory — if the walker reaches this path (or
+ *   any strict ancestor of it), the walk stops without probing.
+ */
+export async function findProjectRoot(startPath: string, stopPath?: string): Promise<ProjectRoot> {
+  return binding.findProjectRoot(startPath, homedir(), stopPath ?? "");
+}
+
+/**
+ * Synchronous variant of {@link findProjectRoot}. Blocks the JS thread for
+ * the duration of the walk (typically tens of microseconds on a warm
+ * filesystem). Recommended for startup-time configuration and build tooling.
+ * @param startPath Starting path — may be a file or a directory.
+ * @param stopPath Optional directory — if the walker reaches this path (or
+ *   any strict ancestor of it), the walk stops without probing.
+ */
+export function findProjectRootSync(startPath: string, stopPath?: string): ProjectRoot {
+  return binding.findProjectRootSync(startPath, homedir(), stopPath ?? "");
+}
 
 /**
  * Hash a file and return the digest as a 32-character hex string.

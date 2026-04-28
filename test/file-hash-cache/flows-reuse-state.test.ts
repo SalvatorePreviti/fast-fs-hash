@@ -33,7 +33,7 @@ afterAll(() => {
   rmSync(TEST_DIR, { recursive: true, force: true });
 });
 
-// ── Reuse-from-disk mode (no files in constructor) ───────────────────
+// - Reuse-from-disk mode (no files in constructor)
 
 describe("reuse-from-disk mode", () => {
   it("open adopts files from existing cache", async () => {
@@ -171,7 +171,7 @@ describe("reuse-from-disk mode", () => {
   });
 });
 
-// ── Version / fingerprint changes ────────────────────────────────────
+// - Version / fingerprint changes
 
 describe("version and fingerprint", () => {
   it("version mismatch returns stale", async () => {
@@ -213,7 +213,7 @@ describe("version and fingerprint", () => {
   });
 });
 
-// ── Stale cache flows ────────────────────────────────────────────────
+// - Stale cache flows
 
 describe("stale cache", () => {
   it("stale + write makes it upToDate", async () => {
@@ -307,15 +307,15 @@ describe("stale cache", () => {
     }
   });
 
-  it("stale preserves old payloadData on the session", async () => {
+  it("stale preserves old compressedPayloads on the session", async () => {
     const cacheFile = cp();
     const files = [fx("a.txt")];
     const cache = new FileHashCache({ cachePath: cacheFile, files, rootPath: FIXTURE_DIR, version: 1 });
 
-    // Write with payloadData
+    // Write with compressedPayloads
     {
       using s = await cache.open();
-      await s.write({ payloadValue0: 99, payloadData: [Buffer.from("old-data")] });
+      await s.write({ payloadValue0: 99, compressedPayloads: [Buffer.from("old-data")] });
     }
 
     // Bump version → stale
@@ -324,14 +324,14 @@ describe("stale cache", () => {
       cache.invalidateAll();
       using s = await cache.open();
       expect(s.status).toBe("stale");
-      // Old payloadData are still readable from the stale cache
+      // Old compressedPayloads are still readable from the stale cache
       expect(s.payloadValue0).toBe(99);
-      expect(Buffer.from(s.payloadData[0]).toString()).toBe("old-data");
+      expect(Buffer.from(s.compressedPayloads[0]).toString()).toBe("old-data");
     }
   });
 });
 
-// ── User files always take priority over disk ────────────────────────
+// - User files always take priority over disk
 
 describe("user files vs disk files priority", () => {
   it("constructor files override what is on disk", async () => {
@@ -419,7 +419,7 @@ describe("user files vs disk files priority", () => {
   });
 });
 
-// ── Session old* properties ─────────────────────────────────────────
+// - Session old* properties
 
 describe("session old properties", () => {
   it("files uses open-time rootPath even if cache.rootPath changes", async () => {
@@ -441,7 +441,7 @@ describe("session old properties", () => {
     s.close();
   });
 
-  it("old payloadData are zero when cache is missing", async () => {
+  it("old compressedPayloads are zero when cache is missing", async () => {
     const cache = new FileHashCache({ cachePath: cp(), files: [fx("a.txt")], rootPath: FIXTURE_DIR });
     {
       using s = await cache.open();
@@ -450,15 +450,15 @@ describe("session old properties", () => {
       expect(s.payloadValue1).toBe(0);
       expect(s.payloadValue2).toBe(0);
       expect(s.payloadValue3).toBe(0);
-      expect(s.payloadData).toHaveLength(0);
+      expect(s.compressedPayloads).toHaveLength(0);
     }
   });
 });
 
-// ── session.write with payloadData ──────────────────────────────────────
+// - session.write with compressedPayloads
 
-describe("session payloadData", () => {
-  it("set payloadData via write argument", async () => {
+describe("session compressedPayloads", () => {
+  it("set compressedPayloads via write argument", async () => {
     const cacheFile = cp();
     const files = [fx("a.txt")];
     const cache = new FileHashCache({ cachePath: cacheFile, files, rootPath: FIXTURE_DIR });
@@ -470,7 +470,7 @@ describe("session payloadData", () => {
         payloadValue1: 200,
         payloadValue2: 300,
         payloadValue3: 400,
-        payloadData: [Buffer.from("data1")],
+        compressedPayloads: [Buffer.from("data1")],
       });
     }
 
@@ -482,18 +482,18 @@ describe("session payloadData", () => {
       expect(s.payloadValue1).toBe(200);
       expect(s.payloadValue2).toBe(300);
       expect(s.payloadValue3).toBe(400);
-      expect(s.payloadData).toHaveLength(1);
-      expect(Buffer.from(s.payloadData[0]).toString()).toBe("data1");
+      expect(s.compressedPayloads).toHaveLength(1);
+      expect(Buffer.from(s.compressedPayloads[0]).toString()).toBe("data1");
     }
   });
 
-  it("write without payloadData preserves old values", async () => {
+  it("write without compressedPayloads preserves old values", async () => {
     const cacheFile = cp();
     const files = [fx("a.txt")];
     const cache = new FileHashCache({ cachePath: cacheFile, files, rootPath: FIXTURE_DIR });
 
-    // Write with payloadData
-    await cache.overwrite({ payloadValue0: 77, payloadData: [Buffer.from("stored")] });
+    // Write with compressedPayloads
+    await cache.overwrite({ payloadValue0: 77, compressedPayloads: [Buffer.from("stored")] });
 
     // Modify file to trigger a write
     writeFileSync(fx("a.txt"), "aaa v2\n");
@@ -502,34 +502,34 @@ describe("session payloadData", () => {
       using s = await cache.open();
       expect(s.status).toBe("changed");
       expect(s.payloadValue0).toBe(77);
-      // Write without payloadData — old values preserved
+      // Write without compressedPayloads — old values preserved
       await s.write();
     }
 
-    // Verify old payloadData survived
+    // Verify old compressedPayloads survived
     {
       cache.invalidateAll();
       using s = await cache.open();
       expect(s.payloadValue0).toBe(77);
-      expect(Buffer.from(s.payloadData[0]).toString()).toBe("stored");
+      expect(Buffer.from(s.compressedPayloads[0]).toString()).toBe("stored");
     }
 
     // Restore
     writeFileSync(fx("a.txt"), "aaa\n");
   });
 
-  it("payloadData from disk are readable on open", async () => {
+  it("compressedPayloads from disk are readable on open", async () => {
     const cacheFile = cp();
     const files = [fx("a.txt")];
     const cache = new FileHashCache({ cachePath: cacheFile, files, rootPath: FIXTURE_DIR });
 
-    await cache.overwrite({ payloadValue0: 77, payloadData: [Buffer.from("stored")] });
+    await cache.overwrite({ payloadValue0: 77, compressedPayloads: [Buffer.from("stored")] });
 
     {
       cache.invalidateAll();
       using s = await cache.open();
       expect(s.payloadValue0).toBe(77);
-      expect(Buffer.from(s.payloadData[0]).toString()).toBe("stored");
+      expect(Buffer.from(s.compressedPayloads[0]).toString()).toBe("stored");
     }
   });
 });

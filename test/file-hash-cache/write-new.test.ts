@@ -203,47 +203,47 @@ describe("FileHashCache.overwrite [native]", () => {
   //  - user data
 
   describe("user data", () => {
-    it("writes single payloadData item", async () => {
+    it("writes single compressedPayloads item", async () => {
       const cp = cachePath("ud-single");
       const files = [fixtureFile("a.txt")];
 
       await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite({
-        payloadData: [Buffer.from("test payload")],
+        compressedPayloads: [Buffer.from("test payload")],
       });
 
       {
         using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
         expect(ctx.status).toBe("upToDate");
-        expect(ctx.payloadData.length).toBe(1);
-        expect(ctx.payloadData[0].toString()).toBe("test payload");
+        expect(ctx.compressedPayloads.length).toBe(1);
+        expect(ctx.compressedPayloads[0].toString()).toBe("test payload");
       }
     });
 
-    it("writes multiple payloadData items", async () => {
+    it("writes multiple compressedPayloads items", async () => {
       const cp = cachePath("ud-multi");
       const files = [fixtureFile("a.txt")];
       const items = [Buffer.from("first"), Buffer.from("second item"), Buffer.from("third")];
 
-      await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite({ payloadData: items });
+      await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite({ compressedPayloads: items });
 
       {
         using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
-        expect(ctx.payloadData.length).toBe(3);
+        expect(ctx.compressedPayloads.length).toBe(3);
         for (let i = 0; i < 3; i++) {
-          expect(ctx.payloadData[i].toString()).toBe(items[i].toString());
+          expect(ctx.compressedPayloads[i].toString()).toBe(items[i].toString());
         }
       }
     });
 
-    it("null payloadData produces no user data items", async () => {
+    it("null compressedPayloads produces no user data items", async () => {
       const cp = cachePath("ud-null");
       const files = [fixtureFile("a.txt")];
 
-      await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite({ payloadData: null });
+      await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite({ compressedPayloads: null });
 
       {
         using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
-        expect(ctx.payloadData.length).toBe(0);
+        expect(ctx.compressedPayloads.length).toBe(0);
       }
     });
 
@@ -253,12 +253,12 @@ describe("FileHashCache.overwrite [native]", () => {
       const utf8Str = "日本語テスト 🚀 émojis";
 
       await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite({
-        payloadData: [Buffer.from(utf8Str)],
+        compressedPayloads: [Buffer.from(utf8Str)],
       });
 
       {
         using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
-        expect(ctx.payloadData[0].toString("utf8")).toBe(utf8Str);
+        expect(ctx.compressedPayloads[0].toString("utf8")).toBe(utf8Str);
       }
     });
 
@@ -267,15 +267,121 @@ describe("FileHashCache.overwrite [native]", () => {
       const files = [fixtureFile("a.txt")];
 
       await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite({
-        payloadData: [Buffer.alloc(0), Buffer.from("non-empty"), Buffer.alloc(0)],
+        compressedPayloads: [Buffer.alloc(0), Buffer.from("non-empty"), Buffer.alloc(0)],
       });
 
       {
         using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
-        expect(ctx.payloadData.length).toBe(3);
-        expect(ctx.payloadData[0].length).toBe(0);
-        expect(ctx.payloadData[1].toString()).toBe("non-empty");
-        expect(ctx.payloadData[2].length).toBe(0);
+        expect(ctx.compressedPayloads.length).toBe(3);
+        expect(ctx.compressedPayloads[0].length).toBe(0);
+        expect(ctx.compressedPayloads[1].toString()).toBe("non-empty");
+        expect(ctx.compressedPayloads[2].length).toBe(0);
+      }
+    });
+  });
+
+  //  - uncompressed payloads (raw, stored after the header)
+
+  describe("uncompressedPayloads", () => {
+    it("writes single uncompressedPayloads item", async () => {
+      const cp = cachePath("uud-single");
+      const files = [fixtureFile("a.txt")];
+
+      await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite({
+        uncompressedPayloads: [Buffer.from("raw payload")],
+      });
+
+      {
+        using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
+        expect(ctx.status).toBe("upToDate");
+        expect(ctx.uncompressedPayloads.length).toBe(1);
+        expect(ctx.uncompressedPayloads[0].toString()).toBe("raw payload");
+      }
+    });
+
+    it("writes multiple uncompressedPayloads items", async () => {
+      const cp = cachePath("uud-multi");
+      const files = [fixtureFile("a.txt")];
+      const items = [Buffer.from("first raw"), Buffer.from("second raw item"), Buffer.from("third")];
+
+      await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite({
+        uncompressedPayloads: items,
+      });
+
+      {
+        using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
+        expect(ctx.uncompressedPayloads.length).toBe(3);
+        for (let i = 0; i < 3; i++) {
+          expect(ctx.uncompressedPayloads[i].toString()).toBe(items[i].toString());
+        }
+      }
+    });
+
+    it("null uncompressedPayloads produces no items", async () => {
+      const cp = cachePath("uud-null");
+      const files = [fixtureFile("a.txt")];
+
+      await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite({
+        uncompressedPayloads: null,
+      });
+
+      {
+        using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
+        expect(ctx.uncompressedPayloads.length).toBe(0);
+      }
+    });
+
+    it("handles empty buffer items in uncompressedPayloads", async () => {
+      const cp = cachePath("uud-empty-buf");
+      const files = [fixtureFile("a.txt")];
+
+      await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite({
+        uncompressedPayloads: [Buffer.alloc(0), Buffer.from("non-empty"), Buffer.alloc(0)],
+      });
+
+      {
+        using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
+        expect(ctx.uncompressedPayloads.length).toBe(3);
+        expect(ctx.uncompressedPayloads[0].length).toBe(0);
+        expect(ctx.uncompressedPayloads[1].toString()).toBe("non-empty");
+        expect(ctx.uncompressedPayloads[2].length).toBe(0);
+      }
+    });
+
+    it("handles binary content in uncompressedPayloads", async () => {
+      const cp = cachePath("uud-binary");
+      const files = [fixtureFile("a.txt")];
+      const binary = Buffer.from([0x00, 0xff, 0x42, 0x7f, 0x80, 0xde, 0xad, 0xbe, 0xef]);
+
+      await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite({
+        uncompressedPayloads: [binary],
+      });
+
+      {
+        using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
+        expect(ctx.uncompressedPayloads.length).toBe(1);
+        expect(Buffer.from(ctx.uncompressedPayloads[0]).equals(binary)).toBe(true);
+      }
+    });
+
+    it("writes both compressed and uncompressed payloads together", async () => {
+      const cp = cachePath("uud-both");
+      const files = [fixtureFile("a.txt")];
+
+      await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite({
+        compressedPayloads: [Buffer.from("comp1"), Buffer.from("comp2")],
+        uncompressedPayloads: [Buffer.from("unc1"), Buffer.from("unc2"), Buffer.from("unc3")],
+      });
+
+      {
+        using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).open();
+        expect(ctx.compressedPayloads.length).toBe(2);
+        expect(ctx.compressedPayloads[0].toString()).toBe("comp1");
+        expect(ctx.compressedPayloads[1].toString()).toBe("comp2");
+        expect(ctx.uncompressedPayloads.length).toBe(3);
+        expect(ctx.uncompressedPayloads[0].toString()).toBe("unc1");
+        expect(ctx.uncompressedPayloads[1].toString()).toBe("unc2");
+        expect(ctx.uncompressedPayloads[2].toString()).toBe("unc3");
       }
     });
   });
@@ -290,21 +396,21 @@ describe("FileHashCache.overwrite [native]", () => {
       // Seed via open+write with userValue
       {
         using ctx1 = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
-        await ctx1.write({ payloadValue0: 42, payloadData: [Buffer.from("old")] });
+        await ctx1.write({ payloadValue0: 42, compressedPayloads: [Buffer.from("old")] });
       }
 
       // Overwrite via overwrite with different options
       await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 2 }).overwrite({
         payloadValue0: 99,
-        payloadData: [Buffer.from("new")],
+        compressedPayloads: [Buffer.from("new")],
       });
 
       {
         using ctx2 = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 2 }).open();
         expect(ctx2.status).toBe("upToDate");
         expect(ctx2.payloadValue0).toBe(99);
-        expect(ctx2.payloadData.length).toBe(1);
-        expect(ctx2.payloadData[0].toString()).toBe("new");
+        expect(ctx2.compressedPayloads.length).toBe(1);
+        expect(ctx2.compressedPayloads[0].toString()).toBe("new");
       }
 
       // Old version → stale
@@ -359,7 +465,8 @@ describe("FileHashCache.overwrite [native]", () => {
         payloadValue1: 200,
         payloadValue2: 300,
         payloadValue3: 400,
-        payloadData: [Buffer.from("alpha"), Buffer.from("beta")],
+        compressedPayloads: [Buffer.from("alpha"), Buffer.from("beta")],
+        uncompressedPayloads: [Buffer.from("gamma"), Buffer.from("delta")],
       });
 
       {
@@ -376,9 +483,12 @@ describe("FileHashCache.overwrite [native]", () => {
         expect(ctx.payloadValue1).toBe(200);
         expect(ctx.payloadValue2).toBe(300);
         expect(ctx.payloadValue3).toBe(400);
-        expect(ctx.payloadData.length).toBe(2);
-        expect(ctx.payloadData[0].toString()).toBe("alpha");
-        expect(ctx.payloadData[1].toString()).toBe("beta");
+        expect(ctx.compressedPayloads.length).toBe(2);
+        expect(ctx.compressedPayloads[0].toString()).toBe("alpha");
+        expect(ctx.compressedPayloads[1].toString()).toBe("beta");
+        expect(ctx.uncompressedPayloads.length).toBe(2);
+        expect(ctx.uncompressedPayloads[0].toString()).toBe("gamma");
+        expect(ctx.uncompressedPayloads[1].toString()).toBe("delta");
       }
     });
   });
@@ -450,24 +560,24 @@ describe("FileHashCache.overwrite [native]", () => {
 
       // Initialize via overwrite
       await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).overwrite({
-        payloadData: [Buffer.from("initial data")],
+        compressedPayloads: [Buffer.from("initial data")],
       });
 
       // Open and validate
       {
         using ctx = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
         expect(ctx.status).toBe("upToDate");
-        expect(ctx.payloadData[0].toString()).toBe("initial data");
+        expect(ctx.compressedPayloads[0].toString()).toBe("initial data");
 
-        // Update payloadData via instance write
-        await ctx.write({ payloadData: [Buffer.from("updated data")] });
+        // Update compressedPayloads via instance write
+        await ctx.write({ compressedPayloads: [Buffer.from("updated data")] });
       }
 
       // Verify the update persisted
       {
         using ctx2 = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
         expect(ctx2.status).toBe("upToDate");
-        expect(ctx2.payloadData[0].toString()).toBe("updated data");
+        expect(ctx2.compressedPayloads[0].toString()).toBe("updated data");
       }
     });
   });
