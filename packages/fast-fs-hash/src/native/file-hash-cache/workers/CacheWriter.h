@@ -163,13 +163,16 @@ namespace fast_fs_hash {
       READ_BUFFER_SIZE + sizeof(PathResolver) <= ThreadPool::THREAD_STACK_SIZE - 64 * 1024,
       "buffers exceed pool thread usable stack");
 
+    // Close the locked fd BEFORE signaling JS so that any fresh open()+flock
+    // probe on the JS thread (e.g. FileHashCache.isLocked) is guaranteed to
+    // see the lock as released by the time the awaited promise resolves.
     void signalAndClose_() noexcept {
-      FfshFile f(std::move(this->lockedFile_));
+      this->lockedFile_.close();
       this->signal();
     }
 
     void signalAndClose_(const char * error) noexcept {
-      FfshFile f(std::move(this->lockedFile_));
+      this->lockedFile_.close();
       this->signal(error);
     }
 
