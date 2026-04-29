@@ -347,11 +347,14 @@ describe("findProjectRoot [native]", () => {
       // If the repo lives under the user's home (typical dev setup), the home
       // boundary may stop the walk early. In that case gitRoot will be null.
       // On CI the repo is typically under /workspace or /home/runner/work,
-      // which may or may not be under HOME.
+      // which may or may not be under HOME — and the basename of the mount
+      // point is unpredictable (e.g. "/workspace" inside musl containers).
       if (result.gitRoot !== null) {
-        expect(result.gitRoot).toMatch(/fast-fs-hash$/);
         expect(result.nearestPackageJson).toBeTruthy();
         expect(result.rootPackageJson).toBeTruthy();
+        // The discovered gitRoot must be an ancestor of (or equal to) the
+        // start directory — anchors the assertion to the actual walk.
+        expect(import.meta.dirname.startsWith(result.gitRoot)).toBe(true);
       }
     });
   });
