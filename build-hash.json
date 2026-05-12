@@ -1,6 +1,6 @@
 {
   "_description": "SHA-256 hashes of build artifacts and source code. Regenerated on every build.",
-  "generatedAt": "2026-05-12T22:35:18.889Z",
+  "generatedAt": "2026-05-12T23:05:16.419Z",
   "distArtifacts": {
     "index.cjs": {
       "sha256": "864477c3600f994d92d9b4139feb53e712efe18f6cd37573575284573abe104e",
@@ -73,9 +73,9 @@
         "lines": 403
       },
       "init-native.ts": {
-        "sha256": "d6488550dd5907514ee4da31f0ae6bafa69c180c59e396951cf6c9c255898490",
-        "bytes": 7724,
-        "lines": 221
+        "sha256": "967e5017ebdbe5875c6c44466c6dc85f9cecd9ce1fcdd49ab2017de57284e378",
+        "bytes": 7708,
+        "lines": 217
       },
       "public-types.ts": {
         "sha256": "6954ea848695c7195f4f0f271a4c19dbf12e2ee39bdcb29316e03c5f3d649e56",
