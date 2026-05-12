@@ -57,6 +57,8 @@ const FILES_EQUAL_BENCHMARKS_START = "<!-- FILES_EQUAL_BENCHMARKS:START -->";
 const FILES_EQUAL_BENCHMARKS_END = "<!-- FILES_EQUAL_BENCHMARKS:END -->";
 const FIND_PROJECT_ROOT_BENCHMARKS_START = "<!-- FIND_PROJECT_ROOT_BENCHMARKS:START -->";
 const FIND_PROJECT_ROOT_BENCHMARKS_END = "<!-- FIND_PROJECT_ROOT_BENCHMARKS:END -->";
+const FIND_NEAREST_PROJECT_FILES_BENCHMARKS_START = "<!-- FIND_NEAREST_PROJECT_FILES_BENCHMARKS:START -->";
+const FIND_NEAREST_PROJECT_FILES_BENCHMARKS_END = "<!-- FIND_NEAREST_PROJECT_FILES_BENCHMARKS:END -->";
 
 //  - Benchmark data size
 
@@ -141,6 +143,7 @@ const README_BENCH_FILES = [
   "test/bench/files-equal.bench.ts",
   "test/bench/file-hash-cache-locked.bench.ts",
   "test/bench/find-project-root.bench.ts",
+  "test/bench/find-nearest-project-files.bench.ts",
 ];
 
 function runBenchmarks() {
@@ -606,6 +609,47 @@ function buildFindProjectRootTables(benchData) {
 
 const findProjectRootSections = buildFindProjectRootTables(benchData);
 
+//  - findNearestProjectFiles benchmarks
+
+function buildFindNearestProjectFilesTables(benchData) {
+  const lines = [];
+  for (const file of benchData.files ?? []) {
+    for (const group of file.groups ?? []) {
+      if (!group.fullName?.includes("findNearestProjectFiles")) {
+        continue;
+      }
+      const benches = (group.benchmarks ?? []).filter((b) => b.mean != null);
+      if (benches.length === 0) {
+        continue;
+      }
+      benches.sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
+
+      const label = groupNameSegment(group.fullName);
+      // Skip the top-level "findNearestProjectFiles" group itself (it contains
+      // the sub-describes, not benchmarks).
+      if (label === "findNearestProjectFiles") {
+        continue;
+      }
+
+      const baseline = benches[benches.length - 1];
+      const rows = benches.map((b) => {
+        const speedup = baseline.mean / b.mean;
+        const relative = b === baseline ? "baseline" : `**${fmt(speedup, 1)}× faster**`;
+        const hzStr = b.hz != null ? `${fmt(b.hz, 0)} op/s` : "—";
+        return [b.name, fmtTime(b.mean), hzStr, relative];
+      });
+
+      if (lines.length > 0) {
+        lines.push("");
+      }
+      lines.push(`**${label}:**`, "", markdownTable(["Scenario", "Mean", "Hz", "Relative"], rows));
+    }
+  }
+  return lines.length > 0 ? lines : ["_No benchmark data available._"];
+}
+
+const findNearestProjectFilesSections = buildFindNearestProjectFilesTables(benchData);
+
 //  - Write README
 
 let readme = readFileSync(README, "utf8");
@@ -626,6 +670,12 @@ readme = updateReadmeSection(
   FIND_PROJECT_ROOT_BENCHMARKS_START,
   FIND_PROJECT_ROOT_BENCHMARKS_END,
   findProjectRootSections.join("\n")
+);
+readme = updateReadmeSection(
+  readme,
+  FIND_NEAREST_PROJECT_FILES_BENCHMARKS_START,
+  FIND_NEAREST_PROJECT_FILES_BENCHMARKS_END,
+  findNearestProjectFilesSections.join("\n")
 );
 readme = formatMarkdown(readme, README);
 

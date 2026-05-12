@@ -6,7 +6,7 @@
  */
 
 import { resolve } from "node:path";
-import type { ProjectRoot } from "./public-types";
+import type { NearestProjectFiles, ProjectRoot } from "./public-types";
 import { DIST_DIR } from "./utils";
 
 /** Shape of the native binding export. */
@@ -85,6 +85,8 @@ export interface BindingExportNative {
   filesEqual(pathA: string, pathB: string): Promise<boolean>;
   findProjectRoot(startPath: string, homePath?: string, stopPath?: string): Promise<ProjectRoot>;
   findProjectRootSync(startPath: string, homePath?: string, stopPath?: string): ProjectRoot;
+  findNearestProjectFiles(startPath: string, homePath?: string, stopPath?: string): Promise<NearestProjectFiles>;
+  findNearestProjectFilesSync(startPath: string, homePath?: string, stopPath?: string): NearestProjectFiles;
   poolTrim(): void;
   lz4CompressBlock(input: Uint8Array, offset?: number, length?: number): Buffer;
   lz4CompressBlockTo(

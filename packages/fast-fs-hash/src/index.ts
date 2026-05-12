@@ -17,7 +17,7 @@
 import { homedir } from "node:os";
 import { hashesToHexArray, hashToHex } from "./functions";
 import { binding } from "./init-native";
-import type { ProjectRoot } from "./public-types";
+import type { NearestProjectFiles, ProjectRoot } from "./public-types";
 import { findCommonRootPath, normalizeFilePaths, toRelativePath } from "./utils";
 import { XxHash128Stream } from "./XxHash128Stream";
 
@@ -31,7 +31,7 @@ export type {
   FileHashCacheWriteOptions,
 } from "./FileHashCache";
 export { FileHashCache } from "./FileHashCache";
-export type { IXxHash128Functions, ProjectRoot } from "./public-types";
+export type { IXxHash128Functions, NearestProjectFiles, ProjectRoot } from "./public-types";
 export { XxHash128Stream };
 
 /**
@@ -293,6 +293,38 @@ export async function findProjectRoot(startPath: string, stopPath?: string): Pro
  */
 export function findProjectRootSync(startPath: string, stopPath?: string): ProjectRoot {
   return binding.findProjectRootSync(startPath, homedir(), stopPath ?? "");
+}
+
+/**
+ * Walk the parent chain from `startPath` and locate the NEAREST occurrence of
+ * `package.json`, `tsconfig.json`, and `node_modules/`. The walk exits as soon
+ * as all three are found (no `gitRoot` boundary, no `root*` fields). Faster
+ * than {@link findProjectRoot} when callers only need the nearest markers.
+ *
+ * The walk stops at the filesystem root, at the user's home directory (or any
+ * ancestor of it), at `stopPath` (same rule — if provided), and at a depth
+ * cap of 128. Tolerant of missing paths and stat errors — missing fields are
+ * `null` rather than throwing.
+ *
+ * Runs asynchronously on the compute thread pool.
+ * @param startPath Starting path — may be a file or a directory.
+ * @param stopPath Optional directory — if the walker reaches this path (or any
+ *   strict ancestor of it), the walk stops without probing.
+ */
+export async function findNearestProjectFiles(startPath: string, stopPath?: string): Promise<NearestProjectFiles> {
+  return binding.findNearestProjectFiles(startPath, homedir(), stopPath ?? "");
+}
+
+/**
+ * Synchronous variant of {@link findNearestProjectFiles}. Blocks the JS thread
+ * for the duration of the walk (typically a few microseconds with early-exit
+ * on a warm filesystem). Recommended for startup-time configuration.
+ * @param startPath Starting path — may be a file or a directory.
+ * @param stopPath Optional directory — if the walker reaches this path (or any
+ *   strict ancestor of it), the walk stops without probing.
+ */
+export function findNearestProjectFilesSync(startPath: string, stopPath?: string): NearestProjectFiles {
+  return binding.findNearestProjectFilesSync(startPath, homedir(), stopPath ?? "");
 }
 
 /**

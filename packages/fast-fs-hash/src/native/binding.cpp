@@ -3,6 +3,7 @@
 #include "lz4-functions.h"
 #include "files-equal-binding.h"
 #include "find-project-root-binding.h"
+#include "find-nearest-project-files-binding.h"
 #include "InstanceHashWorker_impl.h"
 #include "file-cache-binding.h"
 #include "AddonData_impl.h"
@@ -88,6 +89,12 @@ static Napi::Object Init(Napi::Env env, Napi::Object exports) {
   // Project root discovery
   exports.Set("findProjectRoot", Napi::Function::New(env, fast_fs_hash::bindFindProjectRoot));
   exports.Set("findProjectRootSync", Napi::Function::New(env, fast_fs_hash::bindFindProjectRootSync));
+
+  // Nearest project files (faster — no gitRoot / no root* / early-exit)
+  exports.Set(
+    "findNearestProjectFiles", Napi::Function::New(env, fast_fs_hash::bindFindNearestProjectFiles));
+  exports.Set(
+    "findNearestProjectFilesSync", Napi::Function::New(env, fast_fs_hash::bindFindNearestProjectFilesSync));
 
   // Pool management
   exports.Set("poolTrim", Napi::Function::New(env, poolTrim));

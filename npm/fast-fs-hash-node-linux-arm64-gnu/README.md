@@ -649,6 +649,55 @@ The returned `ProjectRoot` object has these fields (each `string | null`):
 
 ---
 
+## Find Nearest Project Files
+
+A trimmed-down sibling of [`findProjectRoot`](#find-project-root) that finds only the
+**nearest** `package.json`, `tsconfig.json`, and `node_modules/` and exits the walk as soon
+as all three are populated. No `.git` probe, no `gitRoot` boundary, no `root*` fields —
+faster than `findProjectRoot` when callers don't need them.
+
+The walk stops at the filesystem root, the user's home directory (or any ancestor of it), an
+optional `stopPath`, and a depth cap of 128. Tolerant of missing paths — missing fields are
+returned as `null` rather than throwing.
+
+<!-- FIND_NEAREST_PROJECT_FILES_BENCHMARKS:START -->
+
+_No benchmark data available._
+
+<!-- FIND_NEAREST_PROJECT_FILES_BENCHMARKS:END -->
+
+```ts
+import {
+  findNearestProjectFiles,
+  findNearestProjectFilesSync,
+} from "fast-fs-hash";
+
+// Sync (recommended for startup-time / build-tool use)
+const info = findNearestProjectFilesSync(import.meta.dirname);
+console.log(info.packageJson, info.tsconfigJson, info.nodeModules);
+
+// Async — runs on the native thread pool
+const info2 = await findNearestProjectFiles("/some/deep/file.ts");
+
+// Optional stopPath: halt when the walker reaches this directory (or any ancestor of it)
+const info3 = findNearestProjectFilesSync(start, "/workspace");
+```
+
+| Function                                           | Description                                                          |
+| -------------------------------------------------- | -------------------------------------------------------------------- |
+| `findNearestProjectFilesSync(startPath, stopPath)` | Walk parent chain for nearest markers (sync) → `NearestProjectFiles` |
+| `findNearestProjectFiles(startPath, stopPath)`     | Walk parent chain on pool thread → `Promise<NearestProjectFiles>`    |
+
+The returned `NearestProjectFiles` object has these fields (each `string | null`):
+
+| Field          | Description                                                                    |
+| -------------- | ------------------------------------------------------------------------------ |
+| `packageJson`  | First `package.json` walking up.                                               |
+| `tsconfigJson` | First `tsconfig.json` walking up.                                              |
+| `nodeModules`  | First `node_modules/` directory walking up (also detects when started inside). |
+
+---
+
 ## Utility Functions
 
 | Function                                             | Description                                                          |

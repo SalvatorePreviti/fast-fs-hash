@@ -32,6 +32,23 @@ export interface ProjectRoot {
 }
 
 /**
+ * Result of {@link findNearestProjectFiles} / {@link findNearestProjectFilesSync}.
+ *
+ * Each field is the FIRST occurrence walking up from the start path. The walk
+ * stops as soon as all three fields are populated, or at a stop boundary
+ * (filesystem root, user home, optional `stopPath`, or the depth cap of 128).
+ */
+export interface NearestProjectFiles {
+  /** First `package.json` (regular file) encountered walking up from the start path. */
+  packageJson: string | null;
+  /** First `tsconfig.json` (regular file) encountered walking up from the start path. */
+  tsconfigJson: string | null;
+  /** First `node_modules/` directory encountered walking up. Also detected when the
+   *  start path is already inside a `node_modules` tree. */
+  nodeModules: string | null;
+}
+
+/**
  * Stateless xxHash128 digest functions — available as static methods on XxHash128Stream.
  */
 export interface IXxHash128Functions {
