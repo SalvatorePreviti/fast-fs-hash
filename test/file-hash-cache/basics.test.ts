@@ -1,22 +1,9 @@
-import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import path from "node:path";
+import { utimesSync, writeFileSync } from "node:fs";
 import { FileHashCache } from "fast-fs-hash";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
+import { setupCacheTestDir } from "./_fixture-utils";
 
-//  - Fixture setup
-
-const TEST_DIR = path.resolve(import.meta.dirname, "tmp/fhc-basics");
-const FIXTURE_DIR = path.join(TEST_DIR, "fixtures");
-const CACHE_DIR = path.join(TEST_DIR, "cache");
-
-let cacheCounter = 0;
-function cachePath(label = "test"): string {
-  return path.join(CACHE_DIR, `${label}-${++cacheCounter}.cache`);
-}
-
-function fixtureFile(name: string): string {
-  return path.join(FIXTURE_DIR, name);
-}
+const { FIXTURE_DIR, cachePath, fixtureFile } = setupCacheTestDir("fhc-basics");
 
 function makeCache(
   cp: string,
@@ -32,20 +19,10 @@ function makeCache(
   });
 }
 
-//  - Tests
-
 beforeAll(() => {
-  rmSync(TEST_DIR, { recursive: true, force: true });
-  mkdirSync(FIXTURE_DIR, { recursive: true });
-  mkdirSync(CACHE_DIR, { recursive: true });
-
   writeFileSync(fixtureFile("a.txt"), "hello world\n");
   writeFileSync(fixtureFile("b.txt"), "goodbye world\n");
   writeFileSync(fixtureFile("c.txt"), "third file\n");
-});
-
-afterAll(() => {
-  rmSync(TEST_DIR, { recursive: true, force: true });
 });
 
 describe("FileHashCache [native]", () => {
@@ -107,7 +84,7 @@ describe("FileHashCache [native]", () => {
       writeFileSync(fixtureFile("a.txt"), "hello world\n");
     });
 
-    it("returns 'stale' with version mismatch", async () => {
+    it("returns 'staleVersion' with version mismatch", async () => {
       const cp = cachePath("val-ver");
       const files = [fixtureFile("a.txt")];
 
@@ -120,7 +97,8 @@ describe("FileHashCache [native]", () => {
       {
         const cache2 = makeCache(cp, files, { version: 2 });
         using s2 = await cache2.open();
-        expect(s2.status).toBe("stale");
+        expect(s2.status).toBe("staleVersion");
+        expect(s2.diskVersion).toBe(1);
       }
     });
 
@@ -1265,8 +1243,8 @@ describe("FileHashCache [native]", () => {
       }
     });
 
-    it("status is 'stale' on version mismatch", async () => {
-      const cp = cachePath("ctx-status-stale");
+    it("status is 'staleVersion' on version mismatch", async () => {
+      const cp = cachePath("ctx-status-stale-version");
       const files = [fixtureFile("a.txt")];
 
       {
@@ -1278,7 +1256,7 @@ describe("FileHashCache [native]", () => {
       {
         const cache2 = makeCache(cp, files, { version: 2 });
         using s2 = await cache2.open();
-        expect(s2.status).toBe("stale");
+        expect(s2.status).toBe("staleVersion");
       }
     });
 

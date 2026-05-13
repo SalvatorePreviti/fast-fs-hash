@@ -233,6 +233,9 @@ namespace fast_fs_hash {
   static_assert(offsetof(CacheStateBuf, flags) == 92);
   static_assert(CacheStateBuf::HEADER_SIZE == 96);
 
+  // STALE vs STALE_VERSION: both keep the on-disk buffer readable so callers
+  // can migrate payloads. STALE = fingerprint differs (same version);
+  // STALE_VERSION = version differs (caller may need version-aware migration).
   enum class CacheStatus : uint32_t {
     UP_TO_DATE = 0,
     CHANGED = 1,
@@ -240,6 +243,7 @@ namespace fast_fs_hash {
     MISSING = 3,
     STATS_DIRTY = 4,
     LOCK_FAILED = 5,
+    STALE_VERSION = 6,
   };
 
   /** Generic slice of a JS buffer (ptr + len), used for both payload arrays. */

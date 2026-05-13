@@ -91,6 +91,15 @@ namespace fast_fs_hash {
       this->ptr = nullptr;
       this->len = 0;
     }
+
+    /** Shrink the reported length without reallocating. The underlying alloc
+     *  is unchanged — callers that need extra working space (e.g. LZ4
+     *  in-place decompress margin) allocate larger and truncate after. */
+    FSH_FORCE_INLINE void truncate(size_t newLen) noexcept {
+      if (newLen < this->len) {
+        this->len = newLen;
+      }
+    }
   };
 
 }  // namespace fast_fs_hash

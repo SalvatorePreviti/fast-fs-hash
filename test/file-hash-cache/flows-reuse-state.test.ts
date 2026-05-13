@@ -1,36 +1,17 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import path from "node:path";
+import { writeFileSync } from "node:fs";
 import { FileHashCache } from "fast-fs-hash";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
+import { setupCacheTestDir } from "./_fixture-utils";
 
-const TEST_DIR = path.resolve(import.meta.dirname, "tmp/fhc-flows-rs");
-const FIXTURE_DIR = path.join(TEST_DIR, "fixtures");
-const CACHE_DIR = path.join(TEST_DIR, "cache");
-
-let cacheCounter = 0;
-function cp(label = "test"): string {
-  return path.join(CACHE_DIR, `${label}-${++cacheCounter}.cache`);
-}
-
-function fx(name: string): string {
-  return path.join(FIXTURE_DIR, name);
-}
-
+const { FIXTURE_DIR, cachePath: cp, fixtureFile: fx } = setupCacheTestDir("fhc-flows-rs");
 const ROOT = FIXTURE_DIR.endsWith("/") ? FIXTURE_DIR : FIXTURE_DIR + "/";
 
 beforeAll(() => {
-  rmSync(TEST_DIR, { recursive: true, force: true });
-  mkdirSync(FIXTURE_DIR, { recursive: true });
-  mkdirSync(CACHE_DIR, { recursive: true });
   writeFileSync(fx("a.txt"), "aaa\n");
   writeFileSync(fx("b.txt"), "bbb\n");
   writeFileSync(fx("c.txt"), "ccc\n");
   writeFileSync(fx("d.txt"), "ddd\n");
   writeFileSync(fx("e.txt"), "eee\n");
-});
-
-afterAll(() => {
-  rmSync(TEST_DIR, { recursive: true, force: true });
 });
 
 // - Reuse-from-disk mode (no files in constructor)
@@ -174,7 +155,7 @@ describe("reuse-from-disk mode", () => {
 // - Version / fingerprint changes
 
 describe("version and fingerprint", () => {
-  it("version mismatch returns stale", async () => {
+  it("version mismatch returns staleVersion", async () => {
     const cacheFile = cp();
     const files = [fx("a.txt")];
     const cache = new FileHashCache({ cachePath: cacheFile, files, rootPath: FIXTURE_DIR, version: 1 });
@@ -188,7 +169,8 @@ describe("version and fingerprint", () => {
     {
       cache.invalidateAll();
       using s = await cache.open();
-      expect(s.status).toBe("stale");
+      expect(s.status).toBe("staleVersion");
+      expect(s.diskVersion).toBe(1);
     }
   });
 
@@ -216,7 +198,7 @@ describe("version and fingerprint", () => {
 // - Stale cache flows
 
 describe("stale cache", () => {
-  it("stale + write makes it upToDate", async () => {
+  it("staleVersion + write makes it upToDate", async () => {
     const cacheFile = cp();
     const files = [fx("a.txt"), fx("b.txt")];
     const cache = new FileHashCache({ cachePath: cacheFile, files, rootPath: FIXTURE_DIR, version: 1 });
@@ -227,12 +209,12 @@ describe("stale cache", () => {
       await s.write();
     }
 
-    // Bump version → stale
+    // Bump version → staleVersion
     cache.version = 2;
     {
       cache.invalidateAll();
       using s = await cache.open();
-      expect(s.status).toBe("stale");
+      expect(s.status).toBe("staleVersion");
       await s.write();
     }
 
@@ -248,7 +230,7 @@ describe("stale cache", () => {
     expect(cache.files).toHaveLength(2);
   });
 
-  it("stale + close without write re-invalidates", async () => {
+  it("staleVersion + close without write re-invalidates", async () => {
     const cacheFile = cp();
     const files = [fx("a.txt")];
     const cache = new FileHashCache({ cachePath: cacheFile, files, rootPath: FIXTURE_DIR, version: 1 });
@@ -259,23 +241,23 @@ describe("stale cache", () => {
       await s.write();
     }
 
-    // Bump version → stale, but don't write
+    // Bump version → staleVersion, but don't write
     cache.version = 2;
     {
       cache.invalidateAll();
       using s = await cache.open();
-      expect(s.status).toBe("stale");
+      expect(s.status).toBe("staleVersion");
       // no write
     }
 
-    // Next open should still be stale (re-invalidated)
+    // Next open should still be staleVersion (re-invalidated)
     {
       using s = await cache.open();
-      expect(s.status).toBe("stale");
+      expect(s.status).toBe("staleVersion");
     }
   });
 
-  it("stale + change files + write uses new files", async () => {
+  it("staleVersion + change files + write uses new files", async () => {
     const cacheFile = cp();
     const cache = new FileHashCache({ cachePath: cacheFile, files: [fx("a.txt")], rootPath: FIXTURE_DIR, version: 1 });
 
@@ -285,12 +267,12 @@ describe("stale cache", () => {
       await s.write();
     }
 
-    // Bump version → stale, change files, write
+    // Bump version → staleVersion, change files, write
     cache.version = 2;
     {
       cache.invalidateAll();
       const s = await cache.open();
-      expect(s.status).toBe("stale");
+      expect(s.status).toBe("staleVersion");
 
       // Build produced new files
       cache.files = [fx("a.txt"), fx("b.txt"), fx("c.txt")];
@@ -307,7 +289,7 @@ describe("stale cache", () => {
     }
   });
 
-  it("stale preserves old compressedPayloads on the session", async () => {
+  it("staleVersion preserves old compressedPayloads on the session", async () => {
     const cacheFile = cp();
     const files = [fx("a.txt")];
     const cache = new FileHashCache({ cachePath: cacheFile, files, rootPath: FIXTURE_DIR, version: 1 });
@@ -318,13 +300,13 @@ describe("stale cache", () => {
       await s.write({ payloadValue0: 99, compressedPayloads: [Buffer.from("old-data")] });
     }
 
-    // Bump version → stale
+    // Bump version → staleVersion
     cache.version = 2;
     {
       cache.invalidateAll();
       using s = await cache.open();
-      expect(s.status).toBe("stale");
-      // Old compressedPayloads are still readable from the stale cache
+      expect(s.status).toBe("staleVersion");
+      expect(s.diskVersion).toBe(1);
       expect(s.payloadValue0).toBe(99);
       expect(Buffer.from(s.compressedPayloads[0]).toString()).toBe("old-data");
     }

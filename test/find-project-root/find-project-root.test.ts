@@ -16,7 +16,7 @@
  * is outside the user's HOME on every supported platform.
  */
 
-import { mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { findProjectRoot, findProjectRootSync } from "fast-fs-hash";
@@ -368,6 +368,107 @@ describe("findProjectRoot [native]", () => {
     it("throws (or rejects) on empty string", async () => {
       expect(() => findProjectRootSync("")).toThrow();
       await expect(findProjectRoot("")).rejects.toThrow();
+    });
+  });
+
+  describe("rootLockfile", () => {
+    it("returns null when no lockfile exists next to package.json", () => {
+      const root = buildFixture("lock-none", {
+        gitDirs: [""],
+        packageJsons: [""],
+      });
+      const result = findProjectRootSync(root);
+      expect(result.rootPackageJson).toBe(path.join(root, "package.json"));
+      expect(result.rootLockfile).toBeNull();
+    });
+
+    it("returns null when there's no rootPackageJson", () => {
+      const root = buildFixture("lock-no-pkg", { gitDirs: [""] });
+      const result = findProjectRootSync(root);
+      expect(result.rootPackageJson).toBeNull();
+      expect(result.rootLockfile).toBeNull();
+    });
+
+    it("picks package-lock.json when it's the only lockfile", () => {
+      const root = buildFixture("lock-npm-only", {
+        gitDirs: [""],
+        packageJsons: [""],
+      });
+      writeFileSync(path.join(root, "package-lock.json"), "{}\n");
+      const result = findProjectRootSync(root);
+      expect(result.rootLockfile).toBe(path.join(root, "package-lock.json"));
+    });
+
+    it("picks pnpm-lock.yaml when it's the only lockfile", () => {
+      const root = buildFixture("lock-pnpm-only", {
+        gitDirs: [""],
+        packageJsons: [""],
+      });
+      writeFileSync(path.join(root, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+      const result = findProjectRootSync(root);
+      expect(result.rootLockfile).toBe(path.join(root, "pnpm-lock.yaml"));
+    });
+
+    it("picks yarn.lock when it's the only lockfile", () => {
+      const root = buildFixture("lock-yarn-only", {
+        gitDirs: [""],
+        packageJsons: [""],
+      });
+      writeFileSync(path.join(root, "yarn.lock"), "# yarn lockfile v1\n");
+      const result = findProjectRootSync(root);
+      expect(result.rootLockfile).toBe(path.join(root, "yarn.lock"));
+    });
+
+    it("picks the most recently modified lockfile when multiple exist", () => {
+      // Stale npm lockfile + fresh pnpm lockfile → pnpm wins.
+      const root = buildFixture("lock-mtime-picks-fresh", {
+        gitDirs: [""],
+        packageJsons: [""],
+      });
+      writeFileSync(path.join(root, "package-lock.json"), "{}\n");
+      writeFileSync(path.join(root, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+
+      // Force the npm lockfile to look older.
+      const oldTime = new Date(Date.now() - 1000 * 60 * 60 * 24); // 24h ago
+      utimesSync(path.join(root, "package-lock.json"), oldTime, oldTime);
+      const newTime = new Date();
+      utimesSync(path.join(root, "pnpm-lock.yaml"), newTime, newTime);
+
+      const result = findProjectRootSync(root);
+      expect(result.rootLockfile).toBe(path.join(root, "pnpm-lock.yaml"));
+    });
+
+    it("breaks mtime ties using pnpm > yarn > npm priority", () => {
+      // All three lockfiles created in the same second — the priority
+      // order acts as the tie-breaker since the C++ side uses strict `>`
+      // when comparing mtimes.
+      const root = buildFixture("lock-tie", {
+        gitDirs: [""],
+        packageJsons: [""],
+      });
+      writeFileSync(path.join(root, "package-lock.json"), "{}\n");
+      writeFileSync(path.join(root, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+      writeFileSync(path.join(root, "yarn.lock"), "# yarn lockfile v1\n");
+
+      const sameTime = new Date(2024, 0, 1, 12, 0, 0); // fixed epoch second
+      utimesSync(path.join(root, "package-lock.json"), sameTime, sameTime);
+      utimesSync(path.join(root, "pnpm-lock.yaml"), sameTime, sameTime);
+      utimesSync(path.join(root, "yarn.lock"), sameTime, sameTime);
+
+      const result = findProjectRootSync(root);
+      expect(result.rootLockfile).toBe(path.join(root, "pnpm-lock.yaml"));
+    });
+
+    it("sync and async variants agree on rootLockfile", async () => {
+      const root = buildFixture("lock-parity", {
+        gitDirs: [""],
+        packageJsons: [""],
+      });
+      writeFileSync(path.join(root, "yarn.lock"), "# yarn lockfile v1\n");
+      const syncResult = findProjectRootSync(root);
+      const asyncResult = await findProjectRoot(root);
+      expect(asyncResult.rootLockfile).toBe(syncResult.rootLockfile);
+      expect(syncResult.rootLockfile).toBe(path.join(root, "yarn.lock"));
     });
   });
 });

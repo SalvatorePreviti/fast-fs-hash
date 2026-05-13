@@ -20,6 +20,7 @@ import {
   S_FILE_COUNT,
   S_FLAGS,
   S_STATUS,
+  S_VERSION,
 } from "./file-hash-cache-format";
 import {
   cacheClose,
@@ -49,6 +50,17 @@ export class FileHashCacheSession {
 
   /** Cache version (u32) that was active when this session was opened. */
   public readonly version: number;
+
+  /**
+   * The user `version` (u32) read from the on-disk file header.
+   *
+   * Differs from {@link version} only when status is `'staleVersion'`,
+   * where it exposes the OLD version number so callers running
+   * version-aware migrations can pick the right code path. For every
+   * other status it equals {@link version}. Use `status === 'staleVersion'`
+   * to detect when migration logic is needed.
+   */
+  public readonly diskVersion: number;
 
   /** Root path that was active when this session was opened. */
   public readonly rootPath: string;
@@ -95,7 +107,14 @@ export class FileHashCacheSession {
     this.#resolvedEntries = null;
 
     this.status = STATUS_MAP[stateBuf.readUInt32LE(S_STATUS)] ?? "missing";
-    this.version = cache.version;
+    const callerVersion = cache.version;
+    this.version = callerVersion;
+    // C++ open returns the disk version through S_VERSION; restore the slot
+    // so any subsequent cacheWrite reads the caller's version.
+    this.diskVersion = stateBuf.readUInt32LE(S_VERSION);
+    if (this.diskVersion !== callerVersion) {
+      stateBuf.writeUInt32LE(callerVersion, S_VERSION);
+    }
     this.rootPath = openRootPath;
     this.payloadValue0 = dataBuf.readDoubleLE(H_PAYLOAD0_BYTE);
     this.payloadValue1 = dataBuf.readDoubleLE(H_PAYLOAD1_BYTE);

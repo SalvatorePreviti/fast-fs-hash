@@ -39,7 +39,17 @@ export function emptyBuf(): Buffer {
 }
 let _onceTrue: AddEventListenerOptions;
 
-export const STATUS_MAP = ["upToDate", "changed", "stale", "missing", "statsDirty", "lockFailed"] as const;
+// Index order must match the native `CacheStatus` enum in
+// `file-hash-cache-format.h`.
+export const STATUS_MAP = [
+  "upToDate",
+  "changed",
+  "stale",
+  "missing",
+  "statsDirty",
+  "lockFailed",
+  "staleVersion",
+] as const;
 
 // - Cancel helpers
 

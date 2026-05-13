@@ -6,11 +6,15 @@
 #include "../file-hash-cache-format.h"
 #include "AddonWorker.h"
 
+#define LZ4_STATIC_LINKING_ONLY  // expose LZ4_DECOMPRESS_INPLACE_MARGIN
 #include <lz4.h>
 #include <string_view>
 #include <unordered_set>
 
 namespace fast_fs_hash {
+
+  static_assert(CACHE_MAX_FILE_SIZE <= static_cast<size_t>(INT_MAX),
+    "compressedSize fits in int — required by LZ4_decompress_safe");
 
   /**
    * Acquires an exclusive lock on the cache file, then reads,
@@ -60,6 +64,7 @@ namespace fast_fs_hash {
       if (fingerprint) {
         memcpy(&this->fingerprint_, fingerprint, 16);
       }
+      this->diskVersion_ = version;
       this->cancel_.cancelByte_ = state->cancelByte();
       AddonData * d = this->addon;
       if (d) {
@@ -114,6 +119,9 @@ namespace fast_fs_hash {
       state->status = this->resultStatus_;
       state->cacheFileStat0 = this->resultStat_[0];
       state->cacheFileStat1 = this->resultStat_[1];
+      // Repurpose the `version` slot (normally JS→C++) to return the on-disk
+      // version. JS reads it as `session.diskVersion`, then restores the slot.
+      state->version = this->diskVersion_;
 
       // Transfer lock ownership to AddonData
       const int32_t fh = this->addon->registerHeldFile(std::move(this->lockedFile_));
@@ -150,6 +158,7 @@ namespace fast_fs_hash {
 
     // Results (written on pool thread, read in OnOK)
     uint32_t resultStatus_ = static_cast<uint32_t>(CacheStatus::MISSING);
+    uint32_t diskVersion_ = 0;  // header version from disk; defaults to version_ when no disk read happened
     double resultStat_[2] = {0, 0};
 
     OwnedBuf<> dataBuf_;
@@ -212,6 +221,16 @@ namespace fast_fs_hash {
       }
     }
 
+    /** Adopt `oldBuf` as our dataBuf if its entry count matches what JS
+     *  will iterate; otherwise leave dataBuf_ empty so finish_ synthesizes
+     *  a fresh one. Then signal completion with `st`. */
+    void adoptOldBufOrSynthesize_(OwnedBuf<> & oldBuf, uint32_t oldFc, CacheStatus st) noexcept {
+      if (oldFc == this->fileCount_) {
+        this->dataBuf_ = std::move(oldBuf);
+      }
+      this->finish_(st);
+    }
+
     FSH_NO_INLINE void finish_(CacheStatus st) noexcept {
       if (!this->dataBuf_) [[unlikely]] {
         if (this->encodedLen_ > 0 && this->fileCount_ > 0) {
@@ -230,11 +249,10 @@ namespace fast_fs_hash {
       const CacheHeader * oldHdr = nullptr;
       uint32_t oldFc = 0;
       size_t oldBodyLen = 0;
-      bool stale = false;
       OwnedBuf<> oldBuf;
-      const bool hasOld = this->readOldCache_(oldBuf, oldHdr, oldFc, oldBodyLen, stale);
+      const CacheStatus loadStatus = this->readOldCache_(oldBuf, oldHdr, oldFc, oldBodyLen);
 
-      if (!hasOld) [[unlikely]] {
+      if (loadStatus == CacheStatus::MISSING) [[unlikely]] {
         this->finish_(CacheStatus::MISSING);
         return;
       }
@@ -244,9 +262,8 @@ namespace fast_fs_hash {
         this->fileCount_ = oldFc;
       }
 
-      if (stale) {
-        this->dataBuf_ = std::move(oldBuf);
-        this->finish_(CacheStatus::STALE);
+      if (loadStatus == CacheStatus::STALE || loadStatus == CacheStatus::STALE_VERSION) {
+        this->adoptOldBufOrSynthesize_(oldBuf, oldFc, loadStatus);
         return;
       }
 
@@ -263,8 +280,7 @@ namespace fast_fs_hash {
       }
 
       if (!sameFiles) {
-        this->dataBuf_ = std::move(oldBuf);
-        this->finish_(CacheStatus::CHANGED);
+        this->adoptOldBufOrSynthesize_(oldBuf, oldFc, CacheStatus::CHANGED);
         return;
       }
 
@@ -362,100 +378,133 @@ namespace fast_fs_hash {
       self->signal();
     }
 
-    bool readOldCache_(
-      OwnedBuf<> & oldBuf, const CacheHeader *& hdr, uint32_t & fc, size_t & bodyLen, bool & stale) noexcept {
+    /**
+     * Load the on-disk cache and report status.
+     *
+     *   - {@link CacheStatus::MISSING} — file missing/truncated, bad
+     *     magic, bad header limits, LZ4 body decompress failure, or
+     *     packed-paths corruption. `oldBuf` is empty.
+     *   - {@link CacheStatus::STALE_VERSION} — well-formed but disk
+     *     `version` differs from the caller's. `oldBuf` is populated.
+     *   - {@link CacheStatus::STALE} — well-formed at the right version
+     *     but fingerprint doesn't match. `oldBuf` is populated.
+     *   - {@link CacheStatus::UP_TO_DATE} — passed every load-time
+     *     check; may still be downgraded to CHANGED by the caller's
+     *     subsequent path-match step.
+     */
+    CacheStatus readOldCache_(
+      OwnedBuf<> & oldBuf,
+      const CacheHeader *& hdr,
+      uint32_t & fc,
+      size_t & bodyLen) noexcept {
       const int lockFd = this->lockedFile_.fd;
       if (lockFd < 0) [[unlikely]] {
-        return false;
+        return CacheStatus::MISSING;
       }
 
       const int64_t fileSize = this->lockedFile_.fsize();
       if (fileSize < static_cast<int64_t>(CacheHeader::SIZE) || fileSize > static_cast<int64_t>(CACHE_MAX_FILE_SIZE))
         [[unlikely]] {
-        return false;
+        return CacheStatus::MISSING;
       }
       const size_t diskSize = static_cast<size_t>(fileSize);
 
       if (!this->lockedFile_.seek(0)) [[unlikely]] {
-        return false;
+        return CacheStatus::MISSING;
       }
 
-      OwnedBuf<> fileBuf = OwnedBuf<>::alloc(diskSize);
-      if (!fileBuf) [[unlikely]] {
-        return false;
+      // Peek the header so we can size the final buffer correctly. The
+      // body must be read second (its tail-aligned position depends on
+      // the uncompressed body size from this header).
+      CacheHeader peekHdr;
+      const int64_t hn = this->lockedFile_.read_at_most(&peekHdr, CacheHeader::SIZE);
+      if (hn < 0 || static_cast<size_t>(hn) < CacheHeader::SIZE) [[unlikely]] {
+        return CacheStatus::MISSING;
       }
-      const int64_t n = this->lockedFile_.read_at_most(fileBuf.ptr, diskSize);
-      if (n < 0 || static_cast<size_t>(n) < diskSize) [[unlikely]] {
-        return false;
-      }
-
-      const CacheHeader * diskHdr = headerOf(fileBuf.ptr);
-      if (!diskHdr->validateLimits()) [[unlikely]] {
-        return false;
+      if (!peekHdr.validateLimits()) [[unlikely]] {
+        return CacheStatus::MISSING;
       }
 
-      fc = diskHdr->fileCount;
-      const size_t uncSectionSize = diskHdr->uncompressedSectionSize();
-      const size_t uncompBodySize = diskHdr->bodySize();
+      fc = peekHdr.fileCount;
+      const size_t uncSectionSize = peekHdr.uncompressedSectionSize();
+      const size_t uncompBodySize = peekHdr.bodySize();
 
       // In-memory dataBuf layout mirrors disk:
       //   [header][uncompressed section][decompressed body]
       bodyLen = CacheHeader::SIZE + uncSectionSize + uncompBodySize;
       if (bodyLen > CACHE_MAX_BODY_SIZE) [[unlikely]] {
-        return false;
+        return CacheStatus::MISSING;
       }
 
-      // Validate disk file has room for header + unc section + (at least) empty body.
       const size_t diskPrefix = CacheHeader::SIZE + uncSectionSize;
       if (diskSize < diskPrefix) [[unlikely]] {
-        return false;
+        return CacheStatus::MISSING;
+      }
+      const size_t compressedSize = diskSize - diskPrefix;
+      if (uncompBodySize > 0 && compressedSize == 0) [[unlikely]] {
+        return CacheStatus::MISSING;
       }
 
-      stale = false;
-      if (diskHdr->version != this->version_) {
-        stale = true;
+      this->diskVersion_ = peekHdr.version;
+      CacheStatus staleStatus = CacheStatus::UP_TO_DATE;
+      if (peekHdr.version != this->version_) {
+        staleStatus = CacheStatus::STALE_VERSION;
       } else if (!this->hasFingerprint_) {
-        if (!diskHdr->fingerprint.is_zero()) {
-          stale = true;
+        if (!peekHdr.fingerprint.is_zero()) {
+          staleStatus = CacheStatus::STALE;
         }
-      } else if (diskHdr->fingerprint != this->fingerprint_) {
-        stale = true;
+      } else if (peekHdr.fingerprint != this->fingerprint_) {
+        staleStatus = CacheStatus::STALE;
       }
 
-      oldBuf = OwnedBuf<>::alloc(bodyLen);
+      // Compressed body lives at the tail; LZ4 decompresses forward into the
+      // body region in-place. Single allocation = final layout + LZ4 margin.
+      const size_t inplaceMargin = uncompBodySize > 0 ? LZ4_DECOMPRESS_INPLACE_MARGIN(uncompBodySize) : 0;
+      const size_t allocLen = bodyLen + inplaceMargin;
+      oldBuf = OwnedBuf<>::alloc(allocLen);
       if (!oldBuf) [[unlikely]] {
-        return false;
+        return CacheStatus::MISSING;
       }
 
-      // Copy header + uncompressed section verbatim from disk.
-      memcpy(oldBuf.ptr, fileBuf.ptr, diskPrefix);
+      memcpy(oldBuf.ptr, &peekHdr, CacheHeader::SIZE);
+
+      // Read uncompressed section directly to its final position.
+      if (uncSectionSize > 0) {
+        const int64_t un = this->lockedFile_.read_at_most(oldBuf.ptr + CacheHeader::SIZE, uncSectionSize);
+        if (un < 0 || static_cast<size_t>(un) < uncSectionSize) [[unlikely]] {
+          oldBuf.reset();
+          return CacheStatus::MISSING;
+        }
+      }
 
       if (uncompBodySize > 0) {
-        const int compressedSize = static_cast<int>(diskSize - diskPrefix);
-        if (compressedSize <= 0) [[unlikely]] {
+        uint8_t * const compDst = oldBuf.ptr + allocLen - compressedSize;
+        const int64_t cn = this->lockedFile_.read_at_most(compDst, compressedSize);
+        if (cn < 0 || static_cast<size_t>(cn) < compressedSize) [[unlikely]] {
           oldBuf.reset();
-          return false;
+          return CacheStatus::MISSING;
         }
         const int decompressed = LZ4_decompress_safe(
-          reinterpret_cast<const char *>(fileBuf.ptr + diskPrefix),
+          reinterpret_cast<const char *>(compDst),
           reinterpret_cast<char *>(oldBuf.ptr + diskPrefix),
-          compressedSize,
+          static_cast<int>(compressedSize),
           static_cast<int>(uncompBodySize));
         if (decompressed < 0 || static_cast<size_t>(decompressed) != uncompBodySize) [[unlikely]] {
           oldBuf.reset();
-          return false;
+          return CacheStatus::MISSING;
         }
       }
 
-      fileBuf.reset();
+      oldBuf.truncate(bodyLen);
+
       hdr = headerOf(oldBuf.ptr);
 
       if (!hdr->packedPathsValid(oldBuf.ptr)) [[unlikely]] {
         oldBuf.reset();
-        return false;
+        return CacheStatus::MISSING;
       }
 
-      return true;
+      return staleStatus;
     }
 
     FSH_NO_INLINE static bool statMatchHashFile_(

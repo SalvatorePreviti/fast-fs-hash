@@ -203,15 +203,30 @@ if (session.status === "upToDate") {
 
 **Session properties (read-only, from disk):**
 
-- `status` — `'upToDate'` | `'changed'` | `'stale'` | `'missing'` | `'statsDirty'` | `'lockFailed'`
+- `status` — see [Cache status](#cache-status) below
 - `needsWrite` — `true` if the session holds the lock and the status indicates changes
 - `configChanged` — `true` if cache config was modified since this session was opened
 - `wouldNeedWrite` — `true` if either files changed on disk or config changed
 - `busy` / `disposed` — async operation state
 - `files`, `fileCount`, `version`, `rootPath`
+- `diskVersion` — the user `version` (u32) read from the on-disk header. Differs from `version` only when `status === 'staleVersion'`; lets migration code identify which old format to parse.
 - `payloadValue0..3` — four f64 numeric values read from disk
 - `compressedPayloads` — array of LZ4-compressed binary Buffer payloads read from disk
 - `uncompressedPayloads` — array of raw binary Buffer payloads readable without LZ4 decompression
+
+#### Cache status
+
+| Status           | Disk readable?    | Entries trustable?             | Payloads readable? | Action                                                                 |
+| ---------------- | ----------------- | ------------------------------ | ------------------ | ---------------------------------------------------------------------- |
+| `'upToDate'`     | Yes               | Yes                            | Yes                | None                                                                   |
+| `'statsDirty'`   | Yes               | Yes (content unchanged)        | Yes                | Rewrite cache (stats refreshed)                                        |
+| `'changed'`      | Yes               | Partially (some files changed) | Yes                | Re-hash changed files, write                                           |
+| `'stale'`        | Yes (well-formed) | No (fingerprint mismatch)      | Yes                | Discard entries, optionally migrate payloads, write                    |
+| `'staleVersion'` | Yes (well-formed) | No (`version` differs)         | Yes                | As above, plus check `session.diskVersion` for version-aware migration |
+| `'missing'`      | No                | —                              | No                 | Write fresh                                                            |
+| `'lockFailed'`   | —                 | —                              | —                  | Retry later                                                            |
+
+`'stale'` and `'staleVersion'` both keep the on-disk buffer readable so callers can migrate `compressedPayloads` / `uncompressedPayloads` / `payloadValueN` across config changes. `'missing'` covers genuinely unreadable files (no file, truncated header, bad magic, corrupt body) — never thrown, always reported via this status so callers can recover by writing fresh.
 
 **Session methods:**
 

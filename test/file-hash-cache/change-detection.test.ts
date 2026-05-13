@@ -5,26 +5,13 @@
  * file list add/remove.
  */
 
-import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import path from "node:path";
+import { rmSync, utimesSync, writeFileSync } from "node:fs";
 import type { FileHashCacheSession } from "fast-fs-hash";
 import { FileHashCache } from "fast-fs-hash";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
+import { setupCacheTestDir } from "./_fixture-utils";
 
-//  - Fixture setup
-
-const TEST_DIR = path.resolve(import.meta.dirname, "tmp/fhc-change");
-const FIXTURE_DIR = path.join(TEST_DIR, "fixtures");
-const CACHE_DIR = path.join(TEST_DIR, "cache");
-
-let cacheCounter = 0;
-function cachePath(label = "test"): string {
-  return path.join(CACHE_DIR, `${label}-${++cacheCounter}.cache`);
-}
-
-function fixtureFile(name: string): string {
-  return path.join(FIXTURE_DIR, name);
-}
+const { FIXTURE_DIR, cachePath, fixtureFile } = setupCacheTestDir("fhc-change");
 
 /** Write file with an explicit mtime so stat changes are guaranteed without sleeping. */
 let epochCounter = 1700000000;
@@ -51,20 +38,10 @@ async function withCache<T>(
   return await run(session, cache);
 }
 
-//  - Tests
-
 beforeAll(() => {
-  rmSync(TEST_DIR, { recursive: true, force: true });
-  mkdirSync(FIXTURE_DIR, { recursive: true });
-  mkdirSync(CACHE_DIR, { recursive: true });
-
   writeWithMtime(fixtureFile("a.txt"), "hello world\n");
   writeWithMtime(fixtureFile("b.txt"), "goodbye world\n");
   writeWithMtime(fixtureFile("c.txt"), "third file\n");
-});
-
-afterAll(() => {
-  rmSync(TEST_DIR, { recursive: true, force: true });
 });
 
 describe("FileHashCache change detection [native]", () => {
@@ -84,7 +61,7 @@ describe("FileHashCache change detection [native]", () => {
         expect(ctx2.needsWrite).toBe(true);
         return ctx2.status;
       });
-      expect(status).toBe("stale");
+      expect(status).toBe("staleVersion");
     });
 
     it("same fingerprint is upToDate", async () => {
@@ -433,14 +410,14 @@ describe("FileHashCache change detection [native]", () => {
       });
     });
 
-    it("returns true for stale", async () => {
-      const cp = cachePath("nw-stale");
+    it("returns true for staleVersion", async () => {
+      const cp = cachePath("nw-stale-version");
       const files = [fixtureFile("a.txt")];
       await withCache(cp, files, { version: 1 }, async (ctx) => {
         await ctx.write();
       });
       await withCache(cp, files, { version: 99 }, (ctx) => {
-        expect(ctx.status).toBe("stale");
+        expect(ctx.status).toBe("staleVersion");
         expect(ctx.needsWrite).toBe(true);
       });
     });

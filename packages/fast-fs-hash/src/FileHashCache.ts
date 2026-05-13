@@ -59,14 +59,25 @@ export { FileHashCacheSession } from "./FileHashCacheSession";
 /**
  * Cache status.
  *
- * - `'upToDate'`    — nothing changed.
- * - `'statsDirty'`  — stat metadata updated but content unchanged (cache needs rewrite).
- * - `'changed'`     — content changed (size or hash mismatch in at least one file).
- * - `'stale'`       — version/fingerprint mismatch (entries not trusted).
- * - `'missing'`     — no cache file or unreadable/corrupt.
- * - `'lockFailed'`  — could not acquire the lock (timeout, non-blocking, or cancelled).
+ * - `'upToDate'`      — nothing changed; entries and payloads are trustable.
+ * - `'statsDirty'`    — stat metadata updated but content unchanged (cache needs rewrite).
+ * - `'changed'`       — content changed (size or hash mismatch in at least one file).
+ *                       Entries and payloads remain readable; some entries are stale.
+ * - `'stale'`         — same `version` as the caller, but fingerprint differs. The
+ *                       on-disk file is well-formed; `compressedPayloads` /
+ *                       `uncompressedPayloads` / `payloadValueN` remain readable.
+ *                       File-entry metadata (stat, hash) does not describe the
+ *                       caller's current inputs.
+ * - `'staleVersion'`  — disk `version` differs from the caller's. Same readability
+ *                       guarantees as `'stale'` (payloads accessible for migration),
+ *                       but callers likely need version-aware migration code since
+ *                       the payload binary layout may have changed between versions.
+ *                       See `FileHashCacheSession.diskVersion` for the disk version.
+ * - `'missing'`       — no cache file, OR the file is unreadable / malformed (bad
+ *                       magic, truncated, corrupt body, etc.). Nothing to recover.
+ * - `'lockFailed'`    — could not acquire the lock (timeout, non-blocking, or cancelled).
  */
-export type CacheStatus = "upToDate" | "statsDirty" | "changed" | "stale" | "missing" | "lockFailed";
+export type CacheStatus = "upToDate" | "statsDirty" | "changed" | "stale" | "staleVersion" | "missing" | "lockFailed";
 
 /** Options for the {@link FileHashCache} constructor. */
 export interface FileHashCacheOptions {

@@ -1,37 +1,14 @@
-import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import path from "node:path";
+import { utimesSync, writeFileSync } from "node:fs";
 import { FileHashCache } from "fast-fs-hash";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
+import { setupCacheTestDir } from "./_fixture-utils";
 
-//  - Fixture setup
-
-const TEST_DIR = path.resolve(import.meta.dirname, "tmp/fhc-write-new");
-const FIXTURE_DIR = path.join(TEST_DIR, "fixtures");
-const CACHE_DIR = path.join(TEST_DIR, "cache");
-
-let cacheCounter = 0;
-function cachePath(label = "test"): string {
-  return path.join(CACHE_DIR, `${label}-${++cacheCounter}.cache`);
-}
-
-function fixtureFile(name: string): string {
-  return path.join(FIXTURE_DIR, name);
-}
-
-//  - Tests
+const { FIXTURE_DIR, cachePath, fixtureFile } = setupCacheTestDir("fhc-write-new");
 
 beforeAll(() => {
-  rmSync(TEST_DIR, { recursive: true, force: true });
-  mkdirSync(FIXTURE_DIR, { recursive: true });
-  mkdirSync(CACHE_DIR, { recursive: true });
-
   writeFileSync(fixtureFile("a.txt"), "hello world\n");
   writeFileSync(fixtureFile("b.txt"), "goodbye world\n");
   writeFileSync(fixtureFile("c.txt"), "third file\n");
-});
-
-afterAll(() => {
-  rmSync(TEST_DIR, { recursive: true, force: true });
 });
 
 describe("FileHashCache.overwrite [native]", () => {
@@ -113,10 +90,11 @@ describe("FileHashCache.overwrite [native]", () => {
         expect(ctx.status).toBe("upToDate");
       }
 
-      // Different version → stale
+      // Different version → staleVersion
       {
         using ctx2 = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 99 }).open();
-        expect(ctx2.status).toBe("stale");
+        expect(ctx2.status).toBe("staleVersion");
+        expect(ctx2.diskVersion).toBe(42);
       }
     });
 
@@ -413,10 +391,11 @@ describe("FileHashCache.overwrite [native]", () => {
         expect(ctx2.compressedPayloads[0].toString()).toBe("new");
       }
 
-      // Old version → stale
+      // Old version → staleVersion
       {
         using ctx3 = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR, version: 1 }).open();
-        expect(ctx3.status).toBe("stale");
+        expect(ctx3.status).toBe("staleVersion");
+        expect(ctx3.diskVersion).toBe(2);
       }
     });
 
@@ -647,7 +626,7 @@ describe("FileHashCache.overwrite [native]", () => {
 
   describe("directory creation", () => {
     it("creates parent directories if they don't exist", async () => {
-      const cp = path.join(CACHE_DIR, "nested", "deep", `wn-mkdir-${++cacheCounter}.cache`);
+      const cp = cachePath("wn-mkdir", "nested/deep");
       const files = [fixtureFile("a.txt")];
 
       const ok = await new FileHashCache({ cachePath: cp, files, rootPath: FIXTURE_DIR }).overwrite();

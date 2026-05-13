@@ -49,6 +49,10 @@ namespace fast_fs_hash {
     std::string rootTsconfigJson;
     std::string nearestNodeModules;
     std::string rootNodeModules;
+    /** Canonical lockfile next to rootPackageJson, picked by mtime among
+     *  pnpm-lock.yaml / yarn.lock / package-lock.json. Empty when no
+     *  lockfile exists or rootPackageJson itself is empty. */
+    std::string rootLockfile;
 
     /** Non-null error message if the walk failed before producing anything useful.
      *  The most common case is "start path does not exist". */
@@ -400,6 +404,108 @@ namespace fast_fs_hash {
       return len + slen;
     }
 
+    /** Lockfile candidates probed next to the project's rootPackageJson.
+     *  Priority order pnpm > yarn > npm — used as the tie-breaker when two
+     *  lockfiles share an mtime (rare, e.g. a fresh checkout). Bun's
+     *  `bun.lockb` is intentionally not included. */
+    struct LockfileSuffix {
+      const char * suffix;
+      size_t len;
+    };
+#ifdef _WIN32
+#  define FSH_LOCK(s) {"\\" s, sizeof("\\" s) - 1}
+#else
+#  define FSH_LOCK(s) {"/" s, sizeof("/" s) - 1}
+#endif
+    static constexpr LockfileSuffix LOCKFILE_SUFFIXES[3] = {
+      FSH_LOCK("pnpm-lock.yaml"),
+      FSH_LOCK("yarn.lock"),
+      FSH_LOCK("package-lock.json"),
+    };
+#undef FSH_LOCK
+
+    /** Return `true` and write the file's mtime in nanoseconds-since-epoch
+     *  to `*mtime_ns_out` if `path` is a regular file. Otherwise return
+     *  `false` (missing / not-a-regular-file). Used by the lockfile picker
+     *  to compare ages without reading content. */
+    inline bool stat_regular_mtime_ns(const char * path, uint64_t * mtime_ns_out) noexcept {
+#ifdef _WIN32
+      WIN32_FILE_ATTRIBUTE_DATA fad;
+      if (!GetFileAttributesExA(path, GetFileExInfoStandard, &fad)) {
+        return false;
+      }
+      if (fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+        return false;
+      }
+      // FILETIME = 100ns ticks since 1601-01-01. Convert to ns since 1970.
+      // 11644473600 seconds between the two epochs.
+      const uint64_t ticks = (static_cast<uint64_t>(fad.ftLastWriteTime.dwHighDateTime) << 32)
+        | static_cast<uint64_t>(fad.ftLastWriteTime.dwLowDateTime);
+      *mtime_ns_out = (ticks - 116444736000000000ULL) * 100ULL;
+      return true;
+#else
+      struct stat st;
+      if (::stat(path, &st) != 0) {
+        return false;
+      }
+      if (!S_ISREG(st.st_mode)) {
+        return false;
+      }
+#  if defined(__APPLE__)
+      *mtime_ns_out = static_cast<uint64_t>(st.st_mtimespec.tv_sec) * 1000000000ULL
+        + static_cast<uint64_t>(st.st_mtimespec.tv_nsec);
+#  else
+      *mtime_ns_out = static_cast<uint64_t>(st.st_mtim.tv_sec) * 1000000000ULL
+        + static_cast<uint64_t>(st.st_mtim.tv_nsec);
+#  endif
+      return true;
+#endif
+    }
+
+    /** Pick the canonical lockfile next to the directory containing
+     *  `rootPackageJsonPath` (or do nothing if no package.json was found).
+     *  Stat each of the three known lockfile names; pick the one with the
+     *  highest mtime. Ties resolve by priority order pnpm > yarn > npm.
+     *  Writes the absolute path into `out.rootLockfile`. */
+    inline void detect_root_lockfile(ProjectRootResult & out) noexcept {
+      if (out.rootPackageJson.empty()) {
+        return;
+      }
+      // Strip "<sep>package.json" (PKG_LEN + 1) to recover the parent directory.
+      constexpr size_t PKG_WITH_SEP = PKG_LEN + 1;
+      const size_t pkg_len = out.rootPackageJson.size();
+      if (pkg_len <= PKG_WITH_SEP) {
+        return;
+      }
+      const size_t dir_len = pkg_len - PKG_WITH_SEP;
+      char buf[FSH_MAX_PATH];
+      if (dir_len + 1 >= FSH_MAX_PATH) {
+        return;
+      }
+      memcpy(buf, out.rootPackageJson.data(), dir_len);
+      buf[dir_len] = '\0';
+
+      uint64_t best_mtime = 0;
+      bool have_best = false;
+      for (const LockfileSuffix & cand : LOCKFILE_SUFFIXES) {
+        const size_t tip = append_suffix(buf, dir_len, cand.suffix, cand.len);
+        if (tip == dir_len) {
+          continue;  // path overflow
+        }
+        uint64_t mtime_ns = 0;
+        if (!stat_regular_mtime_ns(buf, &mtime_ns)) {
+          continue;
+        }
+        // Strict `>`: priority order (pnpm > yarn > npm) breaks ties.
+        if (!have_best || mtime_ns > best_mtime) {
+          best_mtime = mtime_ns;
+          // Snapshot the winning path before the next iteration overwrites buf.
+          out.rootLockfile.assign(buf, tip);
+          have_best = true;
+        }
+      }
+    }
+
   }  // namespace find_project_root_detail
 
   /** Core walk. Pure C++, no napi. Thread-safe (operates on local buffers only).
@@ -579,6 +685,9 @@ namespace fast_fs_hash {
     if (!out.gitSuperRoot.empty() && out.gitSuperRoot == out.gitRoot) {
       out.gitSuperRoot.clear();
     }
+
+    // Lockfile detection: 3 stats next to rootPackageJson, mtime-tiebroken.
+    find_project_root_detail::detect_root_lockfile(out);
   }
 
 }  // namespace fast_fs_hash

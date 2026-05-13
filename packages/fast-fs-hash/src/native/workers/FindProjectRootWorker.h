@@ -44,6 +44,7 @@ namespace fast_fs_hash {
     setField("rootTsconfigJson", r.rootTsconfigJson);
     setField("nearestNodeModules", r.nearestNodeModules);
     setField("rootNodeModules", r.rootNodeModules);
+    setField("rootLockfile", r.rootLockfile);
 
     return obj;
   }

@@ -29,6 +29,16 @@ export interface ProjectRoot {
   nearestNodeModules: string | null;
   /** Last `node_modules/` walking up, bounded by `gitRoot`. */
   rootNodeModules: string | null;
+  /**
+   * The canonical lockfile next to {@link rootPackageJson}, or `null` if
+   * none exists. Picks whichever of `pnpm-lock.yaml`, `yarn.lock`, or
+   * `package-lock.json` has the most recent mtime — the active package
+   * manager rewrites its lockfile on every install, so stale lockfiles
+   * left behind from a tool switch are passed over naturally. Ties on
+   * mtime resolve in the order pnpm > yarn > npm. Bun's `bun.lockb` is
+   * intentionally not included.
+   */
+  rootLockfile: string | null;
 }
 
 /**
