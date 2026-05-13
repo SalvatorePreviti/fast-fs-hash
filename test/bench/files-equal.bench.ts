@@ -98,51 +98,91 @@ describe("filesEqual", async () => {
   writeFileSync(mediumDiff, Buffer.alloc(statSync(medium.file).size, 0xff));
   writeFileSync(largeDiff, Buffer.alloc(statSync(large.file).size, 0xff));
 
+  // Pre-warm the native thread pool. The first cross-thread napi worker
+  // pays a one-time pool-spawn cost (5-15s under macOS load) that otherwise
+  // leaks into the FIRST bench's mean as a massive outlier, distorting the
+  // reported throughput.
+  await native.filesEqual(medium.file, mediumCopy);
+
+  const benchOpts = { warmupIterations: 5, throws: true } as const;
+
   // -- Equal files (medium)
 
   describe(`equal files (~${(medium.size / 1024).toFixed(1)} KB)`, () => {
-    bench("native", async () => {
-      await native.filesEqual(medium.file, mediumCopy);
-    });
+    bench(
+      "native",
+      async () => {
+        await native.filesEqual(medium.file, mediumCopy);
+      },
+      benchOpts
+    );
 
-    bench("Node.js (fs.open + read + compare)", async () => {
-      await nodeFilesEqual(medium.file, mediumCopy);
-    });
+    bench(
+      "Node.js (fs.open + read + compare)",
+      async () => {
+        await nodeFilesEqual(medium.file, mediumCopy);
+      },
+      benchOpts
+    );
   });
 
   // -- Equal files (large)
 
   describe(`equal files (~${(large.size / 1024).toFixed(1)} KB)`, () => {
-    bench("native", async () => {
-      await native.filesEqual(large.file, largeCopy);
-    });
+    bench(
+      "native",
+      async () => {
+        await native.filesEqual(large.file, largeCopy);
+      },
+      benchOpts
+    );
 
-    bench("Node.js (fs.open + read + compare)", async () => {
-      await nodeFilesEqual(large.file, largeCopy);
-    });
+    bench(
+      "Node.js (fs.open + read + compare)",
+      async () => {
+        await nodeFilesEqual(large.file, largeCopy);
+      },
+      benchOpts
+    );
   });
 
   // -- Different content, same size (medium)
 
   describe(`different content, same size (~${(medium.size / 1024).toFixed(1)} KB)`, () => {
-    bench("native", async () => {
-      await native.filesEqual(medium.file, mediumDiff);
-    });
+    bench(
+      "native",
+      async () => {
+        await native.filesEqual(medium.file, mediumDiff);
+      },
+      benchOpts
+    );
 
-    bench("Node.js (fs.open + read + compare)", async () => {
-      await nodeFilesEqual(medium.file, mediumDiff);
-    });
+    bench(
+      "Node.js (fs.open + read + compare)",
+      async () => {
+        await nodeFilesEqual(medium.file, mediumDiff);
+      },
+      benchOpts
+    );
   });
 
   // -- Different sizes (early exit)
 
   describe("different sizes (early exit)", () => {
-    bench("native", async () => {
-      await native.filesEqual(medium.file, large.file);
-    });
+    bench(
+      "native",
+      async () => {
+        await native.filesEqual(medium.file, large.file);
+      },
+      benchOpts
+    );
 
-    bench("Node.js (fs.open + read + compare)", async () => {
-      await nodeFilesEqual(medium.file, large.file);
-    });
+    bench(
+      "Node.js (fs.open + read + compare)",
+      async () => {
+        await nodeFilesEqual(medium.file, large.file);
+      },
+      benchOpts
+    );
   });
 });

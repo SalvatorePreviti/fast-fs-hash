@@ -319,16 +319,24 @@ namespace fast_fs_hash {
       }
     }
 
-    /** Post one semaphore wake if any thread is idle. */
+    /** Post one semaphore wake if any thread is idle.
+     *
+     *  The load uses seq_cst so the worker's matching seq_cst fetch_add on
+     *  idle_count_ (after pop returned null, before wait) is globally
+     *  ordered against this load. Together they exclude the lost-wakeup
+     *  race: a producer that observes idle_count_==0 here is guaranteed
+     *  that its earlier push_task is already visible to a worker that's
+     *  about to re-check the queue post-increment. */
     void notify_one_() noexcept {
-      if (this->idle_count_.load(std::memory_order_relaxed) > 0) {
+      if (this->idle_count_.load(std::memory_order_seq_cst) > 0) {
         this->wake_.post();
       }
     }
 
-    /** Post up to n semaphore wakes, capped by the current idle count. */
+    /** Post up to n semaphore wakes, capped by the current idle count.
+     *  Same lost-wakeup guarantee as notify_one_. */
     void notify_n_(int n) noexcept {
-      const int idle = this->idle_count_.load(std::memory_order_relaxed);
+      const int idle = this->idle_count_.load(std::memory_order_seq_cst);
       const int to_wake = n < idle ? n : idle;
       for (int i = 0; i < to_wake; ++i) {
         this->wake_.post();
@@ -503,7 +511,19 @@ namespace fast_fs_hash {
           continue;
         }
 
-        pool->idle_count_.fetch_add(1, std::memory_order_release);
+        // Publish "I'm about to sleep" BEFORE re-checking the queue. The
+        // seq_cst increment pairs with the seq_cst load in notify_one_ to
+        // exclude the lost-wakeup race: if a producer pushed a task and
+        // then read idle_count_==0, our fetch_add hasn't run yet — but
+        // then our pop below will run AFTER the producer's push_task is
+        // visible, so we pick the task up rather than sleeping on it.
+        pool->idle_count_.fetch_add(1, std::memory_order_seq_cst);
+        Task * lateTask = pool->pop_task_();
+        if (lateTask) [[unlikely]] {
+          pool->idle_count_.fetch_sub(1, std::memory_order_relaxed);
+          lateTask->run();
+          continue;
+        }
         const bool woken = pool->wake_.wait_for_ms(idle_timeout_ms());
         pool->idle_count_.fetch_sub(1, std::memory_order_release);
 

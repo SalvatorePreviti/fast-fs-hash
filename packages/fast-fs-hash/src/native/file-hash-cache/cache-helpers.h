@@ -93,49 +93,38 @@ namespace fast_fs_hash {
     }
 
     const int srcSize = static_cast<int>(bodyLen);
-    const int maxCompressed = bodyLen > 0 ? LZ4_compressBound(srcSize) : 0;
-    // Capacity for the body section on disk: bigger of (LZ4 worst-case) and
-    // (body itself). We'll write only `bodyOutLen` actual bytes and truncate.
-    const size_t bodyCap = static_cast<size_t>(maxCompressed) > bodyLen ? static_cast<size_t>(maxCompressed) : bodyLen;
-    const size_t allocSize = CacheHeader::SIZE + uncSize + bodyCap;
-    OwnedBuf<> outBuf = OwnedBuf<>::alloc(allocSize > 0 ? allocSize : CacheHeader::SIZE);
-    if (!outBuf) [[unlikely]] {
-      file.close();
-      return false;
-    }
 
-    if (uncSize > 0 && uncompressed) {
-      memcpy(outBuf.ptr + CacheHeader::SIZE, uncompressed, uncSize);
-    }
-
-    BodyFormat fmt = BodyFormat::LZ4;
-    size_t bodyOutLen = 0;
-    if (bodyLen > 0) {
+    // Choose body encoding. LZ4 is only attempted when the body is large
+    // enough that it can plausibly beat plain by LZ4_WIN_MARGIN_BYTES — for
+    // smaller bodies the compressBound alloc + LZ4 call is pure waste.
+    OwnedBuf<> lz4Scratch;
+    BodyFormat fmt = BodyFormat::PLAIN;
+    size_t bodyOutLen = bodyLen;
+    const uint8_t * bodyOutPtr = body;
+    if (bodyLen > LZ4_WIN_MARGIN_BYTES) {
+      const int maxCompressed = LZ4_compressBound(srcSize);
+      lz4Scratch = OwnedBuf<>::alloc(static_cast<size_t>(maxCompressed));
+      if (!lz4Scratch) [[unlikely]] {
+        file.close();
+        return false;
+      }
       const int compressedSize = LZ4_compress_fast(
         reinterpret_cast<const char *>(body),
-        reinterpret_cast<char *>(outBuf.ptr + CacheHeader::SIZE + uncSize),
+        reinterpret_cast<char *>(lz4Scratch.ptr),
         srcSize,
         maxCompressed,
         2);
 
-      // Pick the smaller of LZ4 and plain. Threshold: LZ4 must shrink the
-      // body by at least LZ4_WIN_MARGIN_BYTES — keeps tiny wins from costing
-      // decompression CPU on every open. LZ4 failure (returns ≤ 0) falls
-      // through to plain (never an error: we have the original body).
-      const bool lz4Wins = compressedSize > 0 && static_cast<size_t>(compressedSize) + LZ4_WIN_MARGIN_BYTES < bodyLen;
-      if (lz4Wins) {
+      if (compressedSize > 0 && static_cast<size_t>(compressedSize) + LZ4_WIN_MARGIN_BYTES < bodyLen) {
         fmt = BodyFormat::LZ4;
         bodyOutLen = static_cast<size_t>(compressedSize);
+        bodyOutPtr = lz4Scratch.ptr;
       } else {
-        fmt = BodyFormat::PLAIN;
-        memcpy(outBuf.ptr + CacheHeader::SIZE + uncSize, body, bodyLen);
-        bodyOutLen = bodyLen;
+        lz4Scratch.reset();  // LZ4 lost — release before writev
       }
     }
 
     hdr->magic = CacheHeader::makeMagic(fmt);
-    memcpy(outBuf.ptr, hdr, CacheHeader::SIZE);
-
     const size_t actualFileSize = CacheHeader::SIZE + uncSize + bodyOutLen;
 
     if (!file) [[unlikely]] {
@@ -143,7 +132,21 @@ namespace fast_fs_hash {
     }
 
     file.preallocate(actualFileSize);
-    const bool ok = file.seek(0) && file.write_all(outBuf.ptr, actualFileSize) && file.truncate(actualFileSize);
+
+    // POSIX writev gathers the three segments in one syscall straight from
+    // the source pointers — no staged outBuf, no memcpys. Win32 has no
+    // kernel gather for regular files; its write_all_vec stages internally.
+    FfshIoVec iov[3];
+    int n = 0;
+    iov[n++] = {hdr, CacheHeader::SIZE};
+    if (uncSize > 0 && uncompressed) {
+      iov[n++] = {const_cast<uint8_t *>(uncompressed), uncSize};
+    }
+    if (bodyOutLen > 0) {
+      iov[n++] = {const_cast<uint8_t *>(bodyOutPtr), bodyOutLen};
+    }
+    bool ok = file.seek(0) && file.write_all_vec(iov, n);
+    ok = ok && file.truncate(actualFileSize);
 
     if (ok && statOut) {
       stampCacheFileStat(statOut, file.fd);

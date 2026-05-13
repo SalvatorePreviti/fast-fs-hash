@@ -7,9 +7,15 @@
 #  include "../file-hash-cache/file-hash-cache-format.h"
 
 #  include <sys/file.h>
+#  include <sys/uio.h>
 #  include <time.h>
 
 namespace fast_fs_hash {
+
+  /** Scatter-gather buffer descriptor — alias of POSIX `struct iovec` so we
+   *  can pass it directly to `::writev`. The Win32 build defines a struct
+   *  with the same field shape; call sites use FfshIoVec on both platforms. */
+  using FfshIoVec = ::iovec;
 
   /** Opaque file handle token — the fd itself. -1 = invalid. */
   using FfshFileHandle = int32_t;
@@ -389,6 +395,36 @@ namespace fast_fs_hash {
         const ssize_t n = ::write(this->fd, data + total, len - total);
         if (n > 0) [[likely]] {
           total += static_cast<size_t>(n);
+          continue;
+        }
+        if (n == 0 || errno != EINTR) [[likely]] {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    /** Vectored write — gather-write multiple buffers in one syscall.
+     *  Avoids an intermediate memcpy when the caller already has the bytes
+     *  laid out across separate buffers (e.g. [header][body]).
+     *
+     *  Mutates the `iov` array on partial writes (advances/shrinks entries).
+     *  Caller must pass a local/scratch copy. Retries on EINTR.
+     *  `iovcnt` must be > 0 and within IOV_MAX. */
+    inline bool write_all_vec(FfshIoVec * iov, int iovcnt) noexcept {
+      while (iovcnt > 0) {
+        const ssize_t n = ::writev(this->fd, iov, iovcnt);
+        if (n > 0) [[likely]] {
+          size_t adv = static_cast<size_t>(n);
+          while (iovcnt > 0 && adv >= iov[0].iov_len) {
+            adv -= iov[0].iov_len;
+            ++iov;
+            --iovcnt;
+          }
+          if (iovcnt > 0 && adv > 0) {
+            iov[0].iov_base = static_cast<uint8_t *>(iov[0].iov_base) + adv;
+            iov[0].iov_len -= adv;
+          }
           continue;
         }
         if (n == 0 || errno != EINTR) [[likely]] {

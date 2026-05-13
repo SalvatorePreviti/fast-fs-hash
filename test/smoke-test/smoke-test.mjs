@@ -191,12 +191,12 @@ async function main() {
     }
   }
 
-  // Version change -> stale
+  // Version change -> staleVersion (disk version != caller's version)
   {
     const staleConfig = new ffsh.FileHashCache({ cachePath, files: cacheFiles, rootPath: tmp, version: 2 });
     const session = await staleConfig.open();
     try {
-      check("version bump: status is 'stale'", session.status === "stale");
+      check("version bump: status is 'staleVersion'", session.status === "staleVersion");
     } finally {
       session[Symbol.dispose]();
     }

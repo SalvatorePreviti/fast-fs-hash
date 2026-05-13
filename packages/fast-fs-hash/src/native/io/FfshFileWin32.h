@@ -11,6 +11,17 @@
 
 namespace fast_fs_hash {
 
+  /** Scatter-gather buffer descriptor (Win32). Same field shape as POSIX
+   *  `struct iovec` so call sites can be written portably. Win32 has no
+   *  kernel gather for regular files (WriteFileGather is unbuffered-only),
+   *  so write_all_vec stages segments into a contiguous buffer when the
+   *  total fits, or falls back to sequential WriteFile per entry. */
+  struct FfshIoVec {
+    void * iov_base;
+    size_t iov_len;
+  };
+
+
   /** Opaque file handle token — the CRT fd itself. -1 = invalid. */
   using FfshFileHandle = int32_t;
   static constexpr FfshFileHandle FFSH_FILE_HANDLE_INVALID = -1;
@@ -502,6 +513,42 @@ namespace fast_fs_hash {
           return false;
         }
         total += written;
+      }
+      return true;
+    }
+
+    /** Vectored write — Win32 has no kernel gather for regular files
+     *  (WriteFileGather is unbuffered-only). To avoid N user/kernel
+     *  transitions and N NTFS lock acquisitions, stage segments into a
+     *  contiguous buffer and emit a single WriteFile. Falls back to
+     *  sequential write_all per entry if the staging alloc fails. */
+    inline bool write_all_vec(FfshIoVec * iov, int iovcnt) noexcept {
+      size_t total = 0;
+      for (int i = 0; i < iovcnt; ++i) {
+        total += iov[i].iov_len;
+      }
+      if (total == 0) [[unlikely]] {
+        return true;
+      }
+      uint8_t * scratch = static_cast<uint8_t *>(malloc(total));
+      if (scratch) [[likely]] {
+        size_t off = 0;
+        for (int i = 0; i < iovcnt; ++i) {
+          memcpy(scratch + off, iov[i].iov_base, iov[i].iov_len);
+          off += iov[i].iov_len;
+        }
+        const bool ok = this->write_all(scratch, total);
+        free(scratch);
+        return ok;
+      }
+      // OOM fallback — issue sequential writes rather than failing outright.
+      for (int i = 0; i < iovcnt; ++i) {
+        if (iov[i].iov_len == 0) {
+          continue;
+        }
+        if (!this->write_all(static_cast<const uint8_t *>(iov[i].iov_base), iov[i].iov_len)) [[unlikely]] {
+          return false;
+        }
       }
       return true;
     }
