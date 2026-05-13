@@ -236,6 +236,14 @@ namespace fast_fs_hash {
     static constexpr uint32_t STATE_SHUTDOWN = 1;
 
     alignas(64) std::atomic<bool> q_lock_{false};
+    /** May-have-work hint. Producers set true under the spinlock before
+     *  releasing it; the q_lock_ release publishes both updates. Workers
+     *  may read it relaxed to short-circuit the spinlock acquire when the
+     *  queue is empty (false-positives are harmless; false-negatives are
+     *  prevented by the producer's release-store on q_lock_). Spinlock
+     *  contention on the spin-before-sleep path dominated the parallel
+     *  stat hot path; this hint sidesteps it entirely on empty checks. */
+    std::atomic<bool> q_has_work_{false};
     Task * q_head_ = nullptr;
     Task * q_tail_ = nullptr;
 
@@ -294,10 +302,16 @@ namespace fast_fs_hash {
         this->q_head_ = task;
       }
       this->q_tail_ = task;
+      // Publish the hint under the spinlock; q_release_'s release-store
+      // makes both updates visible to anyone who synchronizes-with us.
+      this->q_has_work_.store(true, std::memory_order_relaxed);
       this->q_release_();
     }
 
-    /** Pop a task from the head of the FIFO queue. Returns nullptr if empty. */
+    /** Pop a task from the head of the FIFO queue. Returns nullptr if empty.
+     *  Always acquires the spinlock — use this on the critical re-check path
+     *  after fetch_add(idle_count_) where the lost-wakeup protocol requires
+     *  full sequencing with the producer. */
     Task * pop_task_() noexcept {
       this->q_acquire_();
       Task * task = this->q_head_;
@@ -305,10 +319,25 @@ namespace fast_fs_hash {
         this->q_head_ = task->next_;
         if (!this->q_head_) {
           this->q_tail_ = nullptr;
+          this->q_has_work_.store(false, std::memory_order_relaxed);
         }
+      } else {
+        // Defensive: hint may briefly read true after consumers race to drain;
+        // sync it under the lock.
+        this->q_has_work_.store(false, std::memory_order_relaxed);
       }
       this->q_release_();
       return task;
+    }
+
+    /** Hint-checked pop — skips the spinlock acquire when the queue is
+     *  known-empty. Safe for non-critical paths (main worker loop top, spin
+     *  loop, drain). Do NOT use on the lost-wakeup re-check path. */
+    FSH_FORCE_INLINE Task * try_pop_task_() noexcept {
+      if (!this->q_has_work_.load(std::memory_order_relaxed)) [[likely]] {
+        return nullptr;
+      }
+      return this->pop_task_();
     }
 
     /** Drain and execute all remaining tasks in the queue. */
@@ -488,7 +517,7 @@ namespace fast_fs_hash {
       uint32_t seen_trim_gen = pool->trim_gen_.load(std::memory_order_relaxed);
 
       for (;;) {
-        Task * task = pool->pop_task_();
+        Task * task = pool->try_pop_task_();
         if (task) [[likely]] {
           task->run();
           continue;
@@ -501,7 +530,7 @@ namespace fast_fs_hash {
 
         for (int spin = 0; spin < SPIN_BEFORE_WAIT; ++spin) {
           cpu_pause();
-          task = pool->pop_task_();
+          task = pool->try_pop_task_();
           if (task) {
             break;
           }
