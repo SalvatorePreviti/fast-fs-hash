@@ -117,8 +117,28 @@ namespace fast_fs_hash {
   static_assert(offsetof(CacheEntry, size) == 24);
   static_assert(offsetof(CacheEntry, contentHash) == 32);
 
+  /**
+   * Body encoding flag, stored in the high byte of `CacheHeader::magic`.
+   *
+   * Format ID is the *low* 3 bytes of magic: 'F','S','H'. The high byte
+   * encodes the body encoding so a reader can tell at a glance whether the
+   * body section is LZ4-compressed or stored plain. Future encodings (zstd,
+   * etc.) just append new values — also bump `CacheHeader::MAX_BODY_FORMAT`.
+   *
+   * Backward compatibility: pre-v0.0.3 files always have magic byte 3 = 0,
+   * which maps to LZ4 — the original format. Old files continue to read
+   * cleanly under the new branch.
+   *
+   * Keep in sync with `BodyFormat` in
+   * `packages/fast-fs-hash/src/file-hash-cache-format.ts`.
+   */
+  enum class BodyFormat : uint8_t {
+    LZ4 = 0,    // body is LZ4-frame compressed (default; matches pre-v0.0.3 layout)
+    PLAIN = 1,  // body is stored uncompressed (writer chose this when LZ4 didn't help)
+  };
+
   struct CacheHeader {
-    uint32_t magic;  //  0: 'F','S','H',0x00 = 0x00485346
+    uint32_t magic;  //  0: 'F','S','H',<BodyFormat> = 0x?? 'H' 'S' 'F' LE
     uint32_t version;  //  4: user cache version
     uint32_t fileCount;  //  8: number of entries
     uint32_t compressedPayloadItemCount;  // 12: number of compressed payload items
@@ -133,10 +153,29 @@ namespace fast_fs_hash {
     uint32_t uncompressedPayloadsLen;  // 76: total byte length of uncompressed payloads
 
     static constexpr size_t SIZE = 80;
-    static constexpr uint32_t MAGIC = 0x00485346u;
+
+    /** Low 3 bytes of magic — the format ID. Body encoding lives in byte 3. */
+    static constexpr uint32_t MAGIC_ID_MASK = 0x00FFFFFFu;
+    static constexpr uint32_t MAGIC_ID = 0x00485346u;  // 'F','S','H' (low 3 bytes; high byte = BodyFormat)
+
+    /** Highest BodyFormat value the current build recognizes. Tied to the
+     *  enum below — adding a new BodyFormat that isn't reflected here will
+     *  fail the static_assert at the end of this file. */
+    static constexpr uint8_t MAX_BODY_FORMAT = static_cast<uint8_t>(BodyFormat::PLAIN);
+
+    /** Build a magic word combining the format ID and a body encoding. */
+    static constexpr uint32_t makeMagic(BodyFormat fmt) noexcept {
+      return MAGIC_ID | (static_cast<uint32_t>(fmt) << 24);
+    }
+
+    /** Extract the body encoding from the magic. Returns the raw byte;
+     *  caller compares against BodyFormat values. */
+    FSH_FORCE_INLINE uint8_t bodyFormatByte() const noexcept {
+      return static_cast<uint8_t>(this->magic >> 24);
+    }
 
     /** Byte length of the uncompressed payloads section (dir + bytes).
-     *  Sits between the header and the LZ4 body on disk and in memory. */
+     *  Sits between the header and the body section on disk and in memory. */
     FSH_FORCE_INLINE size_t uncompressedSectionSize() const noexcept {
       return static_cast<size_t>(this->uncompressedPayloadItemCount) * 4 + this->uncompressedPayloadsLen;
     }
@@ -153,9 +192,13 @@ namespace fast_fs_hash {
       return SIZE + this->uncompressedSectionSize() + this->bodySize();
     }
 
-    /** Validate header fields are within safe limits. */
+    /** Validate header fields are within safe limits. Accepts any known
+     *  BodyFormat; unknown formats are rejected (future-compat: a v0.0.3
+     *  reader sees a v0.0.4 file with BodyFormat::ZSTD and treats it as
+     *  corrupt/missing → caller rewrites in the current format). */
     FSH_FORCE_INLINE bool validateLimits() const noexcept {
-      return this->magic == MAGIC && this->fileCount <= CACHE_MAX_FILE_COUNT && this->pathsLen <= CACHE_MAX_PATHS_LEN &&
+      return (this->magic & MAGIC_ID_MASK) == MAGIC_ID && this->bodyFormatByte() <= MAX_BODY_FORMAT &&
+        this->fileCount <= CACHE_MAX_FILE_COUNT && this->pathsLen <= CACHE_MAX_PATHS_LEN &&
         this->compressedPayloadItemCount <= CACHE_MAX_FILE_COUNT &&
         this->compressedPayloadsLen <= CACHE_MAX_COMPRESSED_PAYLOADS &&
         this->uncompressedPayloadItemCount <= CACHE_MAX_FILE_COUNT &&
@@ -381,6 +424,12 @@ namespace fast_fs_hash {
     }
     return true;
   }
+
+  // Drift guard: bump MAX_BODY_FORMAT whenever you add a new BodyFormat value.
+  // (Update the TS enum + MAX_BODY_FORMAT_BYTE alongside.)
+  static_assert(
+    CacheHeader::MAX_BODY_FORMAT == static_cast<uint8_t>(BodyFormat::PLAIN),
+    "MAX_BODY_FORMAT must equal the highest declared BodyFormat value");
 
 }  // namespace fast_fs_hash
 

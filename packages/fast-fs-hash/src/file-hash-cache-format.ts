@@ -35,8 +35,28 @@
  * @internal
  */
 
-/** Binary format magic: bytes 'F','S','H',0x00. */
-export const MAGIC = 0x00485346;
+/** Binary format magic ID — low 3 bytes are 'F','S','H'. The high byte is
+ *  the body encoding (see {@link BodyFormat}). Mask the on-disk u32 with
+ *  {@link MAGIC_ID_MASK} before comparing identity. */
+export const MAGIC_ID = 0x00485346;
+
+/** Mask for extracting the format ID (low 3 bytes) from the on-disk magic. */
+export const MAGIC_ID_MASK = 0x00ffffff;
+
+/** @deprecated Use {@link MAGIC_ID} with {@link MAGIC_ID_MASK} — the on-disk
+ *  magic now carries a {@link BodyFormat} byte in its high 8 bits, so a raw
+ *  equality compare against this value misses non-LZ4 bodies. */
+export const MAGIC = MAGIC_ID;
+
+/** Body encoding stored in the high byte of the magic word.
+ *  Keep in sync with `BodyFormat` in
+ *  `packages/fast-fs-hash/src/native/file-hash-cache/file-hash-cache-format.h`. */
+export enum BodyFormat {
+  /** LZ4-frame compressed body (default; matches pre-v0.0.3 layout). */
+  LZ4 = 0,
+  /** Body stored uncompressed (writer chose this when LZ4 didn't help). */
+  PLAIN = 1,
+}
 
 /** Fixed on-disk header size in bytes. */
 export const HEADER_SIZE = 80;

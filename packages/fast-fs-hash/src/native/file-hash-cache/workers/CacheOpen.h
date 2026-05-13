@@ -209,7 +209,9 @@ namespace fast_fs_hash {
     /** Stamp final header fields + store results for OnOK. */
     void finalize_(CacheStatus st) noexcept {
       CacheHeader * hdr = headerOf(this->dataBuf_.ptr);
-      hdr->magic = CacheHeader::MAGIC;
+      // In-memory placeholder; the writer chooses the actual on-disk
+      // BodyFormat when it serializes.
+      hdr->magic = CacheHeader::makeMagic(BodyFormat::LZ4);
       hdr->version = this->version_;
       if (this->hasFingerprint_) {
         hdr->fingerprint = this->fingerprint_;
@@ -453,8 +455,14 @@ namespace fast_fs_hash {
       if (diskSize < diskPrefix) [[unlikely]] {
         return CacheStatus::MISSING;
       }
-      const size_t compressedSize = diskSize - diskPrefix;
-      if (uncompBodySize > 0 && compressedSize == 0) [[unlikely]] {
+      const size_t onDiskBodyLen = diskSize - diskPrefix;
+      if (uncompBodySize > 0 && onDiskBodyLen == 0) [[unlikely]] {
+        return CacheStatus::MISSING;
+      }
+      const BodyFormat bodyFormat = static_cast<BodyFormat>(peekHdr.bodyFormatByte());
+      if (bodyFormat == BodyFormat::PLAIN && onDiskBodyLen != uncompBodySize) [[unlikely]] {
+        // PLAIN body has no compression — disk size must match the logical
+        // body length exactly. Mismatch ⇒ corruption.
         return CacheStatus::MISSING;
       }
 
@@ -470,16 +478,19 @@ namespace fast_fs_hash {
         staleStatus = CacheStatus::STALE;
       }
 
-      // Compressed body lives at the tail of the alloc; LZ4 decompresses
-      // forward into the body region in-place. Safety: the body capacity
-      // must be >= max(compressedSize, uncompBodySize) + margin(compressedSize)
-      // so the source's tail position does not alias bytes the decompressor
-      // hasn't read yet. Margin uses compressedSize (true LZ4 requirement);
-      // the public macro uses decompressedSize as a conservative bound.
+      // Allocation size depends on body encoding:
+      //   PLAIN — body fits 1:1 into final position; just bodyLen.
+      //   LZ4   — needs extra tail room so the compressed source can sit at
+      //           the end of the alloc while in-place decompression writes
+      //           forward into the body region. Capacity required is
+      //           diskPrefix + max(onDiskBodyLen, uncompBodySize) +
+      //           LZ4_DECOMPRESS_INPLACE_MARGIN(onDiskBodyLen) — handles
+      //           the incompressible-body edge where the LZ4 frame is
+      //           larger than its expanded contents.
       size_t allocLen = bodyLen;
-      if (uncompBodySize > 0) {
-        const size_t maxBody = compressedSize > uncompBodySize ? compressedSize : uncompBodySize;
-        const size_t bodyCap = maxBody + LZ4_DECOMPRESS_INPLACE_MARGIN(compressedSize);
+      if (uncompBodySize > 0 && bodyFormat == BodyFormat::LZ4) {
+        const size_t maxBody = onDiskBodyLen > uncompBodySize ? onDiskBodyLen : uncompBodySize;
+        const size_t bodyCap = maxBody + LZ4_DECOMPRESS_INPLACE_MARGIN(onDiskBodyLen);
         const size_t needed = diskPrefix + bodyCap;
         if (needed > allocLen) {
           allocLen = needed;
@@ -503,20 +514,31 @@ namespace fast_fs_hash {
       }
 
       if (uncompBodySize > 0) {
-        uint8_t * const compDst = oldBuf.ptr + allocLen - compressedSize;
-        const int64_t cn = this->lockedFile_.pread_at_most(compDst, compressedSize, diskPrefix);
-        if (cn < 0 || static_cast<size_t>(cn) < compressedSize) [[unlikely]] {
-          oldBuf.reset();
-          return CacheStatus::MISSING;
-        }
-        const int decompressed = LZ4_decompress_safe(
-          reinterpret_cast<const char *>(compDst),
-          reinterpret_cast<char *>(oldBuf.ptr + diskPrefix),
-          static_cast<int>(compressedSize),
-          static_cast<int>(uncompBodySize));
-        if (decompressed < 0 || static_cast<size_t>(decompressed) != uncompBodySize) [[unlikely]] {
-          oldBuf.reset();
-          return CacheStatus::MISSING;
+        if (bodyFormat == BodyFormat::PLAIN) {
+          // No decompression. One pread directly into final body position.
+          const int64_t bn =
+            this->lockedFile_.pread_at_most(oldBuf.ptr + diskPrefix, onDiskBodyLen, diskPrefix);
+          if (bn < 0 || static_cast<size_t>(bn) < onDiskBodyLen) [[unlikely]] {
+            oldBuf.reset();
+            return CacheStatus::MISSING;
+          }
+        } else {
+          // LZ4 in-place: read compressed body at the tail, decompress forward.
+          uint8_t * const compDst = oldBuf.ptr + allocLen - onDiskBodyLen;
+          const int64_t cn = this->lockedFile_.pread_at_most(compDst, onDiskBodyLen, diskPrefix);
+          if (cn < 0 || static_cast<size_t>(cn) < onDiskBodyLen) [[unlikely]] {
+            oldBuf.reset();
+            return CacheStatus::MISSING;
+          }
+          const int decompressed = LZ4_decompress_safe(
+            reinterpret_cast<const char *>(compDst),
+            reinterpret_cast<char *>(oldBuf.ptr + diskPrefix),
+            static_cast<int>(onDiskBodyLen),
+            static_cast<int>(uncompBodySize));
+          if (decompressed < 0 || static_cast<size_t>(decompressed) != uncompBodySize) [[unlikely]] {
+            oldBuf.reset();
+            return CacheStatus::MISSING;
+          }
         }
       }
 

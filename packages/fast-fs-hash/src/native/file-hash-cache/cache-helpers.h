@@ -40,6 +40,11 @@ namespace fast_fs_hash {
    *  and as the expand ceiling for CacheOpen when it detects files needing hash. */
   static constexpr int MAX_CACHE_IO_THREADS = 8;
 
+  /** Minimum bytes LZ4 must shrink the body by for the writer to prefer it
+   *  over the PLAIN encoding. Below this threshold the decompression CPU
+   *  cost on every open isn't worth the few-byte disk savings. */
+  static constexpr size_t LZ4_WIN_MARGIN_BYTES = 16;
+
   /** Compute batch size for work-stealing and clamp threadCount to useful range. */
   inline size_t computeBatchSize(int & threadCount, size_t fileCount) {
     const size_t batch = std::clamp(fileCount / static_cast<size_t>(threadCount * 8), size_t{4}, size_t{64});
@@ -56,16 +61,20 @@ namespace fast_fs_hash {
   }
 
   /**
-   * Write [header][uncompressed section][LZ4(body)] to a locked fd.
+   * Write [header][uncompressed section][body] to a locked fd.
    *
-   * Sets header magic, compresses body, writes header + uncompressed section +
-   * compressed body, truncates. Closes the fd when done (or on error).
-   * On success, writes cache file stat hash to statOut[0..1].
+   * The body is tried with LZ4. If LZ4 fails to shrink it (incompressible
+   * payload, very small body), the body is written plain. Either way the
+   * chosen encoding is stamped into the magic byte (see BodyFormat) so the
+   * reader knows whether to decompress.
    *
-   * @param hdr          Header (magic + reserved updated in place).
+   * Closes the fd when done (or on error). On success, writes cache file
+   * stat hash to statOut[0..1].
+   *
+   * @param hdr          Header (magic stamped here in place).
    * @param uncompressed Pointer to the uncompressed payloads section (may be null if uncSize==0).
    * @param uncSize      Byte length of the uncompressed section (dir + payload bytes).
-   * @param body         Pointer to the body to LZ4-compress (may be empty).
+   * @param body         Pointer to the body to encode (may be empty).
    * @param bodyLen      Byte length of the body.
    * @param file         Locked fd — closed by this function.
    * @param statOut      Output: cache file stat hash [stat0, stat1].
@@ -83,38 +92,51 @@ namespace fast_fs_hash {
       return false;
     }
 
-    hdr->magic = CacheHeader::MAGIC;
-
     const int srcSize = static_cast<int>(bodyLen);
     const int maxCompressed = bodyLen > 0 ? LZ4_compressBound(srcSize) : 0;
-    const size_t totalFileSize = CacheHeader::SIZE + uncSize + static_cast<size_t>(maxCompressed);
-    OwnedBuf<> outBuf = OwnedBuf<>::alloc(totalFileSize > 0 ? totalFileSize : CacheHeader::SIZE);
+    // Capacity for the body section on disk: bigger of (LZ4 worst-case) and
+    // (body itself). We'll write only `bodyOutLen` actual bytes and truncate.
+    const size_t bodyCap = static_cast<size_t>(maxCompressed) > bodyLen ? static_cast<size_t>(maxCompressed) : bodyLen;
+    const size_t allocSize = CacheHeader::SIZE + uncSize + bodyCap;
+    OwnedBuf<> outBuf = OwnedBuf<>::alloc(allocSize > 0 ? allocSize : CacheHeader::SIZE);
     if (!outBuf) [[unlikely]] {
       file.close();
       return false;
     }
 
-    memcpy(outBuf.ptr, hdr, CacheHeader::SIZE);
     if (uncSize > 0 && uncompressed) {
       memcpy(outBuf.ptr + CacheHeader::SIZE, uncompressed, uncSize);
     }
 
-    int compressedSize = 0;
+    BodyFormat fmt = BodyFormat::LZ4;
+    size_t bodyOutLen = 0;
     if (bodyLen > 0) {
-      compressedSize = LZ4_compress_fast(
+      const int compressedSize = LZ4_compress_fast(
         reinterpret_cast<const char *>(body),
         reinterpret_cast<char *>(outBuf.ptr + CacheHeader::SIZE + uncSize),
         srcSize,
         maxCompressed,
         2);
 
-      if (compressedSize <= 0) [[unlikely]] {
-        file.close();
-        return false;
+      // Pick the smaller of LZ4 and plain. Threshold: LZ4 must shrink the
+      // body by at least LZ4_WIN_MARGIN_BYTES — keeps tiny wins from costing
+      // decompression CPU on every open. LZ4 failure (returns ≤ 0) falls
+      // through to plain (never an error: we have the original body).
+      const bool lz4Wins = compressedSize > 0 && static_cast<size_t>(compressedSize) + LZ4_WIN_MARGIN_BYTES < bodyLen;
+      if (lz4Wins) {
+        fmt = BodyFormat::LZ4;
+        bodyOutLen = static_cast<size_t>(compressedSize);
+      } else {
+        fmt = BodyFormat::PLAIN;
+        memcpy(outBuf.ptr + CacheHeader::SIZE + uncSize, body, bodyLen);
+        bodyOutLen = bodyLen;
       }
     }
 
-    const size_t actualFileSize = CacheHeader::SIZE + uncSize + static_cast<size_t>(compressedSize);
+    hdr->magic = CacheHeader::makeMagic(fmt);
+    memcpy(outBuf.ptr, hdr, CacheHeader::SIZE);
+
+    const size_t actualFileSize = CacheHeader::SIZE + uncSize + bodyOutLen;
 
     if (!file) [[unlikely]] {
       return false;

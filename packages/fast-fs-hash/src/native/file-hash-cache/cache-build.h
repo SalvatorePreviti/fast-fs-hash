@@ -102,7 +102,7 @@ namespace fast_fs_hash {
         return {};
       }
       auto * hdr = headerOf(buf.ptr);
-      hdr->magic = CacheHeader::MAGIC;
+      hdr->magic = CacheHeader::makeMagic(BodyFormat::LZ4);
       hdr->uncompressedPayloadItemCount = uncompressedItemCount;
       hdr->uncompressedPayloadsLen = uncompressedPayloadsLen;
       return buf;
@@ -151,7 +151,7 @@ namespace fast_fs_hash {
       pe[i] = cumulativeOffset;
     }
 
-    hdr->magic = CacheHeader::MAGIC;
+    hdr->magic = CacheHeader::makeMagic(BodyFormat::LZ4);
     hdr->fileCount = fileCount;
     hdr->pathsLen = static_cast<uint32_t>(totalPathBytes);
     hdr->compressedPayloadItemCount = compressedItemCount;
