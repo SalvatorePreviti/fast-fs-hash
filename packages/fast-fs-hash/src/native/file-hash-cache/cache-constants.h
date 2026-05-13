@@ -37,20 +37,28 @@ namespace fast_fs_hash {
 
   static constexpr size_t MIN_DIR_FD_FILES = 4;
 
-  /** Minimum files per directory before the macOS stat hot path prefers
-   *  getattrlistbulk over per-file fstatat. Below this threshold the
-   *  open+bulk+close overhead exceeds the savings. Empirically the crossover
-   *  is around N=16 on macOS arm64; above N=32 bulk wins by 1.3-2.9×.
-   *  Tunable via FAST_FS_HASH_BULK_STAT_MIN env var (read once at startup). */
-  static constexpr size_t STAT_BULK_THRESHOLD_DARWIN_DEFAULT = 16;
+  /** Minimum files in a SINGLE DIRECTORY before the macOS stat hot path
+   *  promotes that directory to a getattrlistbulk job. Evaluated per
+   *  directory — small dirs always stay on the per-file fstatat path even
+   *  if other dirs cross the threshold.
+   *
+   *  Set high enough that bulk wins NET of the ~1 µs dir-bloat probe cost
+   *  (see STAT_BULK_MAX_DIR_BLOAT). Bulk speedup vs N×fstatat on macOS
+   *  arm64: ~0.95× at N=16, ~1.3× at N=32, ~1.7× at N=64. N=24 lands in
+   *  the early-positive zone where bulk modestly beats fstatat even after
+   *  paying the probe; lower thresholds risk net regression on borderline
+   *  dirs. Tunable via FAST_FS_HASH_BULK_STAT_MIN env var. */
+  static constexpr size_t STAT_BULK_PER_DIR_MIN = 20;
 
-  /** Minimum BATCH size before the Linux stat hot path prefers io_uring
-   *  batched statx over per-file fstatat. io_uring doesn't need files to
-   *  share a directory — its win comes from amortizing syscall overhead
-   *  across many statx submissions. Crossover is small because submission
-   *  cost is per-batch, not per-file. Once Phase 1 lands the gate is
-   *  runtime support detection (io_uring_setup), not an env knob. */
-  static constexpr size_t STAT_URING_THRESHOLD_DEFAULT = 8;
+  /** Maximum allowed ratio of total directory entries to tracked entries
+   *  before bulk-stat is rejected for a given directory. If a dir holds
+   *  10× more siblings than we care about, the bulk enumeration returns
+   *  mostly untracked names (we'd burn CPU on lookups that never match)
+   *  and per-file fstatat wins. 8× tracks empirical micro-bench numbers:
+   *  bulk's per-entry cost is ~500 ns regardless of match; lower_bound
+   *  over our small sorted vec is ~10 ns. At 8× untracked the wasted
+   *  per-entry work approaches the savings vs fstatat. */
+  static constexpr size_t STAT_BULK_MAX_DIR_BLOAT = 8;
 
 }  // namespace fast_fs_hash
 

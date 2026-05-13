@@ -493,26 +493,68 @@ namespace fast_fs_hash {
 
 #  ifdef __APPLE__
     /**
+     * Cheap directory-entry-count probe (one syscall, ~1 µs).
+     *
+     * Used to skip bulk-stat for directories whose total entry count vastly
+     * exceeds our tracked subset (the bulk syscall returns ALL siblings; if
+     * 99% of them are untracked, the per-file fstatat path wins).
+     *
+     * Returns the exact entry count (regular files + subdirs + symlinks +
+     * dotfiles), or `SIZE_MAX` if the probe failed (caller falls back to
+     * bulk-stat anyway when this happens).
+     */
+    static FSH_NO_INLINE size_t dir_entry_count(const char * dir_path) noexcept {
+      struct attrlist attrs{};
+      attrs.bitmapcount = ATTR_BIT_MAP_COUNT;
+      attrs.dirattr = ATTR_DIR_ENTRYCOUNT;
+      struct __attribute__((packed)) {
+        uint32_t length;
+        uint32_t entrycount;
+      } reply;
+      if (::getattrlist(dir_path, &attrs, &reply, sizeof(reply), 0) != 0) [[unlikely]] {
+        return SIZE_MAX;
+      }
+      return static_cast<size_t>(reply.entrycount);
+    }
+
+    /** Minimum acceptable buffer size for `bulk_stat_dir`. 4 KiB is one
+     *  filesystem block — below that, getattrlistbulk can fail to fit even
+     *  one record on long-name directories. Callers must pass at least
+     *  this much; the 32 KiB the hot path actually uses is well over. */
+    static constexpr size_t BULK_BUF_MIN_SIZE = 4 * 1024;
+
+    /**
      * Bulk-stat a directory in O(1) syscalls regardless of entry count.
      *
-     * Opens `dir_path` (or uses `dir_fd` if >= 0), then loops getattrlistbulk
-     * until exhausted. For every regular file returned, invokes
+     * Opens `dir_path`, then loops getattrlistbulk until exhausted (or until
+     * `maxRecords` records have been DECODED — counts all object types, not
+     * just VREG, since the per-record decode cost is what we're bounding).
+     * For every regular file decoded, invokes
      *   cb(name_ptr, name_len, ino, mtime_ns, ctime_ns, size)
      * The caller matches names against its expected set.
      *
+     * `buf_ptr`/`buf_size` is the caller-owned iteration buffer. Must be
+     * at least `BULK_BUF_MIN_SIZE`; 32 KiB is the sweet spot (~250 small
+     * records per syscall). No heap allocations performed — the pool worker
+     * passes a slice of its hash readBuf so this path is fully stack-resident.
+     *
      * Returns:
-     *   >= 0: total regular-file entries reported (success).
-     *     -1: failure (could not open dir, or first getattrlistbulk errored).
-     *         Caller should fall back to per-file fstatat.
+     *   >= 0: total regular-file callbacks invoked (may be partial if the
+     *         record cap fired — caller treats this same as a partial-match
+     *         success and runs the fstatat fallback for unhandled entries).
+     *     -1: failure (could not open dir, or getattrlistbulk errored before
+     *         any records). Caller falls back to per-file fstatat.
      *
      * Non-regular entries (subdirs, symlinks, etc.) are skipped silently —
      * they won't satisfy our use case (tracked-file stats) anyway.
-     *
-     * `dir_fd_owned` set true if this helper opened the fd (caller need not
-     * close). When false, caller retains ownership.
      */
     template <typename Cb>
-    static FSH_NO_INLINE int bulk_stat_dir(const char * dir_path, Cb && cb) noexcept {
+    static FSH_NO_INLINE int bulk_stat_dir(
+      const char * dir_path, void * buf_ptr, size_t buf_size,
+      size_t maxRecords, Cb && cb) noexcept {
+      if (!buf_ptr || buf_size < BULK_BUF_MIN_SIZE) [[unlikely]] {
+        return -1;
+      }
       const int dir_fd = ::open(dir_path, O_RDONLY | O_CLOEXEC | O_DIRECTORY);
       if (dir_fd < 0) [[unlikely]] {
         return -1;
@@ -524,14 +566,12 @@ namespace fast_fs_hash {
         | ATTR_CMN_FILEID | ATTR_CMN_MODTIME | ATTR_CMN_CHGTIME;
       attrs.fileattr = ATTR_FILE_DATALENGTH;
 
-      // Stack buffer sized for ~250 small entries per syscall. Larger and we'd
-      // overflow the pool thread's stack budget (THREAD_STACK_SIZE = 256 KiB
-      // and PathResolver takes ~4 KiB). 32 KiB leaves plenty of slack.
-      alignas(8) char buf[32 * 1024];
+      char * const buf = static_cast<char *>(buf_ptr);
       int total = 0;
+      size_t recordsSeen = 0;
 
-      for (;;) {
-        const int n = ::getattrlistbulk(dir_fd, &attrs, buf, sizeof(buf), 0);
+      while (recordsSeen < maxRecords) {
+        const int n = ::getattrlistbulk(dir_fd, &attrs, buf, buf_size, 0);
         if (n < 0) [[unlikely]] {
           if (errno == EINTR) {
             continue;
@@ -544,7 +584,8 @@ namespace fast_fs_hash {
         }
 
         char * cursor = buf;
-        for (int i = 0; i < n; ++i) {
+        for (int i = 0; i < n && recordsSeen < maxRecords; ++i) {
+          ++recordsSeen;
           char * record = cursor;
           const uint32_t rec_len = *reinterpret_cast<uint32_t *>(record);
           cursor += rec_len;

@@ -11,7 +11,6 @@
 #include <algorithm>
 #include <string_view>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 namespace fast_fs_hash {
@@ -193,6 +192,16 @@ namespace fast_fs_hash {
       std::string dirPath;          // absolute path (rootPath + relative dir)
       std::vector<Entry> entries;   // sorted by Entry::name (memcmp ascending)
     };
+
+    /** Per-entry Phase-A slot for processBulkDir_. ino == 0 marks unset;
+     *  macOS getattrlistbulk on APFS/HFS+ never returns a regular-file
+     *  VREG with file_id 0 (root is 2, userland files are larger). */
+    struct BulkStat {
+      uint64_t ino;
+      uint64_t mtime_ns;
+      uint64_t ctime_ns;
+      uint64_t size;
+    };
     std::vector<BulkDirJob> dirJobs_;
     /** Entry indices NOT covered by dirJobs_ — walked by the per-entry path.
      *  When dirJobs_ is empty this is just [0..fileCount_) for compat. */
@@ -338,19 +347,24 @@ namespace fast_fs_hash {
         this->finish_(CacheStatus::UP_TO_DATE);
         return;
       } else if (this->hasDirtyHint_ && this->dirtyPaths_ && this->dirtyCount_ > 0) {
-        std::unordered_set<std::string_view> dirtySet;
-        dirtySet.reserve(this->dirtyCount_);
+        // Sorted-vector membership test: one contiguous allocation instead
+        // of std::unordered_set's per-node mallocs. lower_bound binary search
+        // is comparable to (or faster than) the hashmap probe at the n we
+        // see in practice (tens to low thousands of dirty paths).
+        std::vector<std::string_view> dirtyList;
+        dirtyList.reserve(this->dirtyCount_);
         const uint8_t * dp = this->dirtyPaths_;
         const uint8_t * dpEnd = dp + this->dirtyLen_;
         const uint8_t * segStart = dp;
         for (const uint8_t * p = dp; p <= dpEnd; ++p) {
           if (p == dpEnd || *p == 0) {
             if (p > segStart) {
-              dirtySet.emplace(reinterpret_cast<const char *>(segStart), p - segStart);
+              dirtyList.emplace_back(reinterpret_cast<const char *>(segStart), p - segStart);
             }
             segStart = p + 1;
           }
         }
+        std::sort(dirtyList.begin(), dirtyList.end());
 
         const uint32_t * pathEnds = pathEndsOf(buf, fc, compCount, uncCount, uncLen);
         const uint8_t * packedPaths = pathsOf(buf, fc, compCount, uncCount, uncLen);
@@ -360,7 +374,8 @@ namespace fast_fs_hash {
           const uint32_t pLen = pEnd - prevEnd;
           std::string_view path(reinterpret_cast<const char *>(packedPaths + prevEnd), pLen);
           prevEnd = pEnd;
-          entries[i].ino |= dirtySet.count(path) > 0 ? CACHE_S_HAS_OLD : CACHE_S_DONE;
+          const bool isDirty = std::binary_search(dirtyList.begin(), dirtyList.end(), path);
+          entries[i].ino |= isDirty ? CACHE_S_HAS_OLD : CACHE_S_DONE;
         }
       } else {
         for (uint32_t i = 0; i < fc; ++i) {
@@ -374,9 +389,9 @@ namespace fast_fs_hash {
       this->runPackedPathsSize_ = hdr->pathsLen;
 
       // Build work units. By default each entry is a per-file job. On
-      // platforms with a bulk-stat API (macOS getattrlistbulk; Linux io_uring),
-      // entries whose parent directory holds many siblings are grouped into
-      // a BulkDirJob so workers can stat them in one syscall per dir.
+      // macOS, entries whose parent directory holds many siblings are
+      // grouped into a BulkDirJob so workers can stat the whole dir in one
+      // getattrlistbulk syscall.
       this->buildWorkUnits_();
 
       int threadCount = ThreadPool::compute_threads(0, fc, MAX_OPEN_THREADS, 64);
@@ -587,15 +602,15 @@ namespace fast_fs_hash {
       return staleStatus;
     }
 
-    FSH_NO_INLINE static bool statMatchHashFile_(
-      PathResolver & resolver, CacheEntry & entry, const Hash128 & oldContentHash) {
-      alignas(64) unsigned char readBuf[READ_BUFFER_SIZE];
+    FSH_FORCE_INLINE static bool statMatchHashFile_(
+      PathResolver & resolver, CacheEntry & entry, const Hash128 & oldContentHash,
+      unsigned char * readBuf) {
       resolver.hash_file(entry.contentHash, readBuf, READ_BUFFER_SIZE);
       return entry.contentHash == oldContentHash;
     }
 
-    /** Threshold for promoting a macOS directory to a BulkDirJob via
-     *  getattrlistbulk. Env-tunable via FAST_FS_HASH_BULK_STAT_MIN. */
+    /** Per-directory threshold for promoting a directory to a BulkDirJob
+     *  via getattrlistbulk. Env-tunable via FAST_FS_HASH_BULK_STAT_MIN. */
     static FSH_FORCE_INLINE size_t statBulkThreshold_() noexcept {
       static const size_t v = [] {
         const char * env = std::getenv("FAST_FS_HASH_BULK_STAT_MIN");
@@ -605,7 +620,7 @@ namespace fast_fs_hash {
             return static_cast<size_t>(val);
           }
         }
-        return STAT_BULK_THRESHOLD_DARWIN_DEFAULT;
+        return STAT_BULK_PER_DIR_MIN;
       }();
       return v;
     }
@@ -628,6 +643,11 @@ namespace fast_fs_hash {
      *  Inputs: runPathEnds_, runPackedPaths_, runEntries_, fileCount_.
      *  Outputs: this->dirJobs_, this->entryQueueIdx_.
      *
+     *  Decision is PER directory: each bucket independently crosses or
+     *  doesn't cross STAT_BULK_PER_DIR_MIN. A small project with one
+     *  big subdirectory and many scattered files still benefits — the big
+     *  directory becomes a bulk job; the scattered files stay on fstatat.
+     *
      *  On non-macOS (and when no directory holds enough files), the result is
      *  empty dirJobs_ and entryQueueIdx_ = [0..fc), preserving today's
      *  per-entry work-stealing. */
@@ -638,28 +658,25 @@ namespace fast_fs_hash {
       this->entryQueueIdx_.reserve(fc);
 
 #  ifdef __APPLE__
-      const size_t threshold = statBulkThreshold_();
-      if (fc < threshold || this->cancel_.is_fired()) [[unlikely]] {
-        // Below the threshold the grouping itself is more work than it
-        // saves. Skip grouping entirely; everything goes to per-entry.
+      if (this->cancel_.is_fired()) [[unlikely]] {
         for (uint32_t i = 0; i < fc; ++i) {
           this->entryQueueIdx_.push_back(i);
         }
         return;
       }
+      const size_t threshold = statBulkThreshold_();
 
-      // Single pass over the path list: for each entry, compute the parent
-      // prefix slice and basename slice, then append to a per-prefix bucket
-      // keyed by string_view into runPackedPaths_. After the scan, large
-      // buckets become BulkDirJobs (sorted by name for lower_bound lookups
-      // in the bulk worker); small buckets get expanded into entryQueueIdx_.
+      // Per-prefix bucket. unordered_map wins over sort-then-scan here in
+      // the typical case: many files share few parent dirs, so hashmap is
+      // O(fc) with cheap string_view hashes vs sort's O(fc log fc) with a
+      // memcmp comparator that doesn't get amortized away.
       struct Bucket {
         const uint8_t * prefixPtr = nullptr;
         size_t prefixLen = 0;
         std::vector<BulkDirJob::Entry> entries;
       };
       std::unordered_map<std::string_view, Bucket> buckets;
-      buckets.reserve(fc / 4);  // rough guess; one bucket per parent directory
+      buckets.reserve(fc / 4);
 
       uint32_t prevEnd = 0;
       for (uint32_t i = 0; i < fc; ++i) {
@@ -690,24 +707,38 @@ namespace fast_fs_hash {
 
       for (auto & kv : buckets) {
         Bucket & b = kv.second;
-        if (b.entries.size() < threshold) {
+        const size_t bucketSize = b.entries.size();
+        if (bucketSize < threshold) {
           for (const auto & e : b.entries) {
             this->entryQueueIdx_.push_back(e.idx);
           }
           continue;
         }
-        // Promote: build the absolute directory path and sort the entries
-        // by basename so the bulk-stat callback can locate matches via
-        // std::lower_bound (no per-job hash-map alloc).
-        BulkDirJob job;
-        job.dirPath.reserve(rootLen + 1 + b.prefixLen);
-        job.dirPath.assign(this->rootPath_);
+        // Build the absolute directory path for the bloat probe (and, if we
+        // proceed, for the BulkDirJob itself).
+        std::string dirPath;
+        dirPath.reserve(rootLen + 1 + b.prefixLen);
+        dirPath.assign(this->rootPath_);
         if (b.prefixLen > 0) {
           if (!rootHasTrailingSlash) {
-            job.dirPath.push_back('/');
+            dirPath.push_back('/');
           }
-          job.dirPath.append(reinterpret_cast<const char *>(b.prefixPtr), b.prefixLen);
+          dirPath.append(reinterpret_cast<const char *>(b.prefixPtr), b.prefixLen);
         }
+
+        // Dir-bloat check: skip bulk when the directory holds vastly more
+        // entries than we care about (~1 µs per probed dir).
+        const size_t totalEntries = FfshFile::dir_entry_count(dirPath.c_str());
+        if (totalEntries != SIZE_MAX && totalEntries > bucketSize * STAT_BULK_MAX_DIR_BLOAT) {
+          for (const auto & e : b.entries) {
+            this->entryQueueIdx_.push_back(e.idx);
+          }
+          continue;
+        }
+
+        // Promote: sort by basename so the bulk callback can use lower_bound.
+        BulkDirJob job;
+        job.dirPath = std::move(dirPath);
         job.entries = std::move(b.entries);
         std::sort(job.entries.begin(), job.entries.end(),
                   [](const BulkDirJob::Entry & a, const BulkDirJob::Entry & b) {
@@ -748,7 +779,8 @@ namespace fast_fs_hash {
       uint64_t oldCtime,
       uint64_t oldSize,
       bool statOk,
-      PathResolver & resolver) const noexcept {
+      PathResolver & resolver,
+      unsigned char * readBuf) const noexcept {
       if (!statOk) [[unlikely]] {
         entry.contentHash.set_zero();
         entry.ino |= CACHE_S_STAT_DONE;
@@ -783,7 +815,7 @@ namespace fast_fs_hash {
         this->matchResult_.store(MatchResult::CHANGED, std::memory_order_relaxed);
         return ReconcileAction::ABORT_BATCH;
       }
-      if (statMatchHashFile_(resolver, entry, oldContentHash)) {
+      if (statMatchHashFile_(resolver, entry, oldContentHash, readBuf)) {
         entry.ino |= CACHE_S_DONE;
         return ReconcileAction::CONTINUE;
       }
@@ -797,7 +829,8 @@ namespace fast_fs_hash {
      *  the worker should bail (matchResult became CHANGED, cancel fired, or
      *  pool shutdown). Empty dirJobs_ → instant CONTINUE. */
     FSH_FORCE_INLINE ReconcileAction processStatDirJobs_(
-      PathResolver & resolver, size_t maxSegCap) const noexcept {
+      PathResolver & resolver, size_t maxSegCap, unsigned char * readBuf,
+      std::vector<BulkStat> & bulkData) const noexcept {
       const size_t dirJobCount = this->dirJobs_.size();
       if (dirJobCount == 0) {
         return ReconcileAction::CONTINUE;
@@ -815,7 +848,7 @@ namespace fast_fs_hash {
         if (didx >= dirJobCount) {
           return ReconcileAction::CONTINUE;
         }
-        this->processBulkDir_(this->dirJobs_[didx], resolver, maxSegCap);
+        this->processBulkDir_(this->dirJobs_[didx], resolver, maxSegCap, readBuf, bulkData);
       }
     }
 
@@ -839,9 +872,20 @@ namespace fast_fs_hash {
       resolver.init(this->runDirFd_, rootPath, rootPathLen);
       const size_t maxSegCap = FSH_MAX_PATH > resolver.prefix_len + 1 ? FSH_MAX_PATH - resolver.prefix_len - 1 : 0;
 
+      // Worker-owned scratch for the whole call. Hash readBuf for
+      // statMatchHashFile_; the first 32 KiB is also donated to
+      // processBulkDir_'s getattrlistbulk iteration. Bulk Phase A and
+      // hash Phase B are serialized, so reusing the region is safe.
+      alignas(64) unsigned char readBuf[READ_BUFFER_SIZE];
+
+      // Per-worker bulkData vector, reused across all dir-jobs this worker
+      // claims — grows monotonically to the largest dir size then stays put.
+      // Eliminates the per-dir-job malloc on the validate hot path.
+      std::vector<BulkStat> bulkData;
+
       // Phase 1: dir-clustered work (large directories via platform bulk-stat).
       // Returns early if matchResult / cancel / shutdown aborts the worker.
-      if (this->processStatDirJobs_(resolver, maxSegCap) == ReconcileAction::ABORT_BATCH) [[unlikely]] {
+      if (this->processStatDirJobs_(resolver, maxSegCap, readBuf, bulkData) == ReconcileAction::ABORT_BATCH) [[unlikely]] {
         goto done;
       }
 
@@ -903,7 +947,7 @@ namespace fast_fs_hash {
 
             const bool statOk = resolver.stat_into(entry);
             const ReconcileAction act =
-              this->reconcileStat_(entry, oldIno, oldMtime, oldCtime, oldSize, statOk, resolver);
+              this->reconcileStat_(entry, oldIno, oldMtime, oldCtime, oldSize, statOk, resolver, readBuf);
             if (act == ReconcileAction::ABORT_BATCH) [[unlikely]] {
               goto done;
             }
@@ -918,86 +962,52 @@ namespace fast_fs_hash {
     }
 
 #  ifdef __APPLE__
-    /** Bulk-stat one directory: open it, getattrlistbulk, locate each
-     *  returned name in `job.entries` (sorted by name) via binary search,
-     *  reconcile against the cached stat. On fallback (open fails, missing
-     *  entries, symlinks): fstatat each unhandled entry. Each cache entry
-     *  is processed exactly once. */
+    /** Bulk-stat one directory in two phases. Phase A collects stat data
+     *  via getattrlistbulk into per-entry slots; Phase B walks the slots
+     *  and reconciles (with fstatat fallback for slots Phase A missed:
+     *  file gone, name skipped, listing truncated, dir-open failed).
+     *
+     *  `bulkData` is reused across calls — caller-owned scratch grows
+     *  monotonically to fit the largest dir, eliminating per-call malloc. */
     FSH_NO_INLINE void processBulkDir_(
-      const BulkDirJob & job, PathResolver & resolver, size_t maxSegCap) const noexcept {
+      const BulkDirJob & job, PathResolver & resolver, size_t maxSegCap,
+      unsigned char * readBuf, std::vector<BulkStat> & bulkData) const noexcept {
       CacheEntry * FSH_RESTRICT const entries = this->runEntries_;
       const uint32_t * FSH_RESTRICT const pathEnds = this->runPathEnds_;
       const uint8_t * FSH_RESTRICT const packedPaths = this->runPackedPaths_;
 
       const size_t n = job.entries.size();
-      // Per-entry handled flag. uint8_t avoids the vector<bool> bit-packed
-      // specialization (which forces bitwise reads/writes per access).
-      std::vector<uint8_t> handled(n, 0);
-      size_t matchedCount = 0;
+      bulkData.assign(n, {0, 0, 0, 0});
 
+      // Defensive cap: dir-bloat probe already filtered bloated dirs in
+      // buildWorkUnits_, but if entries appear between the probe and now
+      // (concurrent writer) the bulk enumeration could explode. Cap at
+      // bloat × n + 64 so worst-case wasted work matches the probe guard.
+      const size_t maxRecords = n * STAT_BULK_MAX_DIR_BLOAT + 64;
+
+      constexpr size_t BULK_BUF_SIZE = 32 * 1024;
+      static_assert(BULK_BUF_SIZE >= FfshFile::BULK_BUF_MIN_SIZE,
+        "bulk iter buf below documented minimum");
+      static_assert(BULK_BUF_SIZE <= READ_BUFFER_SIZE,
+        "bulk iter buf must fit inside the shared readBuf");
       const int got = FfshFile::bulk_stat_dir(
-        job.dirPath.c_str(),
+        job.dirPath.c_str(), readBuf, BULK_BUF_SIZE, maxRecords,
         [&](const char * name, size_t name_len, uint64_t ino, uint64_t mtime_ns,
             uint64_t ctime_ns, uint64_t size) {
-          // job.entries is sorted by name; binary-search via lower_bound.
           const std::string_view key(name, name_len);
           auto it = std::lower_bound(
             job.entries.begin(), job.entries.end(), key,
             [](const BulkDirJob::Entry & e, std::string_view k) { return e.name < k; });
           if (it == job.entries.end() || it->name != key) {
-            // Not one of our tracked files — sibling in the same dir. Ignore.
             return;
           }
           const size_t local = static_cast<size_t>(it - job.entries.begin());
-          const uint32_t entryIdx = it->idx;
-          CacheEntry & entry = entries[entryIdx];
-          const uint64_t inoWithState = entry.ino;
-          const uint64_t state = inoWithState & INO_STATE_MASK;
-          if (state != CACHE_S_HAS_OLD) {
-            handled[local] = 1;
-            ++matchedCount;
-            return;
-          }
-
-          const uint64_t oldIno = inoWithState & INO_VALUE_MASK;
-          const uint64_t oldMtime = entry.mtimeNs;
-          const uint64_t oldCtime = entry.ctimeNs;
-          const uint64_t oldSize = entry.size;
-
-          entry.writeStat(ino & INO_VALUE_MASK, mtime_ns, ctime_ns, size);
-
-          // Re-hash on metadata-only mismatch requires the path resolved.
-          const uint32_t pathEnd = pathEnds[entryIdx];
-          const uint32_t pathStart = entryIdx == 0 ? 0u : pathEnds[entryIdx - 1];
-          const size_t pathLen = pathEnd - pathStart;
-          if (pathLen > maxSegCap) [[unlikely]] {
-            entry.ino |= CACHE_S_STAT_DONE;
-            this->matchResult_.store(MatchResult::CHANGED, std::memory_order_relaxed);
-            handled[local] = 1;
-            ++matchedCount;
-            return;
-          }
-          resolver.resolve(packedPaths + pathStart, pathLen);
-
-          // statOk = true here (we DID get the stat data via bulk).
-          (void)this->reconcileStat_(entry, oldIno, oldMtime, oldCtime, oldSize, true, resolver);
-          handled[local] = 1;
-          ++matchedCount;
+          bulkData[local] = {ino, mtime_ns, ctime_ns, size};
         });
 
-      // Skip the fallback scan when the bulk path covered every entry —
-      // typical case on a clean source tree, where N-700 entries / 6 dirs
-      // means hundreds of pure-overhead loop iterations otherwise.
-      if (got >= 0 && matchedCount == n) [[likely]] {
-        return;
-      }
-
-      // Fallback pass: any entry not handled by bulk-stat (open failed,
-      // bulk-listing aborted mid-way, file not present in dir listing, or
-      // its name is a symlink we skipped) gets the per-file fstatat path.
       const bool bulkAborted = (got < 0);
+
       for (size_t k = 0; k < n; ++k) {
-        if (handled[k] && !bulkAborted) continue;
         const uint32_t entryIdx = job.entries[k].idx;
         CacheEntry & entry = entries[entryIdx];
         const uint64_t inoWithState = entry.ino;
@@ -1006,28 +1016,37 @@ namespace fast_fs_hash {
           continue;
         }
 
-        const uint32_t pathEnd = pathEnds[entryIdx];
-        const uint32_t pathStart = entryIdx == 0 ? 0u : pathEnds[entryIdx - 1];
-        const size_t pathLen = pathEnd - pathStart;
-        if (pathLen > maxSegCap) [[unlikely]] {
-          this->matchResult_.store(MatchResult::CHANGED, std::memory_order_relaxed);
-          continue;
-        }
-        resolver.resolve(packedPaths + pathStart, pathLen);
-
         const uint64_t oldIno = inoWithState & INO_VALUE_MASK;
         const uint64_t oldMtime = entry.mtimeNs;
         const uint64_t oldCtime = entry.ctimeNs;
         const uint64_t oldSize = entry.size;
 
-        const bool statOk = resolver.stat_into(entry);
-        (void)this->reconcileStat_(entry, oldIno, oldMtime, oldCtime, oldSize, statOk, resolver);
+        const uint32_t pathEnd = pathEnds[entryIdx];
+        const uint32_t pathStart = entryIdx == 0 ? 0u : pathEnds[entryIdx - 1];
+        const size_t pathLen = pathEnd - pathStart;
+        if (pathLen > maxSegCap) [[unlikely]] {
+          entry.ino |= CACHE_S_STAT_DONE;
+          this->matchResult_.store(MatchResult::CHANGED, std::memory_order_relaxed);
+          continue;
+        }
+        resolver.resolve(packedPaths + pathStart, pathLen);
+
+        const BulkStat & bs = bulkData[k];
+        bool statOk;
+        if (bs.ino != 0 && !bulkAborted) {
+          entry.writeStat(bs.ino & INO_VALUE_MASK, bs.mtime_ns, bs.ctime_ns, bs.size);
+          statOk = true;
+        } else {
+          statOk = resolver.stat_into(entry);
+        }
+        (void)this->reconcileStat_(entry, oldIno, oldMtime, oldCtime, oldSize, statOk, resolver, readBuf);
       }
     }
 #  else
     // Stub for non-Apple — never called (dirJobs_ is always empty).
     FSH_FORCE_INLINE void processBulkDir_(
-      const BulkDirJob &, PathResolver &, size_t) const noexcept {}
+      const BulkDirJob &, PathResolver &, size_t, unsigned char *,
+      std::vector<BulkStat> &) const noexcept {}
 #  endif
   };
 
