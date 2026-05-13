@@ -362,6 +362,11 @@ namespace fast_fs_hash {
     const size_t uplen = this->uncompressedPayloadsLen;
     const uint32_t * pe = pathEndsOf(buf, fc, this->compressedPayloadItemCount, uic, uplen);
     const uint8_t * paths = pathsOf(buf, fc, this->compressedPayloadItemCount, uic, uplen);
+    // Bulk NUL check over the whole paths region (libc memchr is SIMD-accelerated);
+    // per-segment validation below relies on this and skips the byte-level NUL scan.
+    if (pLen > 0 && memchr(paths, '\0', pLen) != nullptr) {
+      return false;
+    }
     uint32_t prevEnd = 0;
     for (uint32_t i = 0; i < fc; ++i) {
       const uint32_t endOff = pe[i];

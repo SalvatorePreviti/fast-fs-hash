@@ -4,12 +4,9 @@
 #include "includes.h"
 
 /**
- * Check whether a NUL-terminated relative path segment is unsafe.
+ * Check whether a relative path segment is unsafe.
  *
- * Detects directory traversal, absolute paths, and embedded NUL bytes
- * (the segment is already NUL-terminated so we check for interior NULs
- * only via the caller-provided length).
- *
+ * Detects directory traversal, absolute paths, and embedded NUL bytes.
  * Mirrors the JS `isUnsafeRelativePath()` in path-utils.ts.
  */
 FSH_FORCE_INLINE bool is_unsafe_relative_path(const uint8_t * seg, size_t len) noexcept {
@@ -37,26 +34,24 @@ FSH_FORCE_INLINE bool is_unsafe_relative_path(const uint8_t * seg, size_t len) n
     }
   }
 
-  // Scan for embedded traversal: /../, \..\, /..\ , \../ , trailing /.. or \..
-  // Also reject interior NUL bytes (should not appear in valid paths).
-  for (size_t i = 1; i < len; ++i) {
-    const uint8_t c = seg[i];
-    if (c == '\0') {
-      return true;
+  // Scan for embedded traversal: /../, \..\, /..\, \../, trailing /.. or \..
+  // NUL-byte rejection is handled in bulk by the caller (one memchr over the
+  // whole paths region in CacheHeader::packedPathsValid).
+  for (size_t i = 1; i + 1 < len; ++i) {
+    if (seg[i] != '.' || seg[i + 1] != '.') {
+      continue;
     }
-    // Check for "/.." or "\.." starting at i-1
-    if (c == '.' && i + 1 < len && seg[i + 1] == '.') {
-      const uint8_t prev = seg[i - 1];
-      if (prev == '/' || prev == '\\') {
-        // "/.." or "\.." found — check what follows
-        if (i + 2 >= len) {
-          return true;  // trailing "/.."|"\.."
-        }
-        const uint8_t next = seg[i + 2];
-        if (next == '/' || next == '\\') {
-          return true;  // "/../"|"/..\"|"\..\"|"\\../"
-        }
-      }
+    const uint8_t prev = seg[i - 1];
+    if (prev != '/' && prev != '\\') {
+      continue;
+    }
+    // "/.." or "\.." — check what follows
+    if (i + 2 >= len) {
+      return true;  // trailing "/.."|"\.."
+    }
+    const uint8_t next = seg[i + 2];
+    if (next == '/' || next == '\\') {
+      return true;  // "/../"|"/..\"|"\..\"|"\\../"
     }
   }
 

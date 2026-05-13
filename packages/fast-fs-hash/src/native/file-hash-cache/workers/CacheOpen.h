@@ -299,12 +299,15 @@ namespace fast_fs_hash {
 
       CacheEntry * entries = entriesOf(buf, uncCount, uncLen);
 
+      // Disk entries have the high 3 bits cleared (CacheWriter strips
+      // INO_STATE_MASK | INO_CHANGED_BIT before writing). We can OR-in the
+      // initial state without masking — the load-OR-store fuses to a single
+      // RMW on the entry's ino byte.
       if (this->hasDirtyHint_ && this->dirtyCount_ == 0 && this->dirtyLen_ == 0) {
         // Empty dirty hint: all entries trusted, no stat needed.
-        // Mark every entry DONE and short-circuit straight to UP_TO_DATE.
         // Skips pool submission, fork-join overhead, and the entire stat loop.
         for (uint32_t i = 0; i < fc; ++i) {
-          entries[i].ino = (entries[i].ino & INO_VALUE_MASK) | CACHE_S_DONE;
+          entries[i].ino |= CACHE_S_DONE;
         }
         this->finish_(CacheStatus::UP_TO_DATE);
         return;
@@ -331,15 +334,11 @@ namespace fast_fs_hash {
           const uint32_t pLen = pEnd - prevEnd;
           std::string_view path(reinterpret_cast<const char *>(packedPaths + prevEnd), pLen);
           prevEnd = pEnd;
-          if (dirtySet.count(path) > 0) {
-            entries[i].ino = (entries[i].ino & INO_VALUE_MASK) | CACHE_S_HAS_OLD;
-          } else {
-            entries[i].ino = (entries[i].ino & INO_VALUE_MASK) | CACHE_S_DONE;
-          }
+          entries[i].ino |= dirtySet.count(path) > 0 ? CACHE_S_HAS_OLD : CACHE_S_DONE;
         }
       } else {
         for (uint32_t i = 0; i < fc; ++i) {
-          entries[i].ino = (entries[i].ino & INO_VALUE_MASK) | CACHE_S_HAS_OLD;
+          entries[i].ino |= CACHE_S_HAS_OLD;
         }
       }
 
@@ -409,15 +408,11 @@ namespace fast_fs_hash {
       }
       const size_t diskSize = static_cast<size_t>(fileSize);
 
-      if (!this->lockedFile_.seek(0)) [[unlikely]] {
-        return CacheStatus::MISSING;
-      }
-
-      // Peek the header so we can size the final buffer correctly. The
-      // body must be read second (its tail-aligned position depends on
-      // the uncompressed body size from this header).
+      // Peek the header so we can size the final buffer correctly. Positional
+      // read — leaves the fd's seek position untouched so the disk-side reads
+      // below can be issued in any order via pread_at_most.
       CacheHeader peekHdr;
-      const int64_t hn = this->lockedFile_.read_at_most(&peekHdr, CacheHeader::SIZE);
+      const int64_t hn = this->lockedFile_.pread_at_most(&peekHdr, CacheHeader::SIZE, 0);
       if (hn < 0 || static_cast<size_t>(hn) < CacheHeader::SIZE) [[unlikely]] {
         return CacheStatus::MISSING;
       }
@@ -470,7 +465,8 @@ namespace fast_fs_hash {
 
       // Read uncompressed section directly to its final position.
       if (uncSectionSize > 0) {
-        const int64_t un = this->lockedFile_.read_at_most(oldBuf.ptr + CacheHeader::SIZE, uncSectionSize);
+        const int64_t un = this->lockedFile_.pread_at_most(
+          oldBuf.ptr + CacheHeader::SIZE, uncSectionSize, CacheHeader::SIZE);
         if (un < 0 || static_cast<size_t>(un) < uncSectionSize) [[unlikely]] {
           oldBuf.reset();
           return CacheStatus::MISSING;
@@ -479,7 +475,7 @@ namespace fast_fs_hash {
 
       if (uncompBodySize > 0) {
         uint8_t * const compDst = oldBuf.ptr + allocLen - compressedSize;
-        const int64_t cn = this->lockedFile_.read_at_most(compDst, compressedSize);
+        const int64_t cn = this->lockedFile_.pread_at_most(compDst, compressedSize, diskPrefix);
         if (cn < 0 || static_cast<size_t>(cn) < compressedSize) [[unlikely]] {
           oldBuf.reset();
           return CacheStatus::MISSING;

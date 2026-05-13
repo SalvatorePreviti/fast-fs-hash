@@ -345,6 +345,33 @@ namespace fast_fs_hash {
       return static_cast<int64_t>(total);
     }
 
+    /**
+     * Positional read: like {@link read_at_most} but takes an explicit file
+     * offset (does not touch the fd's seek position). Chunked at PREAD_CHUNK
+     * to bound the kernel commitment per syscall; EINTR-safe.
+     */
+    FSH_FORCE_INLINE int64_t pread_at_most(void * buf, size_t len, size_t offset) noexcept {
+      static constexpr size_t PREAD_CHUNK = 512u << 10;  // 512 KiB
+      size_t total = 0;
+      auto * p = static_cast<unsigned char *>(buf);
+      while (total < len) {
+        const size_t want = len - total < PREAD_CHUNK ? len - total : PREAD_CHUNK;
+        const ssize_t n = ::pread(this->fd, p + total, want, static_cast<off_t>(offset + total));
+        if (n > 0) [[likely]] {
+          total += static_cast<size_t>(n);
+          continue;
+        }
+        if (n == 0) [[unlikely]] {
+          return static_cast<int64_t>(total);  // EOF
+        }
+        if (errno == EINTR) [[likely]] {
+          continue;
+        }
+        return total > 0 ? static_cast<int64_t>(total) : -1;
+      }
+      return static_cast<int64_t>(total);
+    }
+
     /** Return the file size in bytes, or -1 on error. */
     inline int64_t fsize() const noexcept {
       struct stat st{};
