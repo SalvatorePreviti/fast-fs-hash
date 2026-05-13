@@ -10,6 +10,11 @@
 #  include <sys/uio.h>
 #  include <time.h>
 
+#  ifdef __APPLE__
+#    include <sys/attr.h>
+#    include <sys/vnode.h>
+#  endif
+
 namespace fast_fs_hash {
 
   /** Scatter-gather buffer descriptor — alias of POSIX `struct iovec` so we
@@ -485,6 +490,117 @@ namespace fast_fs_hash {
       }
       return stat_from_struct_(st, entry);
     }
+
+#  ifdef __APPLE__
+    /**
+     * Bulk-stat a directory in O(1) syscalls regardless of entry count.
+     *
+     * Opens `dir_path` (or uses `dir_fd` if >= 0), then loops getattrlistbulk
+     * until exhausted. For every regular file returned, invokes
+     *   cb(name_ptr, name_len, ino, mtime_ns, ctime_ns, size)
+     * The caller matches names against its expected set.
+     *
+     * Returns:
+     *   >= 0: total regular-file entries reported (success).
+     *     -1: failure (could not open dir, or first getattrlistbulk errored).
+     *         Caller should fall back to per-file fstatat.
+     *
+     * Non-regular entries (subdirs, symlinks, etc.) are skipped silently —
+     * they won't satisfy our use case (tracked-file stats) anyway.
+     *
+     * `dir_fd_owned` set true if this helper opened the fd (caller need not
+     * close). When false, caller retains ownership.
+     */
+    template <typename Cb>
+    static FSH_NO_INLINE int bulk_stat_dir(const char * dir_path, Cb && cb) noexcept {
+      const int dir_fd = ::open(dir_path, O_RDONLY | O_CLOEXEC | O_DIRECTORY);
+      if (dir_fd < 0) [[unlikely]] {
+        return -1;
+      }
+
+      struct attrlist attrs{};
+      attrs.bitmapcount = ATTR_BIT_MAP_COUNT;
+      attrs.commonattr = ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_NAME | ATTR_CMN_OBJTYPE
+        | ATTR_CMN_FILEID | ATTR_CMN_MODTIME | ATTR_CMN_CHGTIME;
+      attrs.fileattr = ATTR_FILE_DATALENGTH;
+
+      // Stack buffer sized for ~250 small entries per syscall. Larger and we'd
+      // overflow the pool thread's stack budget (THREAD_STACK_SIZE = 256 KiB
+      // and PathResolver takes ~4 KiB). 32 KiB leaves plenty of slack.
+      alignas(8) char buf[32 * 1024];
+      int total = 0;
+
+      for (;;) {
+        const int n = ::getattrlistbulk(dir_fd, &attrs, buf, sizeof(buf), 0);
+        if (n < 0) [[unlikely]] {
+          if (errno == EINTR) {
+            continue;
+          }
+          ::close(dir_fd);
+          return total > 0 ? total : -1;
+        }
+        if (n == 0) {
+          break;
+        }
+
+        char * cursor = buf;
+        for (int i = 0; i < n; ++i) {
+          char * record = cursor;
+          const uint32_t rec_len = *reinterpret_cast<uint32_t *>(record);
+          cursor += rec_len;
+
+          char * fc = record + sizeof(uint32_t);
+          // ATTR_CMN_RETURNED_ATTRS is always present when requested. We don't
+          // inspect it — every attr we ask for is supported on HFS+/APFS.
+          fc += sizeof(attribute_set_t);
+
+          // ATTR_CMN_NAME: attrreference_t = { int32_t attr_dataoffset; uint32_t attr_length }.
+          const attrreference_t name_ref = *reinterpret_cast<attrreference_t *>(fc);
+          const char * name = reinterpret_cast<const char *>(fc) + name_ref.attr_dataoffset;
+          // attr_length INCLUDES the trailing NUL.
+          const size_t name_len = name_ref.attr_length > 0 ? name_ref.attr_length - 1 : 0;
+          fc += sizeof(attrreference_t);
+
+          const fsobj_type_t obj_type = *reinterpret_cast<fsobj_type_t *>(fc);
+          fc += sizeof(fsobj_type_t);
+
+          // Filter early on object type — for non-regular files the file
+          // attributes (ATTR_FILE_DATALENGTH) may not be present in the
+          // record on older macOS, and we never invoke the callback for
+          // them anyway. The next record was already located via `cursor +=
+          // rec_len`, so skipping field decode here is safe.
+          if (obj_type != VREG) {
+            continue;
+          }
+
+          // Field order matches ATTR_CMN_* bit order — NAME (bit 0), OBJTYPE
+          // (bit 3), MODTIME (bit 10), CHGTIME (bit 11), FILEID (bit 25),
+          // then file-attrs (DATALENGTH). The kernel packs them tightly with
+          // no inter-field padding on macOS (verified via raw record dumps).
+          const struct timespec mtime = *reinterpret_cast<struct timespec *>(fc);
+          fc += sizeof(struct timespec);
+
+          const struct timespec ctime = *reinterpret_cast<struct timespec *>(fc);
+          fc += sizeof(struct timespec);
+
+          const uint64_t file_id = *reinterpret_cast<uint64_t *>(fc);
+          fc += sizeof(uint64_t);
+
+          const off_t data_length = *reinterpret_cast<off_t *>(fc);
+
+          const uint64_t mtime_ns =
+            static_cast<uint64_t>(mtime.tv_sec) * 1000000000ULL + static_cast<uint64_t>(mtime.tv_nsec);
+          const uint64_t ctime_ns =
+            static_cast<uint64_t>(ctime.tv_sec) * 1000000000ULL + static_cast<uint64_t>(ctime.tv_nsec);
+          cb(name, name_len, file_id, mtime_ns, ctime_ns, static_cast<uint64_t>(data_length));
+          ++total;
+        }
+      }
+
+      ::close(dir_fd);
+      return total;
+    }
+#  endif  // __APPLE__
 
     /** Open a file for reading only (no lock). Returns raw fd, -1 on error. */
     static inline int open_rd(const char * path) noexcept {

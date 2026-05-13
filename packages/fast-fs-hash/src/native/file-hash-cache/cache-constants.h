@@ -37,6 +37,21 @@ namespace fast_fs_hash {
 
   static constexpr size_t MIN_DIR_FD_FILES = 4;
 
+  /** Minimum files per directory before the macOS stat hot path prefers
+   *  getattrlistbulk over per-file fstatat. Below this threshold the
+   *  open+bulk+close overhead exceeds the savings. Empirically the crossover
+   *  is around N=16 on macOS arm64; above N=32 bulk wins by 1.3-2.9×.
+   *  Tunable via FAST_FS_HASH_BULK_STAT_MIN env var (read once at startup). */
+  static constexpr size_t STAT_BULK_THRESHOLD_DARWIN_DEFAULT = 16;
+
+  /** Minimum BATCH size before the Linux stat hot path prefers io_uring
+   *  batched statx over per-file fstatat. io_uring doesn't need files to
+   *  share a directory — its win comes from amortizing syscall overhead
+   *  across many statx submissions. Crossover is small because submission
+   *  cost is per-batch, not per-file. Once Phase 1 lands the gate is
+   *  runtime support detection (io_uring_setup), not an env knob. */
+  static constexpr size_t STAT_URING_THRESHOLD_DEFAULT = 8;
+
 }  // namespace fast_fs_hash
 
 #endif

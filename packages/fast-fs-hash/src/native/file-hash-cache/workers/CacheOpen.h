@@ -8,8 +8,11 @@
 
 #define LZ4_STATIC_LINKING_ONLY  // expose LZ4_DECOMPRESS_INPLACE_MARGIN
 #include <lz4.h>
+#include <algorithm>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace fast_fs_hash {
 
@@ -173,7 +176,30 @@ namespace fast_fs_hash {
      *  syscalls per call). Lifetime: from doOpen_ until ~CacheOpen. */
     DirFd runDirFd_{};
 
-    alignas(64) mutable std::atomic<size_t> nextIndex_{0};
+    /** Dir-clustered work units. Each represents one directory holding
+     *  ≥ STAT_BULK_THRESHOLD tracked files; workers process them via the
+     *  platform's bulk-stat API (macOS: getattrlistbulk). Empty when no
+     *  directory crosses the threshold or platform lacks bulk-stat.
+     *
+     *  `entries` is sorted by basename (case-sensitive memcmp order) so
+     *  the bulk-stat callback can locate matches via std::lower_bound —
+     *  no per-job hash-map allocation. The string_view points into
+     *  runPackedPaths_ which is owned by dataBuf_ for the duration. */
+    struct BulkDirJob {
+      struct Entry {
+        std::string_view name;
+        uint32_t idx;  // index into runEntries_
+      };
+      std::string dirPath;          // absolute path (rootPath + relative dir)
+      std::vector<Entry> entries;   // sorted by Entry::name (memcmp ascending)
+    };
+    std::vector<BulkDirJob> dirJobs_;
+    /** Entry indices NOT covered by dirJobs_ — walked by the per-entry path.
+     *  When dirJobs_ is empty this is just [0..fileCount_) for compat. */
+    std::vector<uint32_t> entryQueueIdx_;
+
+    alignas(64) mutable std::atomic<size_t> nextDirJob_{0};
+    mutable std::atomic<size_t> nextIndex_{0};
     mutable std::atomic<MatchResult> matchResult_{MatchResult::OK};
 
     struct Job : ForkJob<Job, MAX_CACHE_IO_THREADS> {
@@ -347,8 +373,15 @@ namespace fast_fs_hash {
       this->runPackedPaths_ = pathsOf(buf, fc, compCount, uncCount, uncLen);
       this->runPackedPathsSize_ = hdr->pathsLen;
 
+      // Build work units. By default each entry is a per-file job. On
+      // platforms with a bulk-stat API (macOS getattrlistbulk; Linux io_uring),
+      // entries whose parent directory holds many siblings are grouped into
+      // a BulkDirJob so workers can stat them in one syscall per dir.
+      this->buildWorkUnits_();
+
       int threadCount = ThreadPool::compute_threads(0, fc, MAX_OPEN_THREADS, 64);
       this->workBatch_ = computeBatchSize(threadCount, fc);
+      this->nextDirJob_.store(0, std::memory_order_relaxed);
       this->nextIndex_.store(0, std::memory_order_relaxed);
       this->matchResult_.store(MatchResult::OK, std::memory_order_relaxed);
 
@@ -561,13 +594,239 @@ namespace fast_fs_hash {
       return entry.contentHash == oldContentHash;
     }
 
+    /** Threshold for promoting a macOS directory to a BulkDirJob via
+     *  getattrlistbulk. Env-tunable via FAST_FS_HASH_BULK_STAT_MIN. */
+    static FSH_FORCE_INLINE size_t statBulkThreshold_() noexcept {
+      static const size_t v = [] {
+        const char * env = std::getenv("FAST_FS_HASH_BULK_STAT_MIN");
+        if (env && env[0] != '\0') {
+          const long val = std::strtol(env, nullptr, 10);
+          if (val > 0 && val <= 65536) {
+            return static_cast<size_t>(val);
+          }
+        }
+        return STAT_BULK_THRESHOLD_DARWIN_DEFAULT;
+      }();
+      return v;
+    }
+
+    /** Return the byte offset of the last '/' in `[p, p+n)`, or `n` when
+     *  there is no slash. Used to split each packed path into (dir, basename).
+     *  Apple-only helper for now; Linux walks the same packed paths but
+     *  doesn't currently need basename extraction. */
+    static FSH_FORCE_INLINE size_t lastSlash_(const uint8_t * p, size_t n) noexcept {
+      for (size_t i = n; i > 0; --i) {
+        if (p[i - 1] == '/') {
+          return i - 1;
+        }
+      }
+      return n;
+    }
+
+    /** Group entries by their parent-directory prefix.
+     *
+     *  Inputs: runPathEnds_, runPackedPaths_, runEntries_, fileCount_.
+     *  Outputs: this->dirJobs_, this->entryQueueIdx_.
+     *
+     *  On non-macOS (and when no directory holds enough files), the result is
+     *  empty dirJobs_ and entryQueueIdx_ = [0..fc), preserving today's
+     *  per-entry work-stealing. */
+    void buildWorkUnits_() noexcept {
+      const uint32_t fc = this->fileCount_;
+      this->dirJobs_.clear();
+      this->entryQueueIdx_.clear();
+      this->entryQueueIdx_.reserve(fc);
+
+#  ifdef __APPLE__
+      const size_t threshold = statBulkThreshold_();
+      if (fc < threshold || this->cancel_.is_fired()) [[unlikely]] {
+        // Below the threshold the grouping itself is more work than it
+        // saves. Skip grouping entirely; everything goes to per-entry.
+        for (uint32_t i = 0; i < fc; ++i) {
+          this->entryQueueIdx_.push_back(i);
+        }
+        return;
+      }
+
+      // Single pass over the path list: for each entry, compute the parent
+      // prefix slice and basename slice, then append to a per-prefix bucket
+      // keyed by string_view into runPackedPaths_. After the scan, large
+      // buckets become BulkDirJobs (sorted by name for lower_bound lookups
+      // in the bulk worker); small buckets get expanded into entryQueueIdx_.
+      struct Bucket {
+        const uint8_t * prefixPtr = nullptr;
+        size_t prefixLen = 0;
+        std::vector<BulkDirJob::Entry> entries;
+      };
+      std::unordered_map<std::string_view, Bucket> buckets;
+      buckets.reserve(fc / 4);  // rough guess; one bucket per parent directory
+
+      uint32_t prevEnd = 0;
+      for (uint32_t i = 0; i < fc; ++i) {
+        const uint32_t end = this->runPathEnds_[i];
+        const uint8_t * pathStart = this->runPackedPaths_ + prevEnd;
+        const size_t pathLen = static_cast<size_t>(end - prevEnd);
+        prevEnd = end;
+
+        const size_t slashPos = lastSlash_(pathStart, pathLen);
+        const size_t prefixLen = (slashPos == pathLen) ? 0 : slashPos;
+        const size_t baseStart = (slashPos == pathLen) ? 0 : slashPos + 1;
+        const size_t baseLen = pathLen - baseStart;
+
+        std::string_view prefixView(reinterpret_cast<const char *>(pathStart), prefixLen);
+        Bucket & b = buckets[prefixView];
+        if (b.entries.empty()) {
+          b.prefixPtr = pathStart;
+          b.prefixLen = prefixLen;
+        }
+        b.entries.push_back({
+          std::string_view(reinterpret_cast<const char *>(pathStart + baseStart), baseLen),
+          i,
+        });
+      }
+
+      const size_t rootLen = this->rootPath_.size();
+      const bool rootHasTrailingSlash = rootLen > 0 && this->rootPath_[rootLen - 1] == '/';
+
+      for (auto & kv : buckets) {
+        Bucket & b = kv.second;
+        if (b.entries.size() < threshold) {
+          for (const auto & e : b.entries) {
+            this->entryQueueIdx_.push_back(e.idx);
+          }
+          continue;
+        }
+        // Promote: build the absolute directory path and sort the entries
+        // by basename so the bulk-stat callback can locate matches via
+        // std::lower_bound (no per-job hash-map alloc).
+        BulkDirJob job;
+        job.dirPath.reserve(rootLen + 1 + b.prefixLen);
+        job.dirPath.assign(this->rootPath_);
+        if (b.prefixLen > 0) {
+          if (!rootHasTrailingSlash) {
+            job.dirPath.push_back('/');
+          }
+          job.dirPath.append(reinterpret_cast<const char *>(b.prefixPtr), b.prefixLen);
+        }
+        job.entries = std::move(b.entries);
+        std::sort(job.entries.begin(), job.entries.end(),
+                  [](const BulkDirJob::Entry & a, const BulkDirJob::Entry & b) {
+                    return a.name < b.name;
+                  });
+        this->dirJobs_.push_back(std::move(job));
+      }
+#  else
+      // Non-Apple: no bulk-stat path yet. All entries go to the per-entry queue.
+      for (uint32_t i = 0; i < fc; ++i) {
+        this->entryQueueIdx_.push_back(i);
+      }
+#  endif
+    }
+
+    /** Outcome of comparing fresh stat data against the cached values. */
+    enum class ReconcileAction : uint8_t {
+      CONTINUE,     // entry handled; caller should move on
+      ABORT_BATCH,  // matchResult became CHANGED; caller should bail out of its batch
+    };
+
+    /**
+     * Compare fresh stat data (already in `entry.ino/mtime/ctime/size`) against
+     * the captured `old*` values. On match: mark DONE. On size diff: mark
+     * STAT_DONE + CHANGED. On metadata-only diff: queue a hash check. On hash
+     * mismatch: mark CHANGED.
+     *
+     * `statOk` must be true if the stat call succeeded. When false, the entry
+     * is treated as missing (CHANGED).
+     *
+     * `resolver` is only consulted when re-hashing is needed. Pass a fully
+     * initialized resolver that can `open_file()` the current entry's path.
+     */
+    FSH_FORCE_INLINE ReconcileAction reconcileStat_(
+      CacheEntry & entry,
+      uint64_t oldIno,
+      uint64_t oldMtime,
+      uint64_t oldCtime,
+      uint64_t oldSize,
+      bool statOk,
+      PathResolver & resolver) const noexcept {
+      if (!statOk) [[unlikely]] {
+        entry.contentHash.set_zero();
+        entry.ino |= CACHE_S_STAT_DONE;
+        this->matchResult_.store(MatchResult::CHANGED, std::memory_order_relaxed);
+        return ReconcileAction::ABORT_BATCH;
+      }
+
+      if (entry.ino == oldIno && entry.mtimeNs == oldMtime && entry.ctimeNs == oldCtime && entry.size == oldSize)
+        [[likely]] {
+        entry.ino |= CACHE_S_DONE;
+        return ReconcileAction::CONTINUE;
+      }
+
+      if (this->matchResult_.load(std::memory_order_relaxed) < MatchResult::STAT_DIRTY) {
+        this->matchResult_.store(MatchResult::STAT_DIRTY, std::memory_order_relaxed);
+        this->addon->pool.expand(this->job_, 1);
+      }
+
+      if (entry.size != oldSize) {
+        entry.ino |= CACHE_S_STAT_DONE;
+        this->matchResult_.store(MatchResult::CHANGED, std::memory_order_relaxed);
+        return ReconcileAction::ABORT_BATCH;
+      }
+
+      const Hash128 oldContentHash = entry.contentHash;
+      if (entry.size == 0) {
+        entry.contentHash.from_xxh128(XXH3_128bits(nullptr, 0));
+        entry.ino |= CACHE_S_DONE;
+        if (entry.contentHash == oldContentHash) {
+          return ReconcileAction::CONTINUE;
+        }
+        this->matchResult_.store(MatchResult::CHANGED, std::memory_order_relaxed);
+        return ReconcileAction::ABORT_BATCH;
+      }
+      if (statMatchHashFile_(resolver, entry, oldContentHash)) {
+        entry.ino |= CACHE_S_DONE;
+        return ReconcileAction::CONTINUE;
+      }
+      entry.ino |= CACHE_S_DONE;
+      this->matchResult_.store(MatchResult::CHANGED, std::memory_order_relaxed);
+      return ReconcileAction::ABORT_BATCH;
+    }
+
+    /** Phase-1 loop: claim and process dir-jobs (bulk-stat per directory).
+     *  Returns CONTINUE on normal exhaustion of the queue, ABORT_BATCH when
+     *  the worker should bail (matchResult became CHANGED, cancel fired, or
+     *  pool shutdown). Empty dirJobs_ → instant CONTINUE. */
+    FSH_FORCE_INLINE ReconcileAction processStatDirJobs_(
+      PathResolver & resolver, size_t maxSegCap) const noexcept {
+      const size_t dirJobCount = this->dirJobs_.size();
+      if (dirJobCount == 0) {
+        return ReconcileAction::CONTINUE;
+      }
+      const FfshFile::LockCancel * cancel = &this->cancel_;
+      ThreadPool & pool = this->addon->pool;
+      for (;;) {
+        if (this->matchResult_.load(std::memory_order_relaxed) >= MatchResult::CHANGED) [[unlikely]] {
+          return ReconcileAction::ABORT_BATCH;
+        }
+        if (cancel->is_fired() || pool.is_shutdown()) [[unlikely]] {
+          return ReconcileAction::ABORT_BATCH;
+        }
+        const size_t didx = this->nextDirJob_.fetch_add(1, std::memory_order_relaxed);
+        if (didx >= dirJobCount) {
+          return ReconcileAction::CONTINUE;
+        }
+        this->processBulkDir_(this->dirJobs_[didx], resolver, maxSegCap);
+      }
+    }
+
     void processStat_() const {
-      const size_t fileCount = this->fileCount_;
       const size_t workBatch = this->workBatch_;
       CacheEntry * FSH_RESTRICT const entries = this->runEntries_;
       const uint32_t * FSH_RESTRICT const pathEnds = this->runPathEnds_;
       const uint8_t * FSH_RESTRICT const packedPaths = this->runPackedPaths_;
       const size_t packedPathsSize = this->runPackedPathsSize_;
+      const uint32_t * FSH_RESTRICT const entryQueue = this->entryQueueIdx_.data();
+      const size_t entryQueueSize = this->entryQueueIdx_.size();
       const FfshFile::LockCancel * cancel = &this->cancel_;
       ThreadPool & pool = this->addon->pool;
 
@@ -580,6 +839,15 @@ namespace fast_fs_hash {
       resolver.init(this->runDirFd_, rootPath, rootPathLen);
       const size_t maxSegCap = FSH_MAX_PATH > resolver.prefix_len + 1 ? FSH_MAX_PATH - resolver.prefix_len - 1 : 0;
 
+      // Phase 1: dir-clustered work (large directories via platform bulk-stat).
+      // Returns early if matchResult / cancel / shutdown aborts the worker.
+      if (this->processStatDirJobs_(resolver, maxSegCap) == ReconcileAction::ABORT_BATCH) [[unlikely]] {
+        goto done;
+      }
+
+      // Phase 2: per-entry batches over the leftover entries (small dirs +
+      // unclustered files). Indexes into entryQueueIdx_ — a possibly-sparse
+      // subset of [0..fc) when dir-jobs absorbed the large clusters.
       for (;;) {
         if (this->matchResult_.load(std::memory_order_relaxed) >= MatchResult::CHANGED) [[unlikely]] {
           break;
@@ -589,24 +857,15 @@ namespace fast_fs_hash {
         }
 
         const size_t baseIdx = this->nextIndex_.fetch_add(workBatch, std::memory_order_relaxed);
-        if (baseIdx >= fileCount) [[unlikely]] {
+        if (baseIdx >= entryQueueSize) [[unlikely]] {
           break;
         }
-        const size_t batchEnd = baseIdx + workBatch < fileCount ? baseIdx + workBatch : fileCount;
+        const size_t batchEnd = baseIdx + workBatch < entryQueueSize ? baseIdx + workBatch : entryQueueSize;
 
-        uint32_t pathStart;
-        if (baseIdx == 0) {
-          pathStart = 0;
-        } else {
-          pathStart = pathEnds[baseIdx - 1];
-          if (pathStart > packedPathsSize) [[unlikely]] {
-            this->matchResult_.store(MatchResult::CHANGED, std::memory_order_relaxed);
-            break;
-          }
-        }
-
-        for (size_t idx = baseIdx; idx < batchEnd; ++idx) {
+        for (size_t i = baseIdx; i < batchEnd; ++i) {
+          const uint32_t idx = entryQueue[i];
           const uint32_t pathEnd = pathEnds[idx];
+          const uint32_t pathStart = idx == 0 ? 0u : pathEnds[idx - 1];
 
           if (pathEnd < pathStart || pathEnd > packedPathsSize) [[unlikely]] {
             this->matchResult_.store(MatchResult::CHANGED, std::memory_order_relaxed);
@@ -618,16 +877,14 @@ namespace fast_fs_hash {
           const uint64_t state = inoWithState & INO_STATE_MASK;
 
           if (state == CACHE_S_DONE) [[likely]] {
-            pathStart = pathEnd;
             continue;
           }
 
           const size_t pathLen = pathEnd - pathStart;
           const uint32_t pathOffset = pathStart;
-          pathStart = pathEnd;
 
-          if (idx + 1 < batchEnd) [[likely]] {
-            FSH_PREFETCH_W(&entries[idx + 1]);
+          if (i + 1 < batchEnd) [[likely]] {
+            FSH_PREFETCH_W(&entries[entryQueue[i + 1]]);
             FSH_PREFETCH(packedPaths + pathEnd);
           }
 
@@ -645,50 +902,12 @@ namespace fast_fs_hash {
             const uint64_t oldSize = entry.size;
 
             const bool statOk = resolver.stat_into(entry);
-
-            if (!statOk) [[unlikely]] {
-              entry.contentHash.set_zero();
-              entry.ino |= CACHE_S_STAT_DONE;
-              this->matchResult_.store(MatchResult::CHANGED, std::memory_order_relaxed);
+            const ReconcileAction act =
+              this->reconcileStat_(entry, oldIno, oldMtime, oldCtime, oldSize, statOk, resolver);
+            if (act == ReconcileAction::ABORT_BATCH) [[unlikely]] {
               goto done;
             }
-
-            if (entry.ino == oldIno && entry.mtimeNs == oldMtime && entry.ctimeNs == oldCtime && entry.size == oldSize)
-              [[likely]] {
-              entry.ino |= CACHE_S_DONE;
-              continue;
-            }
-
-            if (this->matchResult_.load(std::memory_order_relaxed) < MatchResult::STAT_DIRTY) {
-              this->matchResult_.store(MatchResult::STAT_DIRTY, std::memory_order_relaxed);
-              pool.expand(this->job_, 1);
-            }
-
-            if (entry.size != oldSize) {
-              entry.ino |= CACHE_S_STAT_DONE;
-              this->matchResult_.store(MatchResult::CHANGED, std::memory_order_relaxed);
-              goto done;
-            }
-
-            {
-              const Hash128 oldContentHash = entry.contentHash;
-              if (entry.size == 0) {
-                entry.contentHash.from_xxh128(XXH3_128bits(nullptr, 0));
-                entry.ino |= CACHE_S_DONE;
-                if (entry.contentHash == oldContentHash) {
-                  continue;
-                }
-                this->matchResult_.store(MatchResult::CHANGED, std::memory_order_relaxed);
-                goto done;
-              }
-              if (statMatchHashFile_(resolver, entry, oldContentHash)) {
-                entry.ino |= CACHE_S_DONE;
-                continue;
-              }
-            }
-            entry.ino |= CACHE_S_DONE;
-            this->matchResult_.store(MatchResult::CHANGED, std::memory_order_relaxed);
-            goto done;
+            continue;
           }
 
           this->matchResult_.store(MatchResult::CHANGED, std::memory_order_relaxed);
@@ -697,6 +916,119 @@ namespace fast_fs_hash {
       }
     done:;
     }
+
+#  ifdef __APPLE__
+    /** Bulk-stat one directory: open it, getattrlistbulk, locate each
+     *  returned name in `job.entries` (sorted by name) via binary search,
+     *  reconcile against the cached stat. On fallback (open fails, missing
+     *  entries, symlinks): fstatat each unhandled entry. Each cache entry
+     *  is processed exactly once. */
+    FSH_NO_INLINE void processBulkDir_(
+      const BulkDirJob & job, PathResolver & resolver, size_t maxSegCap) const noexcept {
+      CacheEntry * FSH_RESTRICT const entries = this->runEntries_;
+      const uint32_t * FSH_RESTRICT const pathEnds = this->runPathEnds_;
+      const uint8_t * FSH_RESTRICT const packedPaths = this->runPackedPaths_;
+
+      const size_t n = job.entries.size();
+      // Per-entry handled flag. uint8_t avoids the vector<bool> bit-packed
+      // specialization (which forces bitwise reads/writes per access).
+      std::vector<uint8_t> handled(n, 0);
+      size_t matchedCount = 0;
+
+      const int got = FfshFile::bulk_stat_dir(
+        job.dirPath.c_str(),
+        [&](const char * name, size_t name_len, uint64_t ino, uint64_t mtime_ns,
+            uint64_t ctime_ns, uint64_t size) {
+          // job.entries is sorted by name; binary-search via lower_bound.
+          const std::string_view key(name, name_len);
+          auto it = std::lower_bound(
+            job.entries.begin(), job.entries.end(), key,
+            [](const BulkDirJob::Entry & e, std::string_view k) { return e.name < k; });
+          if (it == job.entries.end() || it->name != key) {
+            // Not one of our tracked files — sibling in the same dir. Ignore.
+            return;
+          }
+          const size_t local = static_cast<size_t>(it - job.entries.begin());
+          const uint32_t entryIdx = it->idx;
+          CacheEntry & entry = entries[entryIdx];
+          const uint64_t inoWithState = entry.ino;
+          const uint64_t state = inoWithState & INO_STATE_MASK;
+          if (state != CACHE_S_HAS_OLD) {
+            handled[local] = 1;
+            ++matchedCount;
+            return;
+          }
+
+          const uint64_t oldIno = inoWithState & INO_VALUE_MASK;
+          const uint64_t oldMtime = entry.mtimeNs;
+          const uint64_t oldCtime = entry.ctimeNs;
+          const uint64_t oldSize = entry.size;
+
+          entry.writeStat(ino & INO_VALUE_MASK, mtime_ns, ctime_ns, size);
+
+          // Re-hash on metadata-only mismatch requires the path resolved.
+          const uint32_t pathEnd = pathEnds[entryIdx];
+          const uint32_t pathStart = entryIdx == 0 ? 0u : pathEnds[entryIdx - 1];
+          const size_t pathLen = pathEnd - pathStart;
+          if (pathLen > maxSegCap) [[unlikely]] {
+            entry.ino |= CACHE_S_STAT_DONE;
+            this->matchResult_.store(MatchResult::CHANGED, std::memory_order_relaxed);
+            handled[local] = 1;
+            ++matchedCount;
+            return;
+          }
+          resolver.resolve(packedPaths + pathStart, pathLen);
+
+          // statOk = true here (we DID get the stat data via bulk).
+          (void)this->reconcileStat_(entry, oldIno, oldMtime, oldCtime, oldSize, true, resolver);
+          handled[local] = 1;
+          ++matchedCount;
+        });
+
+      // Skip the fallback scan when the bulk path covered every entry —
+      // typical case on a clean source tree, where N-700 entries / 6 dirs
+      // means hundreds of pure-overhead loop iterations otherwise.
+      if (got >= 0 && matchedCount == n) [[likely]] {
+        return;
+      }
+
+      // Fallback pass: any entry not handled by bulk-stat (open failed,
+      // bulk-listing aborted mid-way, file not present in dir listing, or
+      // its name is a symlink we skipped) gets the per-file fstatat path.
+      const bool bulkAborted = (got < 0);
+      for (size_t k = 0; k < n; ++k) {
+        if (handled[k] && !bulkAborted) continue;
+        const uint32_t entryIdx = job.entries[k].idx;
+        CacheEntry & entry = entries[entryIdx];
+        const uint64_t inoWithState = entry.ino;
+        const uint64_t state = inoWithState & INO_STATE_MASK;
+        if (state != CACHE_S_HAS_OLD) {
+          continue;
+        }
+
+        const uint32_t pathEnd = pathEnds[entryIdx];
+        const uint32_t pathStart = entryIdx == 0 ? 0u : pathEnds[entryIdx - 1];
+        const size_t pathLen = pathEnd - pathStart;
+        if (pathLen > maxSegCap) [[unlikely]] {
+          this->matchResult_.store(MatchResult::CHANGED, std::memory_order_relaxed);
+          continue;
+        }
+        resolver.resolve(packedPaths + pathStart, pathLen);
+
+        const uint64_t oldIno = inoWithState & INO_VALUE_MASK;
+        const uint64_t oldMtime = entry.mtimeNs;
+        const uint64_t oldCtime = entry.ctimeNs;
+        const uint64_t oldSize = entry.size;
+
+        const bool statOk = resolver.stat_into(entry);
+        (void)this->reconcileStat_(entry, oldIno, oldMtime, oldCtime, oldSize, statOk, resolver);
+      }
+    }
+#  else
+    // Stub for non-Apple — never called (dirJobs_ is always empty).
+    FSH_FORCE_INLINE void processBulkDir_(
+      const BulkDirJob &, PathResolver &, size_t) const noexcept {}
+#  endif
   };
 
 }  // namespace fast_fs_hash
