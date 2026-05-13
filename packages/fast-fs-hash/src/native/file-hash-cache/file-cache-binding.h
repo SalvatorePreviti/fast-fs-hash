@@ -306,14 +306,9 @@ namespace fast_fs_hash {
       return Napi::Boolean::New(env, true);
     }
 
-    uint64_t fields[4] = {tmp.ino & INO_VALUE_MASK, tmp.ctimeNs, tmp.mtimeNs, tmp.size};
-    Hash128 h;
-    h.from_xxh128(XXH3_128bits(fields, sizeof(fields)));
-    double newStat0, newStat1;
-    memcpy(&newStat0, &h.bytes[0], 8);
-    memcpy(&newStat1, &h.bytes[8], 8);
-
-    return Napi::Boolean::New(env, newStat0 != state->cacheFileStat0 || newStat1 != state->cacheFileStat1);
+    double newStat[2];
+    hashCacheFileStat(tmp, newStat);
+    return Napi::Boolean::New(env, newStat[0] != state->cacheFileStat0 || newStat[1] != state->cacheFileStat1);
   }
 
   /**

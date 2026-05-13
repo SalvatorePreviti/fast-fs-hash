@@ -23,6 +23,13 @@ namespace fast_fs_hash {
     std::atomic<AddonWorker *> head{nullptr};
     std::atomic<int> pending{0};
     napi_async_cleanup_hook_handle cleanup_hook_ = nullptr;
+    /** Set true at the start of async_cleanup_hook_. Guards drain_cb_ against
+     *  calling napi functions (Resolve/Reject) after the env starts tearing
+     *  down. uv_async_send may queue a drain callback that fires during loop
+     *  flush AFTER the cleanup hook returns — without this flag, those late
+     *  callbacks invoke napi_resolve_deferred on a closing env and produce a
+     *  fatal `ThrowAsJavaScriptException` on the worker thread. */
+    std::atomic<bool> closing{false};
 
     /** Active lock cancels — JS-thread-only list. fire_all() before pool.shutdown()
      *  to unblock threads polling on flock(LOCK_NB) (POSIX) or LockFileEx (Win32). */

@@ -216,9 +216,7 @@ namespace fast_fs_hash {
       }
 
       this->resultStatus_ = static_cast<uint32_t>(st);
-      if (this->lockedFile_) {
-        stampCacheFileStat(this->resultStat_, this->lockedFile_.fd);
-      }
+      // resultStat_ stamped by readOldCache_; left zero on lockFailed / never-read paths.
     }
 
     /** Adopt `oldBuf` as our dataBuf if its entry count matches what JS
@@ -401,12 +399,32 @@ namespace fast_fs_hash {
         return CacheStatus::MISSING;
       }
 
-      const int64_t fileSize = this->lockedFile_.fsize();
+      // One fstat covers size + stat hash. Stamp resultStat_ now so finalize_
+      // doesn't need a second fstat; compare against the previous value when
+      // we have a baseline to detect a byte-identical re-open.
+      CacheEntry statEntry{};
+      if (!FfshFile::fstat_into(lockFd, statEntry)) [[unlikely]] {
+        return CacheStatus::MISSING;
+      }
+      const int64_t fileSize = static_cast<int64_t>(statEntry.size);
       if (fileSize < static_cast<int64_t>(CacheHeader::SIZE) || fileSize > static_cast<int64_t>(CACHE_MAX_FILE_SIZE))
         [[unlikely]] {
         return CacheStatus::MISSING;
       }
       const size_t diskSize = static_cast<size_t>(fileSize);
+
+      // Cache-file unchanged fast path: the flock window guarantees nobody
+      // else has touched the file between our writes, and stat-hash equality
+      // ⇒ bit-identical contents ⇒ in-memory validation is redundant.
+      bool cacheFileUnchanged = false;
+      {
+        const double prev0 = this->state_->cacheFileStat0;
+        const double prev1 = this->state_->cacheFileStat1;
+        hashCacheFileStat(statEntry, this->resultStat_);
+        if (prev0 != 0.0 || prev1 != 0.0) {
+          cacheFileUnchanged = (this->resultStat_[0] == prev0) && (this->resultStat_[1] == prev1);
+        }
+      }
 
       // Peek the header so we can size the final buffer correctly. Positional
       // read — leaves the fd's seek position untouched so the disk-side reads
@@ -452,10 +470,21 @@ namespace fast_fs_hash {
         staleStatus = CacheStatus::STALE;
       }
 
-      // Compressed body lives at the tail; LZ4 decompresses forward into the
-      // body region in-place. Single allocation = final layout + LZ4 margin.
-      const size_t inplaceMargin = uncompBodySize > 0 ? LZ4_DECOMPRESS_INPLACE_MARGIN(uncompBodySize) : 0;
-      const size_t allocLen = bodyLen + inplaceMargin;
+      // Compressed body lives at the tail of the alloc; LZ4 decompresses
+      // forward into the body region in-place. Safety: the body capacity
+      // must be >= max(compressedSize, uncompBodySize) + margin(compressedSize)
+      // so the source's tail position does not alias bytes the decompressor
+      // hasn't read yet. Margin uses compressedSize (true LZ4 requirement);
+      // the public macro uses decompressedSize as a conservative bound.
+      size_t allocLen = bodyLen;
+      if (uncompBodySize > 0) {
+        const size_t maxBody = compressedSize > uncompBodySize ? compressedSize : uncompBodySize;
+        const size_t bodyCap = maxBody + LZ4_DECOMPRESS_INPLACE_MARGIN(compressedSize);
+        const size_t needed = diskPrefix + bodyCap;
+        if (needed > allocLen) {
+          allocLen = needed;
+        }
+      }
       oldBuf = OwnedBuf<>::alloc(allocLen);
       if (!oldBuf) [[unlikely]] {
         return CacheStatus::MISSING;
@@ -495,7 +524,7 @@ namespace fast_fs_hash {
 
       hdr = headerOf(oldBuf.ptr);
 
-      if (!hdr->packedPathsValid(oldBuf.ptr)) [[unlikely]] {
+      if (!cacheFileUnchanged && !hdr->packedPathsValid(oldBuf.ptr)) [[unlikely]] {
         oldBuf.reset();
         return CacheStatus::MISSING;
       }

@@ -37,6 +37,13 @@ namespace fast_fs_hash {
   inline void AddonData::drain_cb_(uv_async_t * handle) {
     auto * d = static_cast<AddonData *>(handle->data);
 
+    // Late callbacks after cleanup started can hit a tearing-down env. The
+    // cleanup hook owns the head list at that point — bail without touching
+    // napi (no Resolve/Reject) to avoid a fatal ThrowAsJavaScriptException.
+    if (d->closing.load(std::memory_order_acquire)) [[unlikely]] {
+      return;
+    }
+
     AddonWorker * head = d->head.exchange(nullptr, std::memory_order_acquire);
     while (head) {
       auto * next = static_cast<AddonWorker *>(head->next_);
@@ -55,6 +62,10 @@ namespace fast_fs_hash {
 
   inline void AddonData::async_cleanup_hook_(napi_async_cleanup_hook_handle hook, void * data) {
     auto * d = static_cast<AddonData *>(data);
+
+    // Publish closing BEFORE shutting down the pool. Pool threads may signal()
+    // during drain and queue uv_async_send; drain_cb_ now bails on this flag.
+    d->closing.store(true, std::memory_order_release);
 
     d->active_cancels.fire_all();
     d->pool.shutdown();

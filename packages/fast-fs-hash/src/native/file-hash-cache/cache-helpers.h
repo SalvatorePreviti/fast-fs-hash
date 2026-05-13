@@ -11,15 +11,22 @@
 
 namespace fast_fs_hash {
 
-  /** Compute cache file stat hash from an open fd. Writes two f64 values to statOut. */
+  /** XXH3-128 of a cache file's stat fields, packed into two f64 slots.
+   *  Identity: matching pair ⇒ file bytes are bit-identical to last write
+   *  (under the flock held by every writer). */
+  FSH_FORCE_INLINE void hashCacheFileStat(const CacheEntry & st, double * statOut) noexcept {
+    const uint64_t fields[4] = {st.ino & INO_VALUE_MASK, st.ctimeNs, st.mtimeNs, st.size};
+    Hash128 h;
+    h.from_xxh128(XXH3_128bits(fields, sizeof(fields)));
+    memcpy(&statOut[0], &h.bytes[0], 8);
+    memcpy(&statOut[1], &h.bytes[8], 8);
+  }
+
+  /** fstat + hash. Writes [0, 0] on stat failure. */
   inline void stampCacheFileStat(double * statOut, int fd) noexcept {
     CacheEntry tmp{};
     if (FfshFile::fstat_into(fd, tmp)) {
-      uint64_t fields[4] = {tmp.ino & INO_VALUE_MASK, tmp.ctimeNs, tmp.mtimeNs, tmp.size};
-      Hash128 h;
-      h.from_xxh128(XXH3_128bits(fields, sizeof(fields)));
-      memcpy(&statOut[0], &h.bytes[0], 8);
-      memcpy(&statOut[1], &h.bytes[8], 8);
+      hashCacheFileStat(tmp, statOut);
     } else {
       statOut[0] = 0;
       statOut[1] = 0;
